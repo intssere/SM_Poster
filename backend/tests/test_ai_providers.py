@@ -718,6 +718,12 @@ def test_adagio_copy_accepts_approved_context_short_title_and_formatted_number()
     validate_adagio()
 
 
+def test_adagio_copy_accepts_typed_price_band_threshold():
+    validate_adagio(
+        description="Discover this Adagio beauty pick at Diamond Shelf under $50."
+    )
+
+
 def test_adagio_copy_does_not_trust_url_vocabulary_or_changed_numeric_signs():
     product, intelligence, rationale = adagio_context()
     product.product_url = "https://diamondshelf.example/products/waterproof-adagio"
@@ -733,6 +739,14 @@ def test_adagio_copy_does_not_trust_url_vocabulary_or_changed_numeric_signs():
     output["description"] = "Adagio -2500W marble blow dryer."
     with pytest.raises(AIRegenerationError, match="numeric claim"):
         _validate_provider_copy(output, product, intelligence, rationale)
+
+
+@pytest.mark.parametrize("unsupported_number", ["49", "36.99", "99", "2000W", "v=1787155001"])
+def test_adagio_copy_rejects_numbers_not_in_typed_trusted_facts(unsupported_number):
+    with pytest.raises(AIRegenerationError, match="numeric claim"):
+        validate_adagio(
+            description=f"Adagio marble blow dryer, numeric detail {unsupported_number}."
+        )
 
 
 @pytest.mark.parametrize(

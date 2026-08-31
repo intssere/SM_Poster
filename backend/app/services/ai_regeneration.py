@@ -309,13 +309,12 @@ def _validate_provider_copy(
         type("_Image", (), {"source_url": (rationale.get("authentic_image") or {}).get("url")})(),
     )
     approved_context = _approved_provider_context(rationale)
+    numeric_sources = [product.title, intelligence.size]
+    if intelligence.price_band:
+        numeric_sources.append(_clean(intelligence.price_band).replace("_", " "))
     supported_numeric_text = " ".join(
         _clean(value)
-        for value in (
-            product.title,
-            intelligence.size,
-            intelligence.price_band,
-        )
+        for value in numeric_sources
         if value
     )
     unsupported_numbers = _canonical_numbers(combined) - _canonical_numbers(supported_numeric_text)
