@@ -14,6 +14,8 @@ from app.models.domain import (
     Board,
     Campaign,
     ContentAngle,
+    ContentRevision,
+    ContentVersionSelection,
     CreativeTemplate,
     DraftStatus,
     KeywordCluster,
@@ -709,8 +711,120 @@ def _select_products(
     return selected
 
 
-def _serialize_proposal(product: Product, intelligence: ProductIntelligence, rationale: dict[str, Any], draft: PinDraft, creative: Any = None) -> dict[str, Any]:
+def _creative_payload(creative: Any) -> dict[str, Any] | None:
+    if not creative:
+        return None
     return {
+        "id": creative.id,
+        "status": creative.render_status,
+        "image_url": creative.rendered_url,
+        "error": creative.render_error,
+        "width": creative.width,
+        "height": creative.height,
+        "size_bytes": creative.size_bytes,
+        "render_duration_ms": creative.render_duration_ms,
+        "duration_ms": creative.render_duration_ms,
+        "creative_fingerprint": creative.creative_fingerprint,
+        "sha256": creative.sha256,
+        "template_version": (creative.render_spec or {}).get("template_version"),
+        "specification": creative.render_spec,
+    }
+
+
+def _version_payload(revision: ContentRevision, creative: Any, active_id: str | None) -> dict[str, Any]:
+    return {
+        "id": revision.id,
+        "version": revision.version,
+        "kind": revision.revision_kind,
+        "status": revision.status,
+        "parent_revision_id": revision.parent_revision_id,
+        "active": revision.id == active_id,
+        "headline": revision.headline,
+        "title": revision.title,
+        "description": revision.description,
+        "alt_text": revision.alt_text,
+        "cta": revision.cta,
+        "creative_template": revision.creative_template,
+        "creative_template_key": revision.creative_template_key,
+        "text_fingerprint": revision.text_fingerprint,
+        "creative_fingerprint": revision.creative_fingerprint,
+        "facts_used": revision.facts_used,
+        "warnings": revision.warnings,
+        "missing_facts": revision.missing_facts,
+        "unsupported_claims": revision.unsupported_claims,
+        "provenance": revision.provenance,
+        "provider_mode": revision.provider_mode,
+        "generation_mode": revision.generation_mode,
+        "reason": revision.reason,
+        "created_at": revision.created_at,
+        "creative": _creative_payload(creative),
+    }
+
+
+def _version_context(
+    db: Any,
+    product: Product,
+    intelligence: ProductIntelligence,
+    rationale: dict[str, Any],
+    draft: PinDraft,
+    original_creative: Any,
+) -> tuple[list[dict[str, Any]], ContentRevision | None, str | None]:
+    selection = db.scalar(select(ContentVersionSelection).where(ContentVersionSelection.draft_id == draft.id))
+    active_id = selection.revision_id if selection else None
+    original = {
+        "id": None,
+        "version": 1,
+        "kind": "ORIGINAL",
+        "status": "REVIEW",
+        "parent_revision_id": None,
+        "active": active_id is None,
+        "headline": rationale.get("headline", ""),
+        "title": draft.title,
+        "description": draft.description,
+        "alt_text": draft.alt_text,
+        "cta": rationale.get("cta", ""),
+        "creative_template": rationale.get("creative_template", ""),
+        "creative_template_key": rationale.get("creative_template_key", ""),
+        "text_fingerprint": draft.text_fingerprint,
+        "creative_fingerprint": original_creative.creative_fingerprint if original_creative else None,
+        "facts_used": rationale.get("facts_used", {}),
+        "warnings": rationale.get("warnings", []),
+        "missing_facts": rationale.get("missing_facts", []),
+        "unsupported_claims": rationale.get("unsupported_claims", []),
+        "provenance": (original_creative.render_spec or {}).get("image", {}) if original_creative else rationale.get("authentic_image", {}),
+        "provider_mode": "deterministic_original",
+        "generation_mode": "original_persisted",
+        "reason": "original_persisted",
+        "created_at": draft.created_at,
+        "creative": _creative_payload(original_creative),
+    }
+    revisions = [
+        _version_payload(
+            revision,
+            db.get(PinCreative, revision.creative_id) if revision.creative_id else None,
+            active_id,
+        )
+        for revision in db.scalars(
+            select(ContentRevision)
+            .where(ContentRevision.draft_id == draft.id)
+            .order_by(ContentRevision.version)
+        )
+    ]
+    active = db.get(ContentRevision, active_id) if active_id else None
+    return [original, *revisions], active, active_id
+
+
+def _serialize_proposal(
+    product: Product,
+    intelligence: ProductIntelligence,
+    rationale: dict[str, Any],
+    draft: PinDraft,
+    creative: Any = None,
+    versions: list[dict[str, Any]] | None = None,
+    active: ContentRevision | None = None,
+    active_id: str | None = None,
+) -> dict[str, Any]:
+    payload = {
         "id": draft.id,
         "concept_id": rationale.get("concept_id"),
         "product_id": product.id,
@@ -743,22 +857,33 @@ def _serialize_proposal(product: Product, intelligence: ProductIntelligence, rat
         "ranking_score": rationale.get("ranking_score"),
         "ranking_factors": rationale.get("ranking_factors"),
         "created_at": draft.created_at,
-        "creative": None if not creative else {
-            "id": creative.id,
-            "status": creative.render_status,
-            "image_url": creative.rendered_url,
-            "error": creative.render_error,
-            "width": creative.width,
-            "height": creative.height,
-            "size_bytes": creative.size_bytes,
-            "render_duration_ms": creative.render_duration_ms,
-            "duration_ms": creative.render_duration_ms,
-            "creative_fingerprint": creative.creative_fingerprint,
-            "sha256": creative.sha256,
-            "template_version": (creative.render_spec or {}).get("template_version"),
-            "specification": creative.render_spec,
-        },
+        "creative": _creative_payload(creative),
+        "active_revision_id": active_id,
+        "active_version": active.version if active else 1,
+        "versions": versions or [],
     }
+    if active:
+        payload.update({
+            "headline": active.headline,
+            "title": active.title,
+            "description": active.description,
+            "alt_text": active.alt_text,
+            "cta": active.cta,
+            "canonical_url": active.destination_url,
+            "utm_url": active.utm_url,
+            "keywords": active.keywords,
+            "content_angle": active.content_angle,
+            "content_angle_key": active.content_angle_key,
+            "creative_template": active.creative_template,
+            "creative_template_key": active.creative_template_key,
+            "intelligence_facts_used": active.facts_used,
+            "warnings": active.warnings,
+            "missing_facts": active.missing_facts,
+            "unsupported_claims": active.unsupported_claims,
+            "text_fingerprint": active.text_fingerprint,
+            "creative": next((version["creative"] for version in versions or [] if version["id"] == active.id), None),
+        })
+    return payload
 
 
 class PinProposalService:
@@ -1089,12 +1214,23 @@ class PinProposalService:
                     concept.rationale.get("content_angle", ""),
                 ]).lower():
                     continue
+                original_creative = db.scalar(
+                    select(PinCreative)
+                    .where(PinCreative.draft_id == draft.id)
+                    .order_by(PinCreative.created_at.asc(), PinCreative.id)
+                )
+                versions, active, active_id = _version_context(
+                    db, product, intelligence, concept.rationale or {}, draft, original_creative
+                )
                 results.append(_serialize_proposal(
                     product,
                     intelligence,
                     concept.rationale or {},
                     draft,
-                    db.scalar(select(PinCreative).where(PinCreative.draft_id == draft.id).order_by(PinCreative.created_at.desc())),
+                    original_creative,
+                    versions,
+                    active,
+                    active_id,
                 ))
             return results
         finally:

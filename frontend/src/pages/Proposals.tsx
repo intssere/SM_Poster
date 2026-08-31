@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Check, Clipboard, ExternalLink, ImageOff, Images, RefreshCw, ShieldAlert, X, TriangleAlert, Ruler, Fingerprint, Clock3 } from 'lucide-react'
+import { Check, Clipboard, ExternalLink, ImageOff, Images, RefreshCw, ShieldAlert, Sparkles, X, TriangleAlert, Ruler, Fingerprint, Clock3 } from 'lucide-react'
 
 import {
+  AISettings,
   decideProposal,
   generateProposals,
+  getAISettings,
   getCreativeQa,
   getProposalQa,
   getProposals,
   PinProposal,
   ProposalReport,
   renderCreatives,
+  updateAISettings,
 } from '../api/proposals'
+import { RevisionControls } from './RevisionControls'
 
 function formatDate(value?: string | null) {
   if (!value) return 'Just now'
@@ -83,6 +87,7 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
   const [proposals, setProposals] = useState<PinProposal[]>([])
   const [qa, setQa] = useState<ProposalReport | null>(null)
   const [creativeQa, setCreativeQa] = useState<Record<string, unknown> | null>(null)
+  const [aiSettings, setAISettings] = useState<AISettings | null>(null)
   const [status, setStatus] = useState('REVIEW')
   const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState(false)
@@ -93,10 +98,11 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [queue, report, creativeReport] = await Promise.all([getProposals(status), getProposalQa(), getCreativeQa()])
+      const [queue, report, creativeReport, settings] = await Promise.all([getProposals(status), getProposalQa(), getCreativeQa(), getAISettings()])
       setProposals([...queue.items].sort((a, b) => Number(Boolean(b.creative)) - Number(Boolean(a.creative))))
       setQa(report)
       setCreativeQa(creativeReport)
+      setAISettings(settings)
       setMessage(null)
     } catch (error) {
       setMessage({ type: 'error', text: (error as Error).message })
@@ -132,6 +138,16 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
     finally { setWorkingId(null) }
   }
 
+  async function changeProvider(provider: AISettings['provider_mode']) {
+    setMessage(null)
+    try {
+      setAISettings(await updateAISettings(provider))
+      setMessage({ type: 'success', text: provider === 'disabled' ? 'AI disabled. Regeneration uses the deterministic fact-safe fallback.' : 'Local/free provider mode enabled. No credentials are stored.' })
+    } catch (error) {
+      setMessage({ type: 'error', text: (error as Error).message })
+    }
+  }
+
   return <div className="proposals-page">
     <header className="page-heading">
       <div><p className="eyebrow">PIN PROPOSALS / REVIEW</p><h2>Approval Queue</h2><p>Compare authentic catalog sources with rendered Pinterest output before making an explicit decision.</p></div>
@@ -142,6 +158,15 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
       </div>
     </header>
     <section className="proposal-toolbar"><div className="proposal-status-tabs">{['REVIEW', 'APPROVED', 'REJECTED'].map((value) => <button key={value} className={status === value ? 'active' : ''} onClick={() => setStatus(value)}>{value}</button>)}</div><span className="proposal-safety"><ShieldAlert size={15} /> Publishing disabled — approval never publishes</span></section>
+    <section className="ai-settings-strip">
+      <div><Sparkles size={16} /><span><strong>AI-assisted regeneration</strong><small>Disabled by default. Credentials are never stored here.</small></span></div>
+      <label>Provider mode<select value={aiSettings?.provider_mode || 'disabled'} onChange={(event) => void changeProvider(event.target.value as AISettings['provider_mode'])}>
+        <option value="disabled">Disabled · deterministic fallback</option>
+        <option value="local_free">Local / free provider</option>
+        <option value="hosted_paid" disabled>Paid hosted provider · not configured</option>
+      </select></label>
+      <span className="ai-capability">Decorative AI backgrounds: unavailable</span>
+    </section>
     {message && <p className={message.type === 'error' ? 'error-message' : 'catalog-message'} role="status">{message.text}</p>}
     {creativeQa && <div className="creative-qa-strip"><span className="eyebrow">RENDER QA</span>{Object.entries(creativeQa).slice(0, 4).map(([key, value]) => <span key={key}><b>{key.replaceAll('_', ' ')}</b> {pretty(value)}</span>)}</div>}
     {qa && <section className="proposal-summary"><div><span>Products selected</span><strong>{qa.products_selected}</strong></div><div><span>Proposals</span><strong>{qa.proposals_generated}</strong></div><div><span>Partial records</span><strong>{qa.proposals_using_partial_records}</strong></div><div><span>Duplicates blocked</span><strong>{qa.duplicate_attempts_prevented}</strong></div></section>}
@@ -154,6 +179,7 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
         <div className="proposal-facts"><strong>Facts used</strong>{factEntries(proposal).map(([key, value]) => <span key={key}>{key.replaceAll('_', ' ')}: {String(value)}</span>)}</div>
         {(proposal.warnings.length > 0 || proposal.missing_facts.length > 0 || proposal.unsupported_claims.length > 0) && <div className="proposal-warning"><ShieldAlert size={15} /><span>{proposal.warnings.join(' ')}{proposal.missing_facts.length > 0 && ` Missing/unknown: ${proposal.missing_facts.join(', ')}.`}{proposal.unsupported_claims.length > 0 && ` Unsupported claims detected: ${proposal.unsupported_claims.join(', ')}.`}</span></div>}
         <div className="proposal-fingerprint"><Clipboard size={14} /><span>Text SHA-256 {proposal.text_fingerprint}</span></div>
+        {proposal.approval_status === 'REVIEW' && <RevisionControls proposal={proposal} settings={aiSettings} compact onChanged={load} />}
         {proposal.approval_status === 'REVIEW' && <div className="proposal-actions"><button className="approve-action" onClick={() => decide(proposal.id, 'approve')} disabled={workingId === proposal.id}><Check size={15} /> Approve</button><button className="reject-action" onClick={() => decide(proposal.id, 'reject')} disabled={workingId === proposal.id}><X size={15} /> Reject</button></div>}
       </div>
     </article>)}</section>}

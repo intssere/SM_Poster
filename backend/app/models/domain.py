@@ -262,6 +262,70 @@ class PinCreative(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class AISettings(Base):
+    __tablename__ = "ai_settings"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    provider_mode: Mapped[str] = mapped_column(String(30), default="disabled", nullable=False)
+    decorative_backgrounds_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ContentRevision(Base):
+    __tablename__ = "content_revisions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    draft_id: Mapped[str] = mapped_column(ForeignKey("pin_drafts.id", ondelete="CASCADE"), index=True)
+    parent_revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey("content_revisions.id", ondelete="SET NULL"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    revision_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="REVIEW", nullable=False)
+    headline: Mapped[str] = mapped_column(String(500), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    alt_text: Mapped[str] = mapped_column(Text, nullable=False)
+    cta: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_angle: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_angle_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    creative_template: Mapped[str] = mapped_column(String(255), nullable=False)
+    creative_template_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    destination_url: Mapped[str] = mapped_column(Text, nullable=False)
+    utm_url: Mapped[str] = mapped_column(Text, nullable=False)
+    keywords: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    facts_used: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    warnings: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    missing_facts: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    unsupported_claims: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    provenance: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    text_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    creative_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
+    creative_id: Mapped[str | None] = mapped_column(ForeignKey("pin_creatives.id", ondelete="SET NULL"), index=True)
+    source_image_id: Mapped[str] = mapped_column(ForeignKey("product_images.id"), index=True)
+    provider_mode: Mapped[str] = mapped_column(String(30), nullable=False)
+    generation_mode: Mapped[str] = mapped_column(String(40), nullable=False)
+    reason: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("draft_id", "version", name="uq_content_revision_version"),
+    )
+
+
+class ContentVersionSelection(Base):
+    __tablename__ = "content_version_selections"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    draft_id: Mapped[str] = mapped_column(
+        ForeignKey("pin_drafts.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    revision_id: Mapped[str] = mapped_column(
+        ForeignKey("content_revisions.id", ondelete="CASCADE"), index=True
+    )
+    selected_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    selected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class PinApproval(Base):
     __tablename__ = "pin_approvals"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)

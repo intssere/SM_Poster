@@ -33,6 +33,9 @@ export type PinProposal = {
   variation_reason?: string | null
   created_at?: string | null
   creative: CreativePreview | null
+  active_revision_id?: string | null
+  active_version?: number
+  versions?: ContentVersion[]
 }
 
 export type CreativePreview = {
@@ -48,6 +51,50 @@ export type CreativePreview = {
   sha256?: string | null
   template_version?: number | null
   specification?: Record<string, unknown> | null
+}
+
+export type ContentVersion = {
+  id: string | null
+  version: number
+  kind: 'ORIGINAL' | 'COPY' | 'CREATIVE'
+  status: 'REVIEW'
+  parent_revision_id?: string | null
+  active: boolean
+  headline: string
+  title: string
+  description: string
+  alt_text: string
+  cta: string
+  creative_template: string
+  creative_template_key: string
+  text_fingerprint: string
+  creative_fingerprint?: string | null
+  facts_used: Record<string, unknown>
+  warnings: string[]
+  missing_facts: string[]
+  unsupported_claims: string[]
+  provenance: Record<string, unknown>
+  provider_mode: string
+  generation_mode: string
+  reason: string
+  created_at?: string | null
+  creative: CreativePreview | null
+}
+
+export type AISettings = {
+  enabled: boolean
+  provider_mode: 'disabled' | 'local_free' | 'hosted_paid'
+  effective_mode: 'disabled' | 'local_free' | 'hosted_paid'
+  provider_label: string
+  available_provider_modes: Array<{ id: string; label: string; available: boolean }>
+  capabilities: {
+    copy_regeneration: boolean
+    creative_template_variants: boolean
+    decorative_backgrounds: boolean
+    hosted_provider_configured: boolean
+  }
+  decorative_backgrounds_enabled: boolean
+  credentials_configured: boolean
 }
 
 export type CreativeQa = Record<string, unknown>
@@ -173,4 +220,45 @@ export async function renderCreatives(limit = 12): Promise<CreativeQa> {
 
 export async function getCreativeQa(): Promise<CreativeQa> {
   return json(await fetch('/api/pins/creatives/qa'))
+}
+
+export async function getAISettings(): Promise<AISettings> {
+  return json(await fetch('/api/ai/settings'))
+}
+
+export async function updateAISettings(
+  providerMode: AISettings['provider_mode'],
+): Promise<AISettings> {
+  return json(await fetch('/api/ai/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      enabled: providerMode !== 'disabled',
+      provider_mode: providerMode,
+      decorative_backgrounds_enabled: false,
+    }),
+  }))
+}
+
+export async function regenerateProposal(
+  id: string,
+  kind: 'copy' | 'creative',
+  templateKey?: string,
+): Promise<ContentVersion> {
+  return json(await fetch(`/api/pins/proposals/${id}/regenerate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind, template_key: templateKey }),
+  }))
+}
+
+export async function selectProposalVersion(id: string, versionId: string): Promise<{
+  active_version_number: number
+  publishing_enabled: false
+}> {
+  return json(await fetch(`/api/pins/proposals/${id}/active-version`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ version_id: versionId }),
+  }))
 }

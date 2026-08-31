@@ -3,7 +3,14 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
-from app.schemas.pins import CreativeRenderBatchRequest, ProposalDecision, ProposalGenerateRequest
+from app.schemas.pins import (
+    CreativeRenderBatchRequest,
+    ProposalDecision,
+    ProposalGenerateRequest,
+    RegenerationRequest,
+    VersionSelectionRequest,
+)
+from app.services.ai_regeneration import AIRegenerationError, AIRegenerationService
 from app.services.creative_rendering import CreativeRenderError, CreativeRenderService
 from app.services.pin_proposals import PinProposalService
 
@@ -63,6 +70,38 @@ def render_creatives(body: CreativeRenderBatchRequest):
 @router.get("/creatives/qa")
 def creative_qa():
     return CreativeRenderService().qa_report()
+
+
+@router.get("/proposals/{draft_id}/versions")
+def proposal_versions(draft_id: str):
+    try:
+        return AIRegenerationService().versions(draft_id)
+    except AIRegenerationError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@router.post("/proposals/{draft_id}/regenerate")
+def regenerate_proposal(draft_id: str, body: RegenerationRequest):
+    service = AIRegenerationService()
+    try:
+        if body.kind == "copy":
+            return service.regenerate_copy(draft_id)
+        if not body.template_key:
+            raise AIRegenerationError("A creative template is required for a creative variant.")
+        return service.regenerate_creative(draft_id, body.template_key)
+    except (AIRegenerationError, CreativeRenderError) as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@router.post("/proposals/{draft_id}/active-version")
+def select_proposal_version(draft_id: str, body: VersionSelectionRequest):
+    try:
+        return AIRegenerationService().select_version(draft_id, body.version_id)
+    except AIRegenerationError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 @router.get("/creatives/{creative_id}/image")

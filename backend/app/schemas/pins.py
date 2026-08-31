@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from pydantic import BaseModel, Field, HttpUrl
 
 
@@ -48,3 +49,18 @@ class ProposalDecision(BaseModel):
 
 class CreativeRenderBatchRequest(BaseModel):
     limit: int = Field(default=12, ge=1, le=12)
+
+
+class AISettingsUpdate(BaseModel):
+    enabled: bool = False
+    provider_mode: Literal["disabled", "local_free", "hosted_paid"] = "disabled"
+    decorative_backgrounds_enabled: bool = False
+
+
+class RegenerationRequest(BaseModel):
+    kind: Literal["copy", "creative"]
+    template_key: str | None = Field(default=None, max_length=120)
+
+
+class VersionSelectionRequest(BaseModel):
+    version_id: str = Field(min_length=1, max_length=36)

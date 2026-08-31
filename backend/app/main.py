@@ -9,6 +9,7 @@ from app.api.routes.phase1 import router as phase1_router
 from app.api.routes.catalog import router as catalog_router
 from app.api.routes.proposals import router as proposals_router
 from app.api.routes.channels import router as channels_router
+from app.api.routes.ai import router as ai_router
 
 cors_origins = ["http://localhost:5000", "http://127.0.0.1:5000"]
 if replit_domain := os.getenv("REPLIT_DEV_DOMAIN"):
@@ -28,6 +29,7 @@ app.include_router(phase1_router, prefix="/api")
 app.include_router(catalog_router, prefix="/api")
 app.include_router(proposals_router, prefix="/api")
 app.include_router(channels_router, prefix="/api")
+app.include_router(ai_router, prefix="/api")
 
 
 @app.get("/")

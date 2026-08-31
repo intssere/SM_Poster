@@ -3,7 +3,8 @@ import {
   ChevronLeft, ChevronRight, ExternalLink, Fingerprint, Image as ImageIcon,
   Images, Maximize2, ShieldAlert, X,
 } from 'lucide-react'
-import { getProposals, PinProposal } from '../api/proposals'
+import { AISettings, getAISettings, getProposals, PinProposal } from '../api/proposals'
+import { RevisionControls } from './RevisionControls'
 
 type FilterKey = 'template' | 'category' | 'audience' | 'designer' | 'arabian' | 'niche'
 type Filters = Record<FilterKey, string>
@@ -55,13 +56,15 @@ function warningsFor(proposal: PinProposal) {
 }
 
 function CreativeModal({
-  proposals, index, onClose, onMove, returnFocus,
+  proposals, index, onClose, onMove, returnFocus, settings, onChanged,
 }: {
   proposals: PinProposal[]
   index: number
   onClose: () => void
   onMove: (index: number) => void
   returnFocus: HTMLElement | null
+  settings: AISettings | null
+  onChanged: () => Promise<void>
 }) {
   const [compare, setCompare] = useState(true)
   const dialogRef = useRef<HTMLElement>(null)
@@ -145,6 +148,9 @@ function CreativeModal({
           <div><dt>Source URL</dt><dd>{pretty(image.provenance_url)}</dd></div>
         </dl>
       </div>
+      <div className="gallery-modal-revisions">
+        <RevisionControls proposal={proposal} settings={settings} onChanged={onChanged} />
+      </div>
       {warnings.length > 0 && <div className="gallery-warning"><ShieldAlert size={15} /><div><strong>Review warnings</strong>{warnings.map((warning) => <span key={warning}>{warning}</span>)}</div></div>}
       <footer className="gallery-modal-footer">
         <span>Use ← → to navigate · Esc to close</span>
@@ -182,14 +188,16 @@ export function CreativeGalleryPage({ onOpenQueue }: { onOpenQueue: () => void }
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [aiSettings, setAISettings] = useState<AISettings | null>(null)
   const returnFocusRef = useRef<HTMLElement | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await getProposals('REVIEW')
+      const [response, settings] = await Promise.all([getProposals('REVIEW'), getAISettings()])
       setProposals(response.items)
+      setAISettings(settings)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not load creative gallery.')
     } finally {
@@ -258,6 +266,6 @@ export function CreativeGalleryPage({ onOpenQueue }: { onOpenQueue: () => void }
     </section>
     {visible.length === 0 ? <div className="gallery-empty"><Images size={32} /><strong>{rendered.length === 0 ? 'No rendered creatives yet' : 'No creatives match these filters'}</strong><p>{rendered.length === 0 ? 'Rendered previews will appear here when available.' : 'Try All or clear one of the fact filters.'}</p></div>
       : <section className="gallery-grid">{visible.map((proposal, index) => <GalleryCard key={proposal.id} proposal={proposal} onOpen={() => openPreview(index)} />)}</section>}
-    {selectedIndex !== null && <CreativeModal proposals={visible} index={selectedIndex} onClose={() => setSelectedIndex(null)} onMove={setSelectedIndex} returnFocus={returnFocusRef.current} />}
+    {selectedIndex !== null && <CreativeModal proposals={visible} index={selectedIndex} onClose={() => setSelectedIndex(null)} onMove={setSelectedIndex} returnFocus={returnFocusRef.current} settings={aiSettings} onChanged={load} />}
   </div>
 }
