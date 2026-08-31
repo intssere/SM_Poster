@@ -18,6 +18,7 @@ from app.db.session import SessionLocal
 from app.models.domain import AIGeneratedAsset, AIRequestTelemetry, ContentRevision, PinCreative
 from app.services.ai_providers import (
     ProviderUnavailable,
+    TextGenerationResult,
     image_provider_for_settings,
     provider_for_settings,
     video_provider_for_settings,
@@ -46,6 +47,74 @@ BACKGROUND_STYLES = {
     "botanical_editorial": "Refined botanical shadows and soft neutral plaster, airy editorial styling, no literal flowers in the foreground.",
     "bold_color_block": "Sophisticated geometric color blocks with generous negative space and clean high-contrast editorial lighting.",
 }
+CONTENT_VARIANT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "headline": {"type": "string"},
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "cta": {"type": "string"},
+        "board_description": {"type": "string"},
+        "social_post": {"type": "string"},
+        "hooks": {"type": "array", "items": {"type": "string"}},
+        "keywords": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "headline",
+        "title",
+        "description",
+        "cta",
+        "board_description",
+        "social_post",
+        "hooks",
+        "keywords",
+    ],
+}
+VIDEO_SPEC_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "concept": {"type": "string"},
+        "hook": {"type": "string"},
+        "script": {"type": "string"},
+        "caption": {"type": "string"},
+        "overlay_text": {"type": "array", "items": {"type": "string"}},
+        "cta": {"type": "string"},
+        "scenes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "index": {"type": "integer"},
+                    "duration_seconds": {"type": "integer"},
+                    "visual": {"type": "string"},
+                    "voiceover": {"type": "string"},
+                    "overlay": {"type": "string"},
+                },
+                "required": [
+                    "index",
+                    "duration_seconds",
+                    "visual",
+                    "voiceover",
+                    "overlay",
+                ],
+            },
+        },
+    },
+    "required": [
+        "concept",
+        "hook",
+        "script",
+        "caption",
+        "overlay_text",
+        "cta",
+        "scenes",
+    ],
+}
+# No gpt-image-2 price was supplied. Keep the new default fail-closed rather
+# than silently charging against a guessed per-image price.
 DEFAULT_IMAGE_COSTS = {"gpt-image-1": Decimal("0.042"), "gpt-image-1-mini": Decimal("0.011")}
 SAFE_CREATIVE_WORDS = {
     "a", "an", "and", "are", "as", "at", "authentic", "background", "be", "board", "by",
@@ -170,6 +239,7 @@ class AICreativeGenerationService:
         fallback_reason: str | None = None,
         validation_reason: str | None = None,
         request_type: str = "provider_attempt",
+        result: TextGenerationResult | None = None,
     ) -> AIRequestTelemetry:
         return AIRequestTelemetry(
             draft_id=draft_id,
@@ -179,6 +249,9 @@ class AICreativeGenerationService:
             provider=provider,
             model=model,
             success=status == "success",
+            prompt_tokens=result.prompt_tokens if result else None,
+            completion_tokens=result.completion_tokens if result else None,
+            total_tokens=result.total_tokens if result else None,
             latency_ms=latency_ms,
             estimated_cost_usd=estimated_cost,
             actual_cost_usd=actual_cost,
@@ -430,6 +503,10 @@ class AICreativeGenerationService:
                 else settings.local_model
             )
             estimate = self._text_estimate(settings, model, prompt)
+            if is_video and provider is None:
+                # No hosted renderer/provider attempt occurs for VIDEO_SPEC
+                # generation, so there is no paid estimate to record.
+                estimate = None
             fallback_reason = None
             payload: dict[str, Any]
             telemetry: AIRequestTelemetry | None = None
@@ -449,13 +526,24 @@ class AICreativeGenerationService:
                         raise
                 started = time.monotonic()
                 try:
-                    result = provider.generate(prompt)
+                    result = provider.generate(
+                        prompt,
+                        schema=VIDEO_SPEC_SCHEMA if is_video else CONTENT_VARIANT_SCHEMA,
+                        schema_name="video_spec" if is_video else "content_variant",
+                    )
                     payload = _json_object(result.text)
                     _safe_structured_text(payload, facts, product)
+                    usage_estimate = _cost(
+                        result.prompt_tokens,
+                        result.completion_tokens,
+                        _pricing(settings, result.model),
+                    )
+                    if usage_estimate is not None:
+                        estimate = usage_estimate
                     telemetry = self._telemetry(
                         draft.id, generation_type, provider.name, result.model, status="success",
                         latency_ms=int((time.monotonic() - started) * 1000),
-                        estimated_cost=estimate,
+                        estimated_cost=estimate, result=result,
                     )
                 except (ProviderUnavailable, AICreativeGenerationError) as exc:
                     fallback_reason = exc.code if isinstance(exc, ProviderUnavailable) else "fact_safety_rejection"

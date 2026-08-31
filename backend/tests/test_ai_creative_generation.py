@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from app.models.domain import (
     AIGeneratedAsset,
     AIRequestTelemetry,
+    AISettings,
     ContentRevision,
     PinCreative,
     PinDraft,
@@ -26,7 +27,7 @@ from test_pin_proposals import add_product, setup_service
 
 class FakeImageProvider:
     name = "openai"
-    model = "gpt-image-1"
+    model = "gpt-image-2"
 
     def __init__(self, image_bytes=None):
         self.image_bytes = image_bytes if image_bytes is not None else png((1024, 1536), (80, 60, 40))
@@ -56,9 +57,11 @@ class FakeTextProvider:
     def __init__(self, payload):
         self.payload = payload
         self.calls = 0
+        self.schemas = []
 
-    def generate(self, prompt):
+    def generate(self, prompt, *, schema=None, schema_name="social_copy"):
         self.calls += 1
+        self.schemas.append((schema_name, schema))
         assert "authentic Shopify source image" in prompt
         return TextGenerationResult(json.dumps(self.payload), self.model, 40, 80, 120)
 
@@ -82,6 +85,15 @@ def prepared(tmp_path, suffix):
     return db, product, proposal_service, draft_id, service
 
 
+def configure_test_image_price(db):
+    settings = db.scalar(select(AISettings))
+    settings.pricing_metadata = {
+        **(settings.pricing_metadata or {}),
+        "gpt-image-2": {"per_image": 0.04},
+    }
+    db.commit()
+
+
 def test_background_generation_composites_authentic_source_and_preserves_legacy_rows(tmp_path):
     db, product, proposal_service, draft_id, service = prepared(tmp_path, "ai-background")
     provider = FakeImageProvider()
@@ -90,6 +102,7 @@ def test_background_generation_composites_authentic_source_and_preserves_legacy_
         enabled=True, provider_mode="hosted_paid", decorative_backgrounds_enabled=True,
         per_request_cost_usd=0.25,
     )
+    configure_test_image_price(db)
     original = db.get(PinDraft, draft_id)
     original_state = (original.title, original.description, original.text_fingerprint)
 
@@ -127,6 +140,7 @@ def test_background_validation_and_per_request_ceiling_fail_without_variants(tmp
         enabled=True, provider_mode="hosted_paid", decorative_backgrounds_enabled=True,
         per_request_cost_usd=0.01,
     )
+    configure_test_image_price(db)
     provider = FakeImageProvider()
     service.image_provider_factory = lambda _: provider
 
@@ -155,6 +169,29 @@ def test_background_validation_and_per_request_ceiling_fail_without_variants(tmp
         row.actual_cost_usd is None
         for row in db.scalars(select(AIRequestTelemetry)).all()
     )
+    db.close()
+
+
+def test_gpt_image_2_is_fail_closed_without_an_explicit_price(tmp_path):
+    db, product, proposal_service, draft_id, service = prepared(tmp_path, "image-2-unpriced")
+    provider = FakeImageProvider()
+    service.image_provider_factory = lambda _: provider
+    AISettingsService(proposal_service.session_factory).update(
+        enabled=True,
+        provider_mode="hosted_paid",
+        decorative_backgrounds_enabled=True,
+    )
+
+    try:
+        service.generate_background(draft_id, "quiet_luxury")
+    except AICreativeGenerationError as exc:
+        assert "pricing is unknown" in str(exc)
+    else:
+        raise AssertionError("Unpriced gpt-image-2 must be blocked before a provider call")
+
+    assert provider.calls == 0
+    assert db.scalar(select(func.count(AIGeneratedAsset.id))) == 0
+    assert db.scalar(select(func.count(ContentRevision.id))) == 0
     db.close()
 
 
@@ -196,6 +233,28 @@ def test_video_script_is_reviewable_spec_not_production_video(tmp_path):
     assert telemetry.actual_cost_usd is None
     assert provider.calls == 1
     assert db.scalar(select(func.count(PinCreative.id))) == 0
+    assert db.scalar(select(func.count(PinPublication.id))) == 0
+    db.close()
+
+
+def test_real_hosted_video_path_uses_reviewable_fallback_without_provider_cost(tmp_path):
+    db, product, proposal_service, draft_id, service = prepared(tmp_path, "hosted-video-disabled")
+    AISettingsService(proposal_service.session_factory).update(
+        enabled=True,
+        provider_mode="hosted_paid",
+    )
+
+    revision = service.generate_structured(draft_id, "video_script", "youtube_shorts")
+
+    telemetry = db.scalar(select(AIRequestTelemetry))
+    assert revision["kind"] == "VIDEO_SPEC"
+    assert revision["generation_mode"] == "deterministic_fallback"
+    assert revision["video_spec"]["rendered_video"] is False
+    assert revision["estimated_cost_usd"] is None
+    assert revision["actual_cost_usd"] is None
+    assert telemetry.provider == "deterministic"
+    assert telemetry.model == "none"
+    assert telemetry.estimated_cost_usd is None
     assert db.scalar(select(func.count(PinPublication.id))) == 0
     db.close()
 
@@ -249,4 +308,10 @@ def test_hosted_content_and_storyboard_keep_estimates_separate_from_actual_cost(
         assert revision["actual_cost_usd"] is None
         assert telemetry.estimated_cost_usd > Decimal("0")
         assert telemetry.actual_cost_usd is None
+        assert telemetry.prompt_tokens == 40
+        assert telemetry.completion_tokens == 80
+        assert telemetry.total_tokens == 120
+        expected_schema_name = "video_spec" if generation_type == "storyboard" else "content_variant"
+        assert provider.schemas[0][0] == expected_schema_name
+        assert provider.schemas[0][1]["additionalProperties"] is False
         db.close()

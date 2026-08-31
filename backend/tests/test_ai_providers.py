@@ -1,10 +1,12 @@
 import json
 from decimal import Decimal
+from types import SimpleNamespace
 
 from sqlalchemy import func, select
 
 from app.models.domain import (
     AIRequestTelemetry,
+    AISettings,
     ContentRevision,
     PinApproval,
     PinCreative,
@@ -17,6 +19,8 @@ from app.services.ai_providers import (
     OpenAITextProvider,
     ProviderUnavailable,
     TextGenerationResult,
+    provider_for_settings,
+    video_provider_for_settings,
 )
 from app.services.ai_regeneration import AIRegenerationError, AIRegenerationService, AISettingsService
 
@@ -111,55 +115,149 @@ def test_openai_adapter_success_failure_and_secret_non_leakage():
     observed = []
 
     def request(method, url, headers, payload, timeout):
-        observed.append(headers)
+        observed.append((method, url, headers, payload, timeout))
         if method == "GET":
-            return 200, {"data": [{"id": "gpt-test"}]}
+            return 200, {"data": [{"id": "gpt-5.6-luna"}]}
         return 200, {
-            "choices": [{"message": {"content": '{"headline":"ok"}'}}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": '{"headline":"ok"}'}],
+            }],
+            "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
         }
 
-    provider = OpenAITextProvider("gpt-test", api_key=secret, requester=request)
+    provider = OpenAITextProvider("gpt-5.6-luna", api_key=secret, requester=request)
     assert provider.health()["reachable"] is True
     assert provider.generate("prompt").total_tokens == 15
-    assert observed[0]["Authorization"] == f"Bearer {secret}"
+    assert observed[0][2]["Authorization"] == f"Bearer {secret}"
+    assert observed[1][1] == "https://api.openai.com/v1/responses"
+    assert observed[1][3]["model"] == "gpt-5.6-luna"
+    assert observed[1][3]["text"]["format"]["type"] == "json_schema"
+    assert observed[1][3]["text"]["format"]["strict"] is True
+    assert "messages" not in observed[1][3]
     assert secret not in json.dumps(provider.health())
 
-    rejected = OpenAITextProvider("gpt-test", api_key=secret, requester=lambda *_: (401, {"message": secret}))
+    rejected = OpenAITextProvider("gpt-5.6-luna", api_key=secret, requester=lambda *_: (401, {"message": secret}))
     status = rejected.health()
     assert status["failure_code"] == "authentication_error"
     assert secret not in json.dumps(status)
 
 
+def test_terra_requires_explicit_selection_and_hosted_video_provider_is_disabled():
+    luna_settings = SimpleNamespace(
+        enabled=True,
+        provider_mode="hosted_paid",
+        hosted_model="gpt-5.6-luna",
+        video_model="sora-2",
+        request_timeout_seconds=30,
+    )
+    terra_settings = SimpleNamespace(
+        **{**vars(luna_settings), "hosted_model": "gpt-5.6-terra"}
+    )
+
+    assert provider_for_settings(luna_settings).model == "gpt-5.6-luna"
+    assert provider_for_settings(terra_settings).model == "gpt-5.6-terra"
+    assert video_provider_for_settings(luna_settings) is None
+    assert video_provider_for_settings(terra_settings) is None
+
+
+def test_luna_provider_failure_does_not_retry_or_escalate_to_terra():
+    calls = []
+
+    def request(method, url, headers, payload, timeout):
+        calls.append((url, payload["model"]))
+        return 500, {}
+
+    provider = OpenAITextProvider(
+        "gpt-5.6-luna",
+        api_key="test-only",
+        requester=request,
+    )
+    try:
+        provider.generate("grounded prompt")
+    except ProviderUnavailable as exc:
+        assert exc.code == "provider_error"
+    else:
+        raise AssertionError("Provider failure must be surfaced")
+
+    assert calls == [("https://api.openai.com/v1/responses", "gpt-5.6-luna")]
+
+
+def test_openai_credentials_cannot_be_routed_to_arbitrary_compatible_endpoints(monkeypatch):
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://attacker.example/v1")
+    observed = []
+    provider = OpenAITextProvider(
+        "gpt-5.6-luna",
+        api_key="test-only",
+        requester=lambda method, url, headers, payload, timeout: (
+            observed.append(url) or (200, {"data": []})
+        ),
+    )
+    assert provider.health()["reachable"] is True
+    assert observed == ["https://api.openai.com/v1/models"]
+
+    for endpoint in (
+        "https://example.com/v1",
+        "http://api.openai.com/v1",
+        "https://user:password@api.openai.com/v1",
+        "https://api.openai.com/v1?proxy=true",
+    ):
+        try:
+            OpenAITextProvider("gpt-5.6-luna", api_key="test-only", base_url=endpoint)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Unsafe OpenAI endpoint was accepted: {endpoint}")
+
+
 def test_openai_image_adapter_requires_inline_output_and_background_safety_gate():
     import base64
 
+    secret = "sk-image-test-secret"
     image_bytes = png((1024, 1536))
     calls = []
 
     def request(method, url, headers, payload, timeout):
-        calls.append((url, payload))
+        calls.append((url, headers, payload))
         if url.endswith("/images/generations"):
             return 200, {"data": [{"b64_json": base64.b64encode(image_bytes).decode()}]}
-        return 200, {"choices": [{"message": {"content": json.dumps({
-            "background_only": True,
-            "contains_product": False,
-            "contains_packaging": False,
-            "contains_logo": False,
-            "contains_text": False,
-            "contains_person": False,
-        })}}]}
+        return 200, {"output": [{
+            "type": "message",
+            "content": [{"type": "output_text", "text": json.dumps({
+                "background_only": True,
+                "contains_product": False,
+                "contains_packaging": False,
+                "contains_logo": False,
+                "contains_text": False,
+                "contains_person": False,
+            })}],
+        }]}
 
     provider = OpenAIImageProvider(
-        "gpt-image-1", api_key="test-only", safety_model="gpt-4o-mini", requester=request,
+        "gpt-image-2", api_key=secret, safety_model="gpt-5.6-luna", requester=request,
     )
     result = provider.generate_background("Muted editorial light.")
+    image_call = calls[0]
+    assert image_call[0] == "https://api.openai.com/v1/images/generations"
+    assert image_call[1]["Authorization"] == f"Bearer {secret}"
+    assert image_call[2]["model"] == "gpt-image-2"
+    assert image_call[2]["size"] == "1024x1536"
+    assert image_call[2]["n"] == 1
+    assert "response_format" not in image_call[2]
+    assert image_call[2]["output_format"] == "png"
+    assert result.image_bytes == image_bytes
+    assert secret not in json.dumps(image_call[2])
+    assert secret not in repr(result)
+
     decision = provider.validate_background(result.image_bytes)
+    safety_call = calls[-1]
     assert decision["background_only"] is True
-    assert "data:image/png;base64," in json.dumps(calls[-1][1])
+    assert safety_call[0] == "https://api.openai.com/v1/responses"
+    assert safety_call[2]["text"]["format"]["type"] == "json_schema"
+    assert "data:image/png;base64," in json.dumps(safety_call[2])
 
     url_only = OpenAIImageProvider(
-        "gpt-image-1", api_key="test-only",
+        "gpt-image-2", api_key="test-only",
         requester=lambda *_: (200, {"data": [{"url": "https://example.com/image.png"}]}),
     )
     try:
@@ -221,14 +319,14 @@ def test_hosted_provider_records_tokens_cost_and_never_persists_secret(monkeypat
     AISettingsService(proposal_service.session_factory).update(
         enabled=True,
         provider_mode="hosted_paid",
-        hosted_model="gpt-4o-mini",
+        hosted_model="gpt-5.6-luna",
         daily_budget_usd=5,
         monthly_budget_usd=20,
     )
     provider = FakeProvider(
         safe_copy(product.title),
         name="openai",
-        model="gpt-4o-mini",
+        model="gpt-5.6-luna",
         usage=(1000, 500, 1500),
     )
     revision = AIRegenerationService(
@@ -238,10 +336,10 @@ def test_hosted_provider_records_tokens_cost_and_never_persists_secret(monkeypat
 
     usage = db.scalar(select(AIRequestTelemetry))
     settings = AISettingsService(proposal_service.session_factory).get()
-    assert revision["estimated_cost_usd"] == 0.00045
+    assert revision["estimated_cost_usd"] == 0.0008
     assert isinstance(revision["estimated_cost_usd"], float)
     assert revision["actual_cost_usd"] is None
-    assert usage.estimated_cost_usd == Decimal("0.00045000")
+    assert usage.estimated_cost_usd == Decimal("0.00080000")
     assert usage.actual_cost_usd is None
     assert isinstance(settings["daily_budget_usd"], float)
     assert settings["credentials_configured"] is True
@@ -308,11 +406,11 @@ def test_paid_budget_blocks_provider_call_and_leaves_local_mode_available():
     AISettingsService(proposal_service.session_factory).update(
         enabled=True,
         provider_mode="hosted_paid",
-        hosted_model="gpt-4o-mini",
+        hosted_model="gpt-5.6-terra",
         daily_budget_usd=0.000001,
         monthly_budget_usd=0.000001,
     )
-    hosted = FakeProvider(safe_copy(product.title), name="openai", model="gpt-4o-mini")
+    hosted = FakeProvider(safe_copy(product.title), name="openai", model="gpt-5.6-terra")
     service = AIRegenerationService(
         proposal_service.session_factory,
         provider_factory=lambda _: hosted,
@@ -338,16 +436,21 @@ def test_paid_budget_blocks_provider_call_and_leaves_local_mode_available():
     db.close()
 
 
-def test_paid_zero_budget_and_unpriced_model_fail_closed_without_provider_calls():
+def test_paid_zero_budget_and_invalid_pricing_fail_closed_without_provider_calls():
     db, product, proposal_service, draft_id = prepared("budget-fail-closed")
-    provider = FakeProvider(safe_copy(product.title), name="openai", model="unknown-paid-model")
+    provider = FakeProvider(safe_copy(product.title), name="openai", model="gpt-5.6-terra")
     AISettingsService(proposal_service.session_factory).update(
         enabled=True,
         provider_mode="hosted_paid",
-        hosted_model="unknown-paid-model",
+        hosted_model="gpt-5.6-terra",
         daily_budget_usd=10,
         monthly_budget_usd=100,
     )
+    settings_row = db.scalar(select(AISettings))
+    settings_row.pricing_metadata = {
+        "gpt-5.6-terra": {"input_per_1m": "not-a-price", "output_per_1m": 12.00},
+    }
+    db.commit()
     revision = AIRegenerationService(
         proposal_service.session_factory,
         provider_factory=lambda _: provider,
@@ -359,13 +462,44 @@ def test_paid_zero_budget_and_unpriced_model_fail_closed_without_provider_calls(
         daily_budget_usd=0,
         monthly_budget_usd=0,
     )
-    priced = FakeProvider(safe_copy(product.title), name="openai", model="gpt-4o-mini")
+    AISettingsService(proposal_service.session_factory).update(hosted_model="gpt-5.6-luna")
+    priced = FakeProvider(safe_copy(product.title), name="openai", model="gpt-5.6-luna")
     zero_revision = AIRegenerationService(
         proposal_service.session_factory,
         provider_factory=lambda _: priced,
     ).regenerate_copy(draft_id)
     assert priced.calls == 0
     assert zero_revision["generation_mode"] == "fallback_budget_exceeded"
+    db.close()
+
+
+def test_terra_pricing_is_explicitly_selectable_and_costed():
+    db, product, proposal_service, draft_id = prepared("terra-pricing")
+    AISettingsService(proposal_service.session_factory).update(
+        enabled=True,
+        provider_mode="hosted_paid",
+        hosted_model="gpt-5.6-terra",
+        daily_budget_usd=5,
+        monthly_budget_usd=20,
+    )
+    provider = FakeProvider(
+        safe_copy(product.title),
+        name="openai",
+        model="gpt-5.6-terra",
+        usage=(1000, 500, 1500),
+    )
+
+    revision = AIRegenerationService(
+        proposal_service.session_factory,
+        provider_factory=lambda _: provider,
+    ).regenerate_copy(draft_id)
+
+    usage = db.scalar(select(AIRequestTelemetry))
+    assert provider.calls == 1
+    assert usage.model == "gpt-5.6-terra"
+    assert revision["estimated_cost_usd"] == 0.008
+    assert usage.estimated_cost_usd == Decimal("0.00800000")
+    assert revision["actual_cost_usd"] is None
     db.close()
 
 

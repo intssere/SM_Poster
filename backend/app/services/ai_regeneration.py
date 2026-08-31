@@ -41,8 +41,15 @@ from app.services.ai_providers import (
 
 PROVIDER_MODES = ("disabled", "local_free", "hosted_paid")
 DEFAULT_PRICING = {
+    "gpt-5.6-luna": {"input_per_1m": 0.20, "output_per_1m": 1.20},
+    # Terra is priced for explicit operator escalation, but is never selected
+    # automatically or reached through fallback.
+    "gpt-5.6-terra": {"input_per_1m": 2.00, "output_per_1m": 12.00},
     "gpt-4o-mini": {"input_per_1m": 0.15, "output_per_1m": 0.60},
 }
+HOSTED_TEXT_MODELS = ("gpt-5.6-luna", "gpt-5.6-terra")
+HOSTED_IMAGE_MODELS = ("gpt-image-2",)
+MODEL_UPGRADE_MARKER = "_openai_production_model_upgrade"
 MONEY_QUANTUM = Decimal("0.00000001")
 UNSUPPORTED_CLAIM_PATTERNS = (
     re.compile(r"\b(?:best|#1|number one|popular|trending|viral|bestseller)\b", re.I),
@@ -357,6 +364,11 @@ class AISettingsService:
     def serialize(row: AISettings) -> dict[str, Any]:
         effective = row.provider_mode if row.enabled else "disabled"
         hosted_configured = bool(os.getenv("OPENAI_API_KEY"))
+        public_pricing = {
+            model: metadata
+            for model, metadata in (row.pricing_metadata or {}).items()
+            if not model.startswith("_")
+        }
         return {
             "enabled": row.enabled,
             "provider_mode": row.provider_mode,
@@ -386,13 +398,21 @@ class AISettingsService:
             "local_base_url": row.local_base_url,
             "local_model": row.local_model,
             "hosted_model": row.hosted_model,
+            "hosted_model_options": [
+                {
+                    "id": model,
+                    "pricing_configured": _pricing(row, model) is not None,
+                    "automatic_selection": model == "gpt-5.6-luna",
+                }
+                for model in HOSTED_TEXT_MODELS
+            ],
             "image_model": row.image_model,
             "video_model": row.video_model,
             "request_timeout_seconds": row.request_timeout_seconds,
             "daily_budget_usd": _json_money(row.daily_budget_usd),
             "monthly_budget_usd": _json_money(row.monthly_budget_usd),
             "per_request_cost_usd": _json_money(row.per_request_cost_usd),
-            "pricing_metadata": row.pricing_metadata or {},
+            "pricing_metadata": public_pricing,
         }
 
     def get(self) -> dict[str, Any]:
@@ -431,6 +451,12 @@ class AISettingsService:
             raise AIRegenerationError("Monthly budget cannot be negative.")
         if per_request_cost_usd is not None and per_request_cost_usd < 0:
             raise AIRegenerationError("Per-request cost ceiling cannot be negative.")
+        normalized_hosted_model = hosted_model.strip() if hosted_model is not None else None
+        if normalized_hosted_model is not None and normalized_hosted_model not in HOSTED_TEXT_MODELS:
+            raise AIRegenerationError("Unsupported hosted text model.")
+        normalized_image_model = image_model.strip() if image_model is not None else None
+        if normalized_image_model is not None and normalized_image_model not in HOSTED_IMAGE_MODELS:
+            raise AIRegenerationError("Unsupported hosted image model.")
         db = self.session_factory()
         try:
             row = self._row(db)
@@ -449,10 +475,22 @@ class AISettingsService:
                     raise AIRegenerationError(str(exc)) from exc
             if local_model is not None:
                 row.local_model = local_model.strip() or row.local_model
-            if hosted_model is not None:
-                row.hosted_model = hosted_model.strip() or row.hosted_model
-            if image_model is not None:
-                row.image_model = image_model.strip() or row.image_model
+            if normalized_hosted_model is not None:
+                row.hosted_model = normalized_hosted_model
+            if normalized_image_model is not None:
+                row.image_model = normalized_image_model
+            if normalized_hosted_model is not None or normalized_image_model is not None:
+                pricing_metadata = dict(row.pricing_metadata or {})
+                marker = dict(pricing_metadata.get(MODEL_UPGRADE_MARKER) or {})
+                if normalized_hosted_model is not None:
+                    marker.pop("hosted_model_from", None)
+                if normalized_image_model is not None:
+                    marker.pop("image_model_from", None)
+                if marker:
+                    pricing_metadata[MODEL_UPGRADE_MARKER] = marker
+                else:
+                    pricing_metadata.pop(MODEL_UPGRADE_MARKER, None)
+                row.pricing_metadata = pricing_metadata
             if video_model is not None:
                 row.video_model = video_model.strip() or row.video_model
             if request_timeout_seconds is not None:
