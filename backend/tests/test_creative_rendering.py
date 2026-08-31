@@ -10,6 +10,7 @@ from app.models.domain import (
     CreativeTemplate, DraftStatus, PinApproval, PinConcept, PinCreative, PinDraft,
     PinPublication, Product, ProductImage, Store,
 )
+from app.api.routes import proposals as proposal_routes
 from app.services.creative_rendering import CreativeRenderService, CreativeStorage, render_png
 from app.services.fingerprints import creative_fingerprint
 from app.services.pin_proposals import PinProposalService
@@ -135,3 +136,18 @@ def test_invalid_source_download_and_decode_failures_are_recorded(tmp_path):
     assert qa["publishing_enabled"] is False
     assert qa["unsupported_claims_introduced"] == []
     db.close()
+
+
+def test_persisted_creative_image_route_serves_png_without_rendering(tmp_path, monkeypatch):
+    creative_id = "707ec195-bd03-490c-98c9-c7f8436eba44"
+    storage = CreativeStorage(tmp_path)
+    contents = png()
+    storage.write_png(creative_id, contents)
+    monkeypatch.setattr(proposal_routes, "CreativeStorage", lambda: storage)
+
+    response = proposal_routes.creative_image(creative_id)
+
+    assert response.path == tmp_path / f"{creative_id}.png"
+    assert response.media_type == "image/png"
+    assert response.headers["cache-control"] == "private, no-store"
+    assert storage.path_for(creative_id).read_bytes() == contents
