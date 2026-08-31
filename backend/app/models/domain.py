@@ -6,7 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean, DateTime, Enum, Float, ForeignKey, Index, Integer, JSON, Numeric, String, Text,
+    Boolean, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text,
     UniqueConstraint, func, text
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -274,9 +274,9 @@ class AISettings(Base):
     image_model: Mapped[str] = mapped_column(String(120), default="gpt-image-1", nullable=False)
     video_model: Mapped[str] = mapped_column(String(120), default="gpt-4o-mini", nullable=False)
     request_timeout_seconds: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
-    daily_budget_usd: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
-    monthly_budget_usd: Mapped[float] = mapped_column(Float, default=10.0, nullable=False)
-    per_request_cost_usd: Mapped[float] = mapped_column(Float, default=0.25, nullable=False)
+    daily_budget_usd: Mapped[Decimal] = mapped_column(Numeric(14, 8), default=Decimal("1.0"), nullable=False)
+    monthly_budget_usd: Mapped[Decimal] = mapped_column(Numeric(14, 8), default=Decimal("10.0"), nullable=False)
+    per_request_cost_usd: Mapped[Decimal] = mapped_column(Numeric(14, 8), default=Decimal("0.25"), nullable=False)
     pricing_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -321,10 +321,13 @@ class ContentRevision(Base):
     intended_channel: Mapped[str] = mapped_column(String(40), default="pinterest", nullable=False)
     content_payload: Mapped[dict | None] = mapped_column(JSON)
     video_spec: Mapped[dict | None] = mapped_column(JSON)
-    background_asset_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    background_asset_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_generated_assets.id", ondelete="SET NULL"), index=True
+    )
+    background_asset: Mapped["AIGeneratedAsset | None"] = relationship(foreign_keys=[background_asset_id])
     ai_telemetry_id: Mapped[str | None] = mapped_column(String(36), index=True)
-    estimated_cost_usd: Mapped[float | None] = mapped_column(Float)
-    actual_cost_usd: Mapped[float | None] = mapped_column(Float)
+    estimated_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(14, 8))
+    actual_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(14, 8))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     __table_args__ = (
         UniqueConstraint("draft_id", "version", name="uq_content_revision_version"),
@@ -361,8 +364,8 @@ class AIRequestTelemetry(Base):
     failure_code: Mapped[str | None] = mapped_column(String(80))
     fallback_reason: Mapped[str | None] = mapped_column(String(120))
     validation_failure_reason: Mapped[str | None] = mapped_column(String(120))
-    estimated_cost_usd: Mapped[float | None] = mapped_column(Float)
-    actual_cost_usd: Mapped[float | None] = mapped_column(Float)
+    estimated_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(14, 8))
+    actual_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(14, 8))
     fallback_used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 

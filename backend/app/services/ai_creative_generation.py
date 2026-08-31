@@ -7,6 +7,7 @@ import json
 import re
 import time
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
@@ -27,6 +28,7 @@ from app.services.ai_regeneration import (
     _claims,
     _facts,
     _cost,
+    _decimal,
     _estimated_tokens,
     _pricing,
     _snapshot,
@@ -44,7 +46,7 @@ BACKGROUND_STYLES = {
     "botanical_editorial": "Refined botanical shadows and soft neutral plaster, airy editorial styling, no literal flowers in the foreground.",
     "bold_color_block": "Sophisticated geometric color blocks with generous negative space and clean high-contrast editorial lighting.",
 }
-DEFAULT_IMAGE_COSTS = {"gpt-image-1": 0.042, "gpt-image-1-mini": 0.011}
+DEFAULT_IMAGE_COSTS = {"gpt-image-1": Decimal("0.042"), "gpt-image-1-mini": Decimal("0.011")}
 SAFE_CREATIVE_WORDS = {
     "a", "an", "and", "are", "as", "at", "authentic", "background", "be", "board", "by",
     "caption", "catalog", "center", "close", "composition",
@@ -162,8 +164,8 @@ class AICreativeGenerationService:
         *,
         status: str,
         latency_ms: int = 0,
-        estimated_cost: float | None = None,
-        actual_cost: float | None = None,
+        estimated_cost: Decimal | None = None,
+        actual_cost: Decimal | None = None,
         failure_code: str | None = None,
         fallback_reason: str | None = None,
         validation_reason: str | None = None,
@@ -192,8 +194,8 @@ class AICreativeGenerationService:
             db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": 842091733})
 
     @staticmethod
-    def _spend(db: Any, since: datetime) -> float:
-        return float(db.scalar(
+    def _spend(db: Any, since: datetime) -> Decimal:
+        return _decimal(db.scalar(
             select(func.coalesce(func.sum(func.coalesce(
                 AIRequestTelemetry.actual_cost_usd,
                 AIRequestTelemetry.estimated_cost_usd,
@@ -202,12 +204,12 @@ class AICreativeGenerationService:
                 AIRequestTelemetry.provider == "openai",
                 AIRequestTelemetry.request_type == "provider_attempt",
             )
-        ) or 0.0)
+        ) or 0)
 
-    def _paid_preflight(self, db: Any, settings: Any, estimate: float | None) -> None:
+    def _paid_preflight(self, db: Any, settings: Any, estimate: Decimal | None) -> None:
         if estimate is None:
             raise AICreativeGenerationError("Paid generation is blocked because model pricing is unknown.")
-        estimated = float(estimate or 0.0)
+        estimated = estimate or Decimal("0")
         if settings.per_request_cost_usd <= 0 or estimated > settings.per_request_cost_usd:
             raise AICreativeGenerationError("Paid generation would exceed the per-request cost ceiling.")
         self._lock_budget(db)
@@ -220,7 +222,7 @@ class AICreativeGenerationService:
             raise AICreativeGenerationError("Monthly hosted AI budget is exhausted.")
 
     @staticmethod
-    def _image_cost(settings: Any) -> float | None:
+    def _image_cost(settings: Any) -> Decimal | None:
         configured = (settings.pricing_metadata or {}).get(settings.image_model, {})
         value = configured.get("per_image") if isinstance(configured, dict) else None
         if value is None:
@@ -228,10 +230,10 @@ class AICreativeGenerationService:
         classifier_cost = _cost(1000, 120, _pricing(settings, settings.hosted_model))
         if value is None or classifier_cost is None:
             return None
-        return round(float(value) + classifier_cost, 8)
+        return _decimal(value) + classifier_cost
 
     @staticmethod
-    def _text_estimate(settings: Any, model: str, prompt: str, max_tokens: int = 1400) -> float | None:
+    def _text_estimate(settings: Any, model: str, prompt: str, max_tokens: int = 1400) -> Decimal | None:
         prompt_tokens, _ = _estimated_tokens(prompt)
         return _cost(prompt_tokens, min(max_tokens, 600), _pricing(settings, model))
 
@@ -335,7 +337,7 @@ class AICreativeGenerationService:
             telemetry = self._telemetry(
                 draft.id, "image_background", "openai", result.model, status="success",
                 latency_ms=int((time.monotonic() - started) * 1000),
-                estimated_cost=estimate, actual_cost=estimate,
+                estimated_cost=estimate,
             )
             db.add(telemetry)
             db.flush()
@@ -359,7 +361,7 @@ class AICreativeGenerationService:
                 provider_mode="hosted_paid", generation_mode="provider_generated_background",
                 generation_type="image_background", intended_channel=channel,
                 reason="background_only_visual_variant", ai_telemetry_id=telemetry.id,
-                estimated_cost_usd=estimate, actual_cost_usd=estimate,
+                estimated_cost_usd=estimate, actual_cost_usd=None,
             )
             db.add(revision)
             db.commit()
@@ -453,7 +455,7 @@ class AICreativeGenerationService:
                     telemetry = self._telemetry(
                         draft.id, generation_type, provider.name, result.model, status="success",
                         latency_ms=int((time.monotonic() - started) * 1000),
-                        estimated_cost=estimate, actual_cost=estimate if provider_mode == "hosted_paid" else 0.0,
+                        estimated_cost=estimate,
                     )
                 except (ProviderUnavailable, AICreativeGenerationError) as exc:
                     fallback_reason = exc.code if isinstance(exc, ProviderUnavailable) else "fact_safety_rejection"
@@ -461,7 +463,6 @@ class AICreativeGenerationService:
                         draft.id, generation_type, getattr(provider, "name", "unknown"), model,
                         status="fallback", latency_ms=int((time.monotonic() - started) * 1000),
                         estimated_cost=estimate,
-                        actual_cost=estimate if provider_mode == "hosted_paid" else 0.0,
                         failure_code=fallback_reason,
                         fallback_reason=fallback_reason,
                         validation_reason=str(exc) if isinstance(exc, AICreativeGenerationError) else None,
@@ -479,7 +480,7 @@ class AICreativeGenerationService:
                 if telemetry is None:
                     telemetry = self._telemetry(
                         draft.id, generation_type, "deterministic", "none", status="fallback",
-                        fallback_reason=fallback_reason, failure_code=fallback_reason, actual_cost=0.0,
+                        fallback_reason=fallback_reason, failure_code=fallback_reason,
                     )
             db.add(telemetry)
             db.flush()

@@ -762,8 +762,8 @@ def _version_payload(revision: ContentRevision, creative: Any, active_id: str | 
         "video_spec": revision.video_spec,
         "background_asset_id": revision.background_asset_id,
         "ai_telemetry_id": revision.ai_telemetry_id,
-        "estimated_cost_usd": revision.estimated_cost_usd,
-        "actual_cost_usd": revision.actual_cost_usd,
+        "estimated_cost_usd": float(revision.estimated_cost_usd) if revision.estimated_cost_usd is not None else None,
+        "actual_cost_usd": float(revision.actual_cost_usd) if revision.actual_cost_usd is not None else None,
         "created_at": revision.created_at,
         "creative": _creative_payload(creative),
     }

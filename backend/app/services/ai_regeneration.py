@@ -6,6 +6,7 @@ import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -42,6 +43,7 @@ PROVIDER_MODES = ("disabled", "local_free", "hosted_paid")
 DEFAULT_PRICING = {
     "gpt-4o-mini": {"input_per_1m": 0.15, "output_per_1m": 0.60},
 }
+MONEY_QUANTUM = Decimal("0.00000001")
 UNSUPPORTED_CLAIM_PATTERNS = (
     re.compile(r"\b(?:best|#1|number one|popular|trending|viral|bestseller)\b", re.I),
     re.compile(r"\b(?:sale|discount|deal|save|limited time|exclusive)\b", re.I),
@@ -293,7 +295,18 @@ def _validate_provider_copy(
         )
 
 
-def _pricing(settings: AISettings, model: str) -> dict[str, float] | None:
+def _decimal(value: Any) -> Decimal:
+    try:
+        return Decimal(str(value)).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise AIRegenerationError("Invalid monetary value.") from exc
+
+
+def _json_money(value: Decimal | float | None) -> float | None:
+    return float(value) if value is not None else None
+
+
+def _pricing(settings: AISettings, model: str) -> dict[str, Decimal] | None:
     configured = (settings.pricing_metadata or {}).get(model)
     if configured is None:
         configured = DEFAULT_PRICING.get(model)
@@ -301,23 +314,26 @@ def _pricing(settings: AISettings, model: str) -> dict[str, float] | None:
         return None
     try:
         return {
-            "input_per_1m": float(configured["input_per_1m"]),
-            "output_per_1m": float(configured["output_per_1m"]),
+            "input_per_1m": Decimal(str(configured["input_per_1m"])),
+            "output_per_1m": Decimal(str(configured["output_per_1m"])),
         }
-    except (KeyError, TypeError, ValueError):
+    except (InvalidOperation, KeyError, TypeError, ValueError):
         return None
 
 
-def _cost(prompt_tokens: int | None, completion_tokens: int | None, pricing: dict[str, float] | None) -> float | None:
+def _cost(
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    pricing: dict[str, Decimal] | None,
+) -> Decimal | None:
     if not pricing:
         return None
     prompt = prompt_tokens or 0
     completion = completion_tokens or 0
-    return round(
-        prompt / 1_000_000 * pricing["input_per_1m"]
-        + completion / 1_000_000 * pricing["output_per_1m"],
-        8,
-    )
+    return (
+        Decimal(prompt) / Decimal(1_000_000) * pricing["input_per_1m"]
+        + Decimal(completion) / Decimal(1_000_000) * pricing["output_per_1m"]
+    ).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
 
 
 def _estimated_tokens(prompt: str) -> tuple[int, int]:
@@ -373,9 +389,9 @@ class AISettingsService:
             "image_model": row.image_model,
             "video_model": row.video_model,
             "request_timeout_seconds": row.request_timeout_seconds,
-            "daily_budget_usd": row.daily_budget_usd,
-            "monthly_budget_usd": row.monthly_budget_usd,
-            "per_request_cost_usd": row.per_request_cost_usd,
+            "daily_budget_usd": _json_money(row.daily_budget_usd),
+            "monthly_budget_usd": _json_money(row.monthly_budget_usd),
+            "per_request_cost_usd": _json_money(row.per_request_cost_usd),
             "pricing_metadata": row.pricing_metadata or {},
         }
 
@@ -442,11 +458,11 @@ class AISettingsService:
             if request_timeout_seconds is not None:
                 row.request_timeout_seconds = request_timeout_seconds
             if daily_budget_usd is not None:
-                row.daily_budget_usd = daily_budget_usd
+                row.daily_budget_usd = _decimal(daily_budget_usd)
             if monthly_budget_usd is not None:
-                row.monthly_budget_usd = monthly_budget_usd
+                row.monthly_budget_usd = _decimal(monthly_budget_usd)
             if per_request_cost_usd is not None:
-                row.per_request_cost_usd = per_request_cost_usd
+                row.per_request_cost_usd = _decimal(per_request_cost_usd)
             db.commit()
             return self.serialize(row)
         except Exception:
@@ -497,8 +513,8 @@ class AISettingsService:
                 .limit(20)
             ).all()
             return {
-                "daily": {"spent_usd": spend(day_start), "limit_usd": row.daily_budget_usd},
-                "monthly": {"spent_usd": spend(month_start), "limit_usd": row.monthly_budget_usd},
+                "daily": {"spent_usd": spend(day_start), "limit_usd": _json_money(row.daily_budget_usd)},
+                "monthly": {"spent_usd": spend(month_start), "limit_usd": _json_money(row.monthly_budget_usd)},
                 "recent": [
                     {
                         "id": item.id,
@@ -515,8 +531,8 @@ class AISettingsService:
                         "failure_code": item.failure_code,
                         "fallback_reason": item.fallback_reason,
                         "validation_failure_reason": item.validation_failure_reason,
-                        "estimated_cost_usd": item.estimated_cost_usd,
-                        "actual_cost_usd": item.actual_cost_usd,
+                        "estimated_cost_usd": _json_money(item.estimated_cost_usd),
+                        "actual_cost_usd": _json_money(item.actual_cost_usd),
                         "fallback_used": item.fallback_used,
                         "created_at": item.created_at,
                     }
@@ -546,7 +562,7 @@ class AIRegenerationService:
         return row.provider_mode if row.enabled else "disabled"
 
     @staticmethod
-    def _spend(db: Any, since: datetime) -> float:
+    def _spend(db: Any, since: datetime) -> Decimal:
         value = db.scalar(
             select(func.coalesce(func.sum(func.coalesce(
                 AIRequestTelemetry.actual_cost_usd,
@@ -557,7 +573,7 @@ class AIRegenerationService:
                 AIRequestTelemetry.created_at >= since,
             )
         )
-        return float(value or 0.0)
+        return _decimal(value or 0)
 
     def _telemetry(
         self,
@@ -567,8 +583,8 @@ class AIRegenerationService:
         model: str,
         started: float,
         result: TextGenerationResult | None = None,
-        estimated_cost: float | None = None,
-        actual_cost: float | None = None,
+        estimated_cost: Decimal | None = None,
+        actual_cost: Decimal | None = None,
         failure_code: str | None = None,
         fallback_used: bool = False,
         draft_id: str | None = None,
@@ -905,8 +921,8 @@ class AIRegenerationService:
             "video_spec": revision.video_spec,
             "background_asset_id": revision.background_asset_id,
             "ai_telemetry_id": revision.ai_telemetry_id,
-            "estimated_cost_usd": revision.estimated_cost_usd,
-            "actual_cost_usd": revision.actual_cost_usd,
+            "estimated_cost_usd": _json_money(revision.estimated_cost_usd),
+            "actual_cost_usd": _json_money(revision.actual_cost_usd),
             "created_at": revision.created_at,
             "creative": cls.creative_payload(creative),
         }

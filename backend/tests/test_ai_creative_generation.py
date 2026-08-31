@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 
 from sqlalchemy import func, select
 
@@ -97,6 +98,7 @@ def test_background_generation_composites_authentic_source_and_preserves_legacy_
     db.expire_all()
     asset = db.get(AIGeneratedAsset, revision["background_asset_id"])
     creative = db.get(PinCreative, revision["creative"]["id"])
+    telemetry = db.scalar(select(AIRequestTelemetry))
     assert provider.calls == 1
     assert revision["kind"] == "IMAGE_BACKGROUND"
     assert revision["generation_type"] == "image_background"
@@ -108,6 +110,11 @@ def test_background_generation_composites_authentic_source_and_preserves_legacy_
     assert asset.provenance["product_image_generated"] is False
     assert creative.render_spec["background"]["asset_id"] == asset.id
     assert creative.render_spec["image"]["shopify_media_id"]
+    assert revision["estimated_cost_usd"] is not None
+    assert revision["actual_cost_usd"] is None
+    assert telemetry.estimated_cost_usd > Decimal("0")
+    assert telemetry.actual_cost_usd is None
+    assert db.get(ContentRevision, revision["id"]).background_asset.id == asset.id
     assert (original.title, original.description, original.text_fingerprint) == original_state
     assert db.scalar(select(func.count(PinPublication.id))) == 0
     db.close()
@@ -144,6 +151,10 @@ def test_background_validation_and_per_request_ceiling_fail_without_variants(tmp
     assert db.scalar(select(func.count(AIGeneratedAsset.id))) == 0
     assert db.scalar(select(func.count(ContentRevision.id))) == 0
     assert db.scalar(select(func.count(AIRequestTelemetry.id))) == 2
+    assert all(
+        row.actual_cost_usd is None
+        for row in db.scalars(select(AIRequestTelemetry)).all()
+    )
     db.close()
 
 
@@ -163,9 +174,11 @@ def test_video_script_is_reviewable_spec_not_production_video(tmp_path):
         }],
     }
     provider = FakeTextProvider(payload)
+    provider.name = "openai"
+    provider.model = "gpt-4o-mini"
     service.video_provider_factory = lambda _: provider
     AISettingsService(proposal_service.session_factory).update(
-        enabled=True, provider_mode="local_free",
+        enabled=True, provider_mode="hosted_paid",
     )
 
     revision = service.generate_structured(draft_id, "video_script", "youtube_shorts")
@@ -176,7 +189,64 @@ def test_video_script_is_reviewable_spec_not_production_video(tmp_path):
     assert revision["video_spec"]["asset_policy"]["authentic_shopify_image_only"] is True
     assert revision["creative"] is None
     assert revision["active"] is False
+    assert revision["estimated_cost_usd"] is not None
+    assert revision["actual_cost_usd"] is None
+    telemetry = db.scalar(select(AIRequestTelemetry))
+    assert telemetry.estimated_cost_usd > Decimal("0")
+    assert telemetry.actual_cost_usd is None
     assert provider.calls == 1
     assert db.scalar(select(func.count(PinCreative.id))) == 0
     assert db.scalar(select(func.count(PinPublication.id))) == 0
     db.close()
+
+
+def test_hosted_content_and_storyboard_keep_estimates_separate_from_actual_cost(tmp_path):
+    for generation_type in ("content_variant", "storyboard"):
+        db, product, proposal_service, draft_id, service = prepared(tmp_path / generation_type, generation_type)
+        if generation_type == "content_variant":
+            payload = {
+                "headline": product.title,
+                "title": product.title,
+                "description": f"Explore {product.title} using authentic catalog details.",
+                "cta": "Explore",
+                "board_description": f"Explore {product.title}.",
+                "social_post": f"Explore {product.title}.",
+                "hooks": [product.title],
+                "keywords": [],
+            }
+        else:
+            payload = {
+                "concept": f"Editorial catalog view for {product.title}",
+                "hook": product.title,
+                "script": f"Explore {product.title} using the authentic catalog image.",
+                "caption": product.title,
+                "overlay_text": [product.title],
+                "cta": "Explore",
+                "scenes": [{
+                    "index": 1,
+                    "duration_seconds": 3,
+                    "visual": "Authentic Shopify product image in center frame.",
+                    "voiceover": product.title,
+                    "overlay": product.title,
+                }],
+            }
+        provider = FakeTextProvider(payload)
+        provider.name = "openai"
+        provider.model = "gpt-4o-mini"
+        if generation_type == "storyboard":
+            service.video_provider_factory = lambda _, provider=provider: provider
+        else:
+            service.text_provider_factory = lambda _, provider=provider: provider
+        AISettingsService(proposal_service.session_factory).update(
+            enabled=True,
+            provider_mode="hosted_paid",
+        )
+
+        revision = service.generate_structured(draft_id, generation_type)
+        telemetry = db.scalar(select(AIRequestTelemetry))
+
+        assert revision["estimated_cost_usd"] is not None
+        assert revision["actual_cost_usd"] is None
+        assert telemetry.estimated_cost_usd > Decimal("0")
+        assert telemetry.actual_cost_usd is None
+        db.close()

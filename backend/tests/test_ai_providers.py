@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 
 from sqlalchemy import func, select
 
@@ -238,9 +239,11 @@ def test_hosted_provider_records_tokens_cost_and_never_persists_secret(monkeypat
     usage = db.scalar(select(AIRequestTelemetry))
     settings = AISettingsService(proposal_service.session_factory).get()
     assert revision["estimated_cost_usd"] == 0.00045
+    assert isinstance(revision["estimated_cost_usd"], float)
     assert revision["actual_cost_usd"] is None
-    assert usage.estimated_cost_usd == 0.00045
+    assert usage.estimated_cost_usd == Decimal("0.00045000")
     assert usage.actual_cost_usd is None
+    assert isinstance(settings["daily_budget_usd"], float)
     assert settings["credentials_configured"] is True
     persisted = json.dumps([
         dict(row) for row in db.execute(select(AIRequestTelemetry.__table__)).mappings()
