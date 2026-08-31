@@ -261,3 +261,38 @@ def test_creative_and_revision_are_rolled_back_together_when_revision_commit_fai
     assert db.scalar(select(func.count(PinCreative.id))) == before
     assert db.scalar(select(func.count(ContentRevision.id))) == 0
     db.close()
+
+
+def test_selected_copy_keeps_original_rendered_creative_in_proposal_gallery_payload(tmp_path):
+    db, store, proposal_service = setup_service()
+    add_product(db, store, suffix="copy-gallery")
+    draft_id = proposal_service.generate_controlled_batch(
+        product_limit=1, max_proposals_per_product=1
+    )["representative_proposals"][0]["id"]
+    renderer = CreativeRenderService(
+        proposal_service.session_factory,
+        downloader=lambda _: png(),
+        storage=CreativeStorage(tmp_path),
+    )
+    assert renderer.render_review_batch(1)["rendered"] == 1
+    service = AIRegenerationService(
+        proposal_service.session_factory,
+        creative_renderer=renderer,
+    )
+    copy_revision = service.regenerate_copy(draft_id)
+    service.select_version(draft_id, copy_revision["id"])
+
+    proposal_payload = next(
+        item for item in proposal_service.list_proposals(status="REVIEW", limit=100)
+        if item["id"] == draft_id
+    )
+
+    assert proposal_payload["active_version"] == 2
+    assert proposal_payload["creative"]["status"] == "RENDERED"
+    assert proposal_payload["creative"]["image_url"]
+    assert draft_id in {
+        item["id"]
+        for item in proposal_service.list_proposals(status="REVIEW", limit=100)
+        if item["creative"] and item["creative"]["status"] == "RENDERED"
+    }
+    db.close()

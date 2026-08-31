@@ -881,7 +881,16 @@ def _serialize_proposal(
             "missing_facts": active.missing_facts,
             "unsupported_claims": active.unsupported_claims,
             "text_fingerprint": active.text_fingerprint,
-            "creative": next((version["creative"] for version in versions or [] if version["id"] == active.id), None),
+            # Copy revisions intentionally do not own artwork. Keep the original
+            # rendered creative visible until a distinct creative revision is selected.
+            "creative": next(
+                (
+                    version["creative"]
+                    for version in versions or []
+                    if version["id"] == active.id
+                ),
+                None,
+            ) or _creative_payload(creative),
         })
     return payload
 
