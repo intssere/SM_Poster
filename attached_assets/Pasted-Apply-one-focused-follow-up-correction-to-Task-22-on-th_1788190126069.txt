@@ -1,0 +1,90 @@
+Apply one focused follow-up correction to Task #22 on the existing branch:
+
+feature/openai-production-model-upgrade
+
+Current expected HEAD:
+
+8ab89bc77d9c2ed4cba648286f6b52b396392e38
+
+Do not amend or rewrite the existing commit or migration 0008.
+
+The independent review found one pricing-metadata issue.
+
+OpenAI's current official GPT-5.6 pricing is:
+
+gpt-5.6-luna: input $0.20 / 1M, output $1.20 / 1M
+gpt-5.6-terra: input $2.00 / 1M, output $12.00 / 1M
+
+The current branch correctly contains Luna pricing, but Terra is currently represented as requiring explicit pricing configuration and is absent from the default pricing map.
+
+Correct this while preserving Terra as an explicit-only escalation model. “Explicit-only” must control whether Terra may be selected/invoked; it must not mean its known official pricing is unavailable.
+
+Create migration 0009 with:
+
+down_revision = "0008"
+
+The migration should update only the Terra pricing metadata to:
+
+input_per_1m = 2.00
+
+output_per_1m = 12.00
+
+Preserve operator-customized unrelated settings and pricing metadata.
+
+Do not rewrite migration 0008, because it has already been applied in the current development database.
+
+Also update the application default pricing map so it contains:
+
+Luna 0.20 / 1.20
+Terra 2.00 / 12.00
+
+Preserve these safeguards:
+
+Terra must not be automatically invoked
+no automatic Luna → Terra retry
+Terra remains selectable only through an explicit future operator/user-controlled escalation path
+budget preflight applies before any Terra request
+estimated costs remain estimated_cost_usd
+actual_cost_usd remains NULL unless genuine billed cost is provided
+AI remains disabled
+PUBLISHING_ENABLED=false
+no image/video/text generation during this task
+no OpenAI request
+no approval
+no publication
+
+Add/update targeted tests proving:
+
+Terra pricing is $2.00/M input and $12.00/M output.
+Terra cost estimation uses those values.
+Terra is still never selected automatically.
+No fallback/retry automatically invokes Terra.
+Migration 0009 upgrades correctly from 0008.
+Downgrade behavior does not destroy unrelated operator metadata.
+
+Run the full backend suite and frontend production build again.
+
+Apply 0009 to the current development database using normal Alembic migration.
+
+Confirm protected live counts remain unchanged and publishing remains disabled.
+
+Commit the correction as a new commit on the existing feature branch.
+
+Push the updated feature branch to GitHub using the same safe authenticated path if normal Git credentials still fail.
+
+Do not force-push.
+Do not create a PR yet.
+
+Report:
+
+previous HEAD
+new commit SHA
+remote branch SHA
+Alembic revision
+Terra pricing metadata
+backend test count
+frontend build result
+protected data counts
+confirmation no OpenAI request occurred
+confirmation no generation occurred
+confirmation no publishing occurred
