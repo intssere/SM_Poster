@@ -2005,6 +2005,48 @@
   text-transform: uppercase;
 }
 
+.revision-actions select {
+  border: 1px solid #4a4438;
+  border-radius: 7px;
+  background: #191813;
+  color: #d9c59a;
+  padding: 7px 8px;
+}
+
+.version-creative-preview {
+  display: block;
+  width: min(180px, 100%);
+  margin-top: 8px;
+  border: 1px solid #3d382e;
+  border-radius: 8px;
+}
+
+.video-spec-preview {
+  max-height: 210px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border: 1px solid #302c24;
+  border-radius: 7px;
+  background: #0c0b09;
+  color: #aaa294;
+  padding: 10px;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.ai-provider-grid .ai-background-toggle {
+  display: flex;
+  grid-column: span 2;
+  align-items: center;
+  align-self: end;
+  min-height: 34px;
+  text-transform: none;
+}
+
+.ai-provider-grid .ai-background-toggle input {
+  width: auto;
+}
+
 .revision-actions button,
 .select-version {
   display: inline-flex;

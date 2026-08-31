@@ -56,7 +56,7 @@ export type CreativePreview = {
 export type ContentVersion = {
   id: string | null
   version: number
-  kind: 'ORIGINAL' | 'COPY' | 'CREATIVE'
+  kind: 'ORIGINAL' | 'COPY' | 'CREATIVE' | 'CONTENT' | 'IMAGE_BACKGROUND' | 'VIDEO_SPEC'
   status: 'REVIEW'
   parent_revision_id?: string | null
   active: boolean
@@ -77,6 +77,11 @@ export type ContentVersion = {
   provider_mode: string
   generation_mode: string
   reason: string
+  generation_type?: 'original' | 'copy' | 'content_variant' | 'image_background' | 'video_script' | 'storyboard'
+  intended_channel?: 'pinterest' | 'instagram' | 'facebook' | 'tiktok' | 'youtube_shorts'
+  content_payload?: Record<string, unknown> | null
+  video_spec?: Record<string, unknown> | null
+  background_asset_id?: string | null
   ai_telemetry_id?: string | null
   estimated_cost_usd?: number | null
   actual_cost_usd?: number | null
@@ -94,6 +99,10 @@ export type AISettings = {
     copy_regeneration: boolean
     creative_template_variants: boolean
     decorative_backgrounds: boolean
+    content_variants: boolean
+    video_scripts: boolean
+    storyboards: boolean
+    production_video_rendering: boolean
     hosted_provider_configured: boolean
   }
   decorative_backgrounds_enabled: boolean
@@ -101,9 +110,12 @@ export type AISettings = {
   local_base_url: string
   local_model: string
   hosted_model: string
+  image_model: string
+  video_model: string
   request_timeout_seconds: number
   daily_budget_usd: number
   monthly_budget_usd: number
+  per_request_cost_usd: number
   pricing_metadata: Record<string, { input_per_1m: number; output_per_1m: number }>
 }
 
@@ -280,28 +292,37 @@ export async function getAIUsage(): Promise<AIUsage> {
 export async function updateAISettings(
   settings: Partial<Pick<AISettings,
     'enabled' | 'provider_mode' | 'local_base_url' | 'local_model' | 'hosted_model' |
-    'request_timeout_seconds' | 'daily_budget_usd' | 'monthly_budget_usd'
+    'image_model' | 'video_model' | 'decorative_backgrounds_enabled' |
+    'request_timeout_seconds' | 'daily_budget_usd' | 'monthly_budget_usd' | 'per_request_cost_usd'
   >>,
 ): Promise<AISettings> {
   return json(await fetch('/api/ai/settings', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      ...settings,
-      decorative_backgrounds_enabled: false,
-    }),
+    body: JSON.stringify(settings),
   }))
 }
 
 export async function regenerateProposal(
   id: string,
-  kind: 'copy' | 'creative',
-  templateKey?: string,
-): Promise<ContentVersion> {
+  kind: 'copy' | 'creative' | 'content_variant' | 'image_background' | 'video_script' | 'storyboard',
+  options: {
+    templateKey?: string
+    styleKey?: string
+    channel?: 'pinterest' | 'instagram' | 'facebook' | 'tiktok' | 'youtube_shorts'
+    count?: number
+  } = {},
+): Promise<ContentVersion | { variants: ContentVersion[] }> {
   return json(await fetch(`/api/pins/proposals/${id}/regenerate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind, template_key: templateKey }),
+    body: JSON.stringify({
+      kind,
+      template_key: options.templateKey,
+      style_key: options.styleKey,
+      channel: options.channel || 'pinterest',
+      count: options.count || 1,
+    }),
   }))
 }
 

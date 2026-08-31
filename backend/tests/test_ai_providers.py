@@ -12,6 +12,7 @@ from app.models.domain import (
 )
 from app.services.ai_providers import (
     OllamaTextProvider,
+    OpenAIImageProvider,
     OpenAITextProvider,
     ProviderUnavailable,
     TextGenerationResult,
@@ -127,6 +128,45 @@ def test_openai_adapter_success_failure_and_secret_non_leakage():
     status = rejected.health()
     assert status["failure_code"] == "authentication_error"
     assert secret not in json.dumps(status)
+
+
+def test_openai_image_adapter_requires_inline_output_and_background_safety_gate():
+    import base64
+
+    image_bytes = png((1024, 1536))
+    calls = []
+
+    def request(method, url, headers, payload, timeout):
+        calls.append((url, payload))
+        if url.endswith("/images/generations"):
+            return 200, {"data": [{"b64_json": base64.b64encode(image_bytes).decode()}]}
+        return 200, {"choices": [{"message": {"content": json.dumps({
+            "background_only": True,
+            "contains_product": False,
+            "contains_packaging": False,
+            "contains_logo": False,
+            "contains_text": False,
+            "contains_person": False,
+        })}}]}
+
+    provider = OpenAIImageProvider(
+        "gpt-image-1", api_key="test-only", safety_model="gpt-4o-mini", requester=request,
+    )
+    result = provider.generate_background("Muted editorial light.")
+    decision = provider.validate_background(result.image_bytes)
+    assert decision["background_only"] is True
+    assert "data:image/png;base64," in json.dumps(calls[-1][1])
+
+    url_only = OpenAIImageProvider(
+        "gpt-image-1", api_key="test-only",
+        requester=lambda *_: (200, {"data": [{"url": "https://example.com/image.png"}]}),
+    )
+    try:
+        url_only.generate_background("Muted editorial light.")
+    except ProviderUnavailable as exc:
+        assert exc.code == "invalid_response"
+    else:
+        raise AssertionError("URL-only image output must not trigger arbitrary image fetching")
 
 
 def test_local_provider_success_persists_usage_and_safe_revision():

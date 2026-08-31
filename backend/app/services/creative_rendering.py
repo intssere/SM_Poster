@@ -142,12 +142,16 @@ def _lines(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, m
     return out
 
 
-def render_png(spec: dict[str, Any], source: Image.Image) -> bytes:
+def render_png(spec: dict[str, Any], source: Image.Image, background: Image.Image | None = None) -> bytes:
     template = spec["template_key"]
     tokens = TEMPLATES.get(template)
     if not tokens:
         raise CreativeRenderError("Unsupported creative template.")
-    canvas = Image.new("RGBA", CANVAS, tokens["background"])
+    canvas = (
+        ImageOps.fit(background.convert("RGBA"), CANVAS, method=Image.Resampling.LANCZOS)
+        if background is not None
+        else Image.new("RGBA", CANVAS, tokens["background"])
+    )
     draw = ImageDraw.Draw(canvas)
     # All four paths share deterministic geometry but retain distinct token palettes.
     image_box = (80, 140 if template != "gift_guide_gift_set" else 180, 920, 870)
@@ -241,6 +245,8 @@ class CreativeRenderService:
         template_key: str,
         *,
         snapshot: dict[str, Any] | None = None,
+        background_bytes: bytes | None = None,
+        background_metadata: dict[str, Any] | None = None,
         db: Any = None,
     ) -> dict[str, Any]:
         """Render one additive variant without changing the proposal or its original creative."""
@@ -276,6 +282,7 @@ class CreativeRenderService:
                     active=True,
                 ))
                 db.flush()
+            background = _decode_source(background_bytes) if background_bytes else None
             result = self._render_one(
                 db,
                 draft,
@@ -283,6 +290,8 @@ class CreativeRenderService:
                 product,
                 template_key_override=template_key,
                 copy_snapshot=snapshot,
+                background=background,
+                background_metadata=background_metadata,
             )
             if result["status"] not in {"RENDERED", "EXISTING"}:
                 raise CreativeRenderError(result.get("error") or "Creative variant could not be rendered.")
@@ -339,6 +348,8 @@ class CreativeRenderService:
         *,
         template_key_override: str | None = None,
         copy_snapshot: dict[str, Any] | None = None,
+        background: Image.Image | None = None,
+        background_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         rationale = concept.rationale or {}
         image_data = rationale.get("authentic_image") or {}
@@ -380,6 +391,8 @@ class CreativeRenderService:
                 "supporting_text": supporting_text, "content_angle": rationale.get("content_angle"),
                 "board": rationale.get("board_mapping"), "tokens": TEMPLATES.get(template_key),
             }
+            if background_metadata:
+                spec["background"] = dict(background_metadata)
             spec["headline"] = headline
             fingerprint = creative_fingerprint(source_image_sha256=source_sha, template_key=template_key, template_version=template.version, text_hash=text_hash, layout_parameters=spec)
             existing = db.scalar(select(PinCreative).where(PinCreative.creative_fingerprint == fingerprint))
@@ -388,7 +401,7 @@ class CreativeRenderService:
             creative = existing or PinCreative(draft_id=draft.id, template_id=template.id, source_image_id=image.id, creative_fingerprint=fingerprint, width=1000, height=1500)
             if not existing: db.add(creative); db.flush()
             started = time.monotonic()
-            png = render_png(spec, source)
+            png = render_png(spec, source, background=background)
             creative.sha256, creative.rendered_url = hashlib.sha256(png).hexdigest(), self.storage.write_png(creative.id, png)
             creative.render_status, creative.render_error, creative.render_spec = "RENDERED", None, json.loads(json.dumps(spec, sort_keys=True))
             creative.rendered_at, creative.render_duration_ms, creative.size_bytes = datetime.now(timezone.utc), int((time.monotonic() - started) * 1000), len(png)

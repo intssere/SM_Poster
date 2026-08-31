@@ -174,9 +174,13 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
         local_base_url: aiSettings.local_base_url,
         local_model: aiSettings.local_model,
         hosted_model: aiSettings.hosted_model,
+        image_model: aiSettings.image_model,
+        video_model: aiSettings.video_model,
+        decorative_backgrounds_enabled: aiSettings.decorative_backgrounds_enabled,
         request_timeout_seconds: aiSettings.request_timeout_seconds,
         daily_budget_usd: aiSettings.daily_budget_usd,
         monthly_budget_usd: aiSettings.monthly_budget_usd,
+        per_request_cost_usd: aiSettings.per_request_cost_usd,
       })
       setAISettings(updated)
       const [providerStatus, usage] = await Promise.all([getAIStatus(), getAIUsage()])
@@ -210,7 +214,7 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
     <section className="proposal-toolbar"><div className="proposal-status-tabs">{['REVIEW', 'APPROVED', 'REJECTED'].map((value) => <button key={value} className={status === value ? 'active' : ''} onClick={() => setStatus(value)}>{value}</button>)}</div><span className="proposal-safety"><ShieldAlert size={15} /> Publishing disabled — approval never publishes</span></section>
     <section className="ai-provider-panel">
       <div className="ai-provider-heading">
-        <div><Sparkles size={16} /><span><strong>AI-assisted copy regeneration</strong><small>Disabled by default · text only · every revision stays in REVIEW</small></span></div>
+        <div><Sparkles size={16} /><span><strong>AI-assisted content studio</strong><small>Disabled by default · immutable variants · every result stays in REVIEW</small></span></div>
         <span className={`provider-health ${aiStatus?.reachable ? 'reachable' : 'offline'}`}><span className="status-dot" />{aiStatus?.provider || 'disabled'} · {aiStatus?.reachable ? 'connected' : aiStatus?.provider === 'disabled' ? 'disabled' : 'unavailable'}</span>
       </div>
       <div className="ai-provider-grid">
@@ -223,10 +227,16 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
           <label className="wide">Ollama endpoint<input value={aiSettings.local_base_url} onChange={(event) => editAI('local_base_url', event.target.value)} /></label>
           <label>Local model<input value={aiSettings.local_model} onChange={(event) => editAI('local_model', event.target.value)} /></label>
         </>}
-        {aiSettings?.provider_mode === 'hosted_paid' && <label>OpenAI model<input value={aiSettings.hosted_model} onChange={(event) => editAI('hosted_model', event.target.value)} /></label>}
+        {aiSettings?.provider_mode === 'hosted_paid' && <>
+          <label>OpenAI text model<input value={aiSettings.hosted_model} onChange={(event) => editAI('hosted_model', event.target.value)} /></label>
+          <label>OpenAI image model<input value={aiSettings.image_model} onChange={(event) => editAI('image_model', event.target.value)} /></label>
+          <label>Video-spec text model<input value={aiSettings.video_model} onChange={(event) => editAI('video_model', event.target.value)} /></label>
+          <label className="ai-background-toggle"><input type="checkbox" checked={aiSettings.decorative_backgrounds_enabled} onChange={(event) => editAI('decorative_backgrounds_enabled', event.target.checked)} />Enable background-only images</label>
+        </>}
         <label>Timeout (seconds)<input type="number" min="1" max="120" value={aiSettings?.request_timeout_seconds || 30} onChange={(event) => editAI('request_timeout_seconds', Number(event.target.value))} /></label>
         <label>Daily paid cap ($)<input type="number" min="0" step="0.01" value={aiSettings?.daily_budget_usd || 0} onChange={(event) => editAI('daily_budget_usd', Number(event.target.value))} /></label>
         <label>Monthly paid cap ($)<input type="number" min="0" step="0.01" value={aiSettings?.monthly_budget_usd || 0} onChange={(event) => editAI('monthly_budget_usd', Number(event.target.value))} /></label>
+        <label>Per-request ceiling ($)<input type="number" min="0" step="0.01" value={aiSettings?.per_request_cost_usd || 0} onChange={(event) => editAI('per_request_cost_usd', Number(event.target.value))} /></label>
       </div>
       <div className="ai-provider-footer">
         <span>{aiStatus?.message || 'Checking provider configuration…'}</span>
@@ -234,7 +244,7 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
         <button className="secondary-action" onClick={() => void checkAIProvider()} disabled={savingAI}>Check connection</button>
         <button className="primary-action" onClick={() => void saveAISettings()} disabled={savingAI || !aiSettings}>{savingAI ? 'Saving…' : 'Save settings'}</button>
       </div>
-      <small className="ai-provider-safety">OpenAI credentials are read only from the server’s OPENAI_API_KEY Replit secret and are never returned. Creative variants remain deterministic and use verified Shopify product imagery; generative imagery is disabled.</small>
+      <small className="ai-provider-safety">OpenAI credentials are read only from the server’s OPENAI_API_KEY Replit secret and are never returned. Image generation is restricted to decorative backgrounds composited beneath the verified Shopify product image. Video actions create reviewable scripts and storyboards only—no MP4 is rendered or published.</small>
     </section>
     {message && <p className={message.type === 'error' ? 'error-message' : 'catalog-message'} role="status">{message.text}</p>}
     {creativeQa && <div className="creative-qa-strip"><span className="eyebrow">RENDER QA</span>{Object.entries(creativeQa).slice(0, 4).map(([key, value]) => <span key={key}><b>{key.replaceAll('_', ' ')}</b> {pretty(value)}</span>)}</div>}

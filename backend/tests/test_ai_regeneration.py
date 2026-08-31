@@ -24,7 +24,7 @@ from test_creative_rendering import png
 from test_pin_proposals import add_product, setup_service
 
 
-def test_ai_settings_are_disabled_by_default_and_never_accept_background_generation():
+def test_ai_settings_are_disabled_by_default_and_background_generation_requires_opt_in():
     db, store, proposal_service = setup_service()
     settings = AISettingsService(proposal_service.session_factory)
 
@@ -33,7 +33,8 @@ def test_ai_settings_are_disabled_by_default_and_never_accept_background_generat
     assert default["enabled"] is False
     assert default["effective_mode"] == "disabled"
     assert default["credentials_configured"] is False
-    assert default["capabilities"]["decorative_backgrounds"] is False
+    assert default["capabilities"]["decorative_backgrounds"] is True
+    assert default["decorative_backgrounds_enabled"] is False
     local = settings.update(
         enabled=True,
         provider_mode="local_free",
@@ -41,16 +42,17 @@ def test_ai_settings_are_disabled_by_default_and_never_accept_background_generat
     )
     assert local["effective_mode"] == "local_free"
     assert local["credentials_configured"] is False
-    try:
-        settings.update(
-            enabled=True,
-            provider_mode="hosted_paid",
-            decorative_backgrounds_enabled=True,
-        )
-    except AIRegenerationError as exc:
-        assert "future safe provider" in str(exc)
-    else:
-        raise AssertionError("Decorative AI backgrounds must remain unavailable")
+    hosted = settings.update(
+        enabled=True,
+        provider_mode="hosted_paid",
+        decorative_backgrounds_enabled=True,
+        image_model="gpt-image-1",
+        video_model="gpt-4o-mini",
+        per_request_cost_usd=0.25,
+    )
+    assert hosted["decorative_backgrounds_enabled"] is True
+    assert hosted["image_model"] == "gpt-image-1"
+    assert hosted["per_request_cost_usd"] == 0.25
     assert db.scalar(select(func.count(AISettings.id))) == 1
     db.close()
 

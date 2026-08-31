@@ -58,14 +58,20 @@ class AISettingsUpdate(BaseModel):
     local_base_url: str | None = Field(default=None, min_length=8, max_length=500)
     local_model: str | None = Field(default=None, min_length=1, max_length=120)
     hosted_model: str | None = Field(default=None, min_length=1, max_length=120)
+    image_model: str | None = Field(default=None, min_length=1, max_length=120)
+    video_model: str | None = Field(default=None, min_length=1, max_length=120)
     request_timeout_seconds: int | None = Field(default=None, ge=1, le=120)
     daily_budget_usd: float | None = Field(default=None, ge=0, le=10_000)
     monthly_budget_usd: float | None = Field(default=None, ge=0, le=100_000)
+    per_request_cost_usd: float | None = Field(default=None, ge=0, le=10_000)
 
 
 class RegenerationRequest(BaseModel):
-    kind: Literal["copy", "creative"]
+    kind: Literal["copy", "creative", "content_variant", "image_background", "video_script", "storyboard"]
     template_key: str | None = Field(default=None, max_length=120)
+    style_key: str | None = Field(default=None, max_length=80)
+    channel: Literal["pinterest", "instagram", "facebook", "tiktok", "youtube_shorts"] = "pinterest"
+    count: int = Field(default=1, ge=1, le=4)
 
 
 class VersionSelectionRequest(BaseModel):

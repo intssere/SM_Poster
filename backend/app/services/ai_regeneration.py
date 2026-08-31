@@ -358,17 +358,24 @@ class AISettingsService:
             "capabilities": {
                 "copy_regeneration": True,
                 "creative_template_variants": True,
-                "decorative_backgrounds": False,
+                "decorative_backgrounds": True,
+                "content_variants": True,
+                "video_scripts": True,
+                "storyboards": True,
+                "production_video_rendering": False,
                 "hosted_provider_configured": hosted_configured,
             },
-            "decorative_backgrounds_enabled": False,
+            "decorative_backgrounds_enabled": row.decorative_backgrounds_enabled,
             "credentials_configured": hosted_configured,
             "local_base_url": row.local_base_url,
             "local_model": row.local_model,
             "hosted_model": row.hosted_model,
+            "image_model": row.image_model,
+            "video_model": row.video_model,
             "request_timeout_seconds": row.request_timeout_seconds,
             "daily_budget_usd": row.daily_budget_usd,
             "monthly_budget_usd": row.monthly_budget_usd,
+            "per_request_cost_usd": row.per_request_cost_usd,
             "pricing_metadata": row.pricing_metadata or {},
         }
 
@@ -390,21 +397,24 @@ class AISettingsService:
         local_base_url: str | None = None,
         local_model: str | None = None,
         hosted_model: str | None = None,
+        image_model: str | None = None,
+        video_model: str | None = None,
         request_timeout_seconds: int | None = None,
         daily_budget_usd: float | None = None,
         monthly_budget_usd: float | None = None,
+        per_request_cost_usd: float | None = None,
     ) -> dict[str, Any]:
         requested_mode = provider_mode
         if requested_mode is not None and requested_mode not in PROVIDER_MODES:
             raise AIRegenerationError("Unsupported AI provider mode.")
-        if decorative_backgrounds_enabled:
-            raise AIRegenerationError("Decorative AI backgrounds are reserved for a future safe provider.")
         if request_timeout_seconds is not None and not 1 <= request_timeout_seconds <= 120:
             raise AIRegenerationError("Request timeout must be between 1 and 120 seconds.")
         if daily_budget_usd is not None and daily_budget_usd < 0:
             raise AIRegenerationError("Daily budget cannot be negative.")
         if monthly_budget_usd is not None and monthly_budget_usd < 0:
             raise AIRegenerationError("Monthly budget cannot be negative.")
+        if per_request_cost_usd is not None and per_request_cost_usd < 0:
+            raise AIRegenerationError("Per-request cost ceiling cannot be negative.")
         db = self.session_factory()
         try:
             row = self._row(db)
@@ -414,7 +424,8 @@ class AISettingsService:
                 row.enabled = requested_mode != "disabled"
             if requested_mode is not None:
                 row.provider_mode = requested_mode
-            row.decorative_backgrounds_enabled = False
+            if decorative_backgrounds_enabled is not None:
+                row.decorative_backgrounds_enabled = decorative_backgrounds_enabled
             if local_base_url is not None:
                 try:
                     row.local_base_url = normalize_local_base_url(local_base_url)
@@ -424,12 +435,18 @@ class AISettingsService:
                 row.local_model = local_model.strip() or row.local_model
             if hosted_model is not None:
                 row.hosted_model = hosted_model.strip() or row.hosted_model
+            if image_model is not None:
+                row.image_model = image_model.strip() or row.image_model
+            if video_model is not None:
+                row.video_model = video_model.strip() or row.video_model
             if request_timeout_seconds is not None:
                 row.request_timeout_seconds = request_timeout_seconds
             if daily_budget_usd is not None:
                 row.daily_budget_usd = daily_budget_usd
             if monthly_budget_usd is not None:
                 row.monthly_budget_usd = monthly_budget_usd
+            if per_request_cost_usd is not None:
+                row.per_request_cost_usd = per_request_cost_usd
             db.commit()
             return self.serialize(row)
         except Exception:
@@ -488,12 +505,16 @@ class AISettingsService:
                         "provider": item.provider,
                         "model": item.model,
                         "operation": item.operation,
+                        "request_type": item.request_type,
+                        "generation_type": item.generation_type,
                         "prompt_tokens": item.prompt_tokens,
                         "completion_tokens": item.completion_tokens,
                         "total_tokens": item.total_tokens,
                         "latency_ms": item.latency_ms,
                         "success": item.success,
                         "failure_code": item.failure_code,
+                        "fallback_reason": item.fallback_reason,
+                        "validation_failure_reason": item.validation_failure_reason,
                         "estimated_cost_usd": item.estimated_cost_usd,
                         "actual_cost_usd": item.actual_cost_usd,
                         "fallback_used": item.fallback_used,
@@ -550,11 +571,16 @@ class AIRegenerationService:
         actual_cost: float | None = None,
         failure_code: str | None = None,
         fallback_used: bool = False,
+        draft_id: str | None = None,
+        generation_type: str = "copy",
     ) -> AIRequestTelemetry:
         telemetry = AIRequestTelemetry(
             provider=provider,
             model=model,
             operation="copy_regeneration",
+            request_type="generation",
+            generation_type=generation_type,
+            draft_id=draft_id,
             prompt_tokens=result.prompt_tokens if result else None,
             completion_tokens=result.completion_tokens if result else None,
             total_tokens=result.total_tokens if result else None,
@@ -564,6 +590,8 @@ class AIRegenerationService:
             estimated_cost_usd=estimated_cost,
             actual_cost_usd=actual_cost,
             fallback_used=fallback_used,
+            fallback_reason=failure_code if fallback_used else None,
+            validation_failure_reason="fact_safety_rejected" if failure_code == "fact_safety_rejected" else None,
         )
         db.add(telemetry)
         db.flush()
@@ -602,6 +630,8 @@ class AIRegenerationService:
                 failure_code = "pricing_unavailable"
             elif settings.daily_budget_usd <= 0 or settings.monthly_budget_usd <= 0:
                 failure_code = "budget_exceeded"
+            elif settings.per_request_cost_usd <= 0 or estimated_cost > settings.per_request_cost_usd:
+                failure_code = "per_request_cost_exceeded"
             elif daily + estimated_cost > settings.daily_budget_usd or monthly + estimated_cost > settings.monthly_budget_usd:
                 failure_code = "budget_exceeded"
             if failure_code:
@@ -869,6 +899,11 @@ class AIRegenerationService:
             "provider_mode": revision.provider_mode,
             "generation_mode": revision.generation_mode,
             "reason": revision.reason,
+            "generation_type": revision.generation_type,
+            "intended_channel": revision.intended_channel,
+            "content_payload": revision.content_payload,
+            "video_spec": revision.video_spec,
+            "background_asset_id": revision.background_asset_id,
             "ai_telemetry_id": revision.ai_telemetry_id,
             "estimated_cost_usd": revision.estimated_cost_usd,
             "actual_cost_usd": revision.actual_cost_usd,
@@ -891,7 +926,9 @@ class AIRegenerationService:
                 "parent_revision_id": None, "active": active_id is None,
                 **{key: original_snapshot[key] for key in ("headline", "title", "description", "alt_text", "cta", "creative_template", "creative_template_key", "text_fingerprint", "creative_fingerprint", "facts_used", "warnings", "missing_facts", "unsupported_claims", "provenance")},
                 "provider_mode": "deterministic_original", "generation_mode": "original_persisted",
-                "reason": "original_persisted", "created_at": draft.created_at,
+                "reason": "original_persisted", "generation_type": "original",
+                "intended_channel": "pinterest", "content_payload": None, "video_spec": None,
+                "background_asset_id": None, "created_at": draft.created_at,
                 "creative": self.creative_payload(original),
             }
             revisions = []
