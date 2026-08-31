@@ -33,6 +33,9 @@ export type PinProposal = {
   variation_reason?: string | null
   created_at?: string | null
   creative: CreativePreview | null
+  active_revision_id?: string | null
+  active_version?: number
+  versions?: ContentVersion[]
 }
 
 export type CreativePreview = {
@@ -48,6 +51,105 @@ export type CreativePreview = {
   sha256?: string | null
   template_version?: number | null
   specification?: Record<string, unknown> | null
+}
+
+export type ContentVersion = {
+  id: string | null
+  version: number
+  kind: 'ORIGINAL' | 'COPY' | 'CREATIVE' | 'CONTENT' | 'IMAGE_BACKGROUND' | 'VIDEO_SPEC'
+  status: 'REVIEW'
+  parent_revision_id?: string | null
+  active: boolean
+  headline: string
+  title: string
+  description: string
+  alt_text: string
+  cta: string
+  creative_template: string
+  creative_template_key: string
+  text_fingerprint: string
+  creative_fingerprint?: string | null
+  facts_used: Record<string, unknown>
+  warnings: string[]
+  missing_facts: string[]
+  unsupported_claims: string[]
+  provenance: Record<string, unknown>
+  provider_mode: string
+  generation_mode: string
+  reason: string
+  generation_type?: 'original' | 'copy' | 'content_variant' | 'image_background' | 'video_script' | 'storyboard'
+  intended_channel?: 'pinterest' | 'instagram' | 'facebook' | 'tiktok' | 'youtube_shorts'
+  content_payload?: Record<string, unknown> | null
+  video_spec?: Record<string, unknown> | null
+  background_asset_id?: string | null
+  ai_telemetry_id?: string | null
+  estimated_cost_usd?: number | null
+  actual_cost_usd?: number | null
+  created_at?: string | null
+  creative: CreativePreview | null
+}
+
+export type AISettings = {
+  enabled: boolean
+  provider_mode: 'disabled' | 'local_free' | 'hosted_paid'
+  effective_mode: 'disabled' | 'local_free' | 'hosted_paid'
+  provider_label: string
+  available_provider_modes: Array<{ id: string; label: string; available: boolean }>
+  capabilities: {
+    copy_regeneration: boolean
+    creative_template_variants: boolean
+    decorative_backgrounds: boolean
+    content_variants: boolean
+    video_scripts: boolean
+    storyboards: boolean
+    production_video_rendering: boolean
+    hosted_provider_configured: boolean
+  }
+  decorative_backgrounds_enabled: boolean
+  credentials_configured: boolean
+  local_base_url: string
+  local_model: string
+  hosted_model: string
+  image_model: string
+  video_model: string
+  request_timeout_seconds: number
+  daily_budget_usd: number
+  monthly_budget_usd: number
+  per_request_cost_usd: number
+  pricing_metadata: Record<string, { input_per_1m: number; output_per_1m: number }>
+}
+
+export type AIProviderStatus = {
+  provider: 'disabled' | 'ollama' | 'openai'
+  configured: boolean
+  reachable: boolean
+  model?: string | null
+  model_available: boolean
+  message: string
+  failure_code?: string
+  effective_mode: AISettings['effective_mode']
+  timeout_seconds: number
+}
+
+export type AIUsage = {
+  daily: { spent_usd: number; limit_usd: number }
+  monthly: { spent_usd: number; limit_usd: number }
+  recent: Array<{
+    id: string
+    provider: string
+    model: string
+    operation: string
+    prompt_tokens?: number | null
+    completion_tokens?: number | null
+    total_tokens?: number | null
+    latency_ms: number
+    success: boolean
+    failure_code?: string | null
+    estimated_cost_usd?: number | null
+    actual_cost_usd?: number | null
+    fallback_used: boolean
+    created_at?: string | null
+  }>
 }
 
 export type CreativeQa = Record<string, unknown>
@@ -173,4 +275,64 @@ export async function renderCreatives(limit = 12): Promise<CreativeQa> {
 
 export async function getCreativeQa(): Promise<CreativeQa> {
   return json(await fetch('/api/pins/creatives/qa'))
+}
+
+export async function getAISettings(): Promise<AISettings> {
+  return json(await fetch('/api/ai/settings'))
+}
+
+export async function getAIStatus(): Promise<AIProviderStatus> {
+  return json(await fetch('/api/ai/status'))
+}
+
+export async function getAIUsage(): Promise<AIUsage> {
+  return json(await fetch('/api/ai/usage'))
+}
+
+export async function updateAISettings(
+  settings: Partial<Pick<AISettings,
+    'enabled' | 'provider_mode' | 'local_base_url' | 'local_model' | 'hosted_model' |
+    'image_model' | 'video_model' | 'decorative_backgrounds_enabled' |
+    'request_timeout_seconds' | 'daily_budget_usd' | 'monthly_budget_usd' | 'per_request_cost_usd'
+  >>,
+): Promise<AISettings> {
+  return json(await fetch('/api/ai/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  }))
+}
+
+export async function regenerateProposal(
+  id: string,
+  kind: 'copy' | 'creative' | 'content_variant' | 'image_background' | 'video_script' | 'storyboard',
+  options: {
+    templateKey?: string
+    styleKey?: string
+    channel?: 'pinterest' | 'instagram' | 'facebook' | 'tiktok' | 'youtube_shorts'
+    count?: number
+  } = {},
+): Promise<ContentVersion | { variants: ContentVersion[] }> {
+  return json(await fetch(`/api/pins/proposals/${id}/regenerate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      kind,
+      template_key: options.templateKey,
+      style_key: options.styleKey,
+      channel: options.channel || 'pinterest',
+      count: options.count || 1,
+    }),
+  }))
+}
+
+export async function selectProposalVersion(id: string, versionId: string): Promise<{
+  active_version_number: number
+  publishing_enabled: false
+}> {
+  return json(await fetch(`/api/pins/proposals/${id}/active-version`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ version_id: versionId }),
+  }))
 }

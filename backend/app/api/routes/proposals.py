@@ -3,7 +3,19 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
-from app.schemas.pins import CreativeRenderBatchRequest, ProposalDecision, ProposalGenerateRequest
+from app.schemas.pins import (
+    CreativeRenderBatchRequest,
+    ProposalDecision,
+    ProposalGenerateRequest,
+    RegenerationRequest,
+    VersionSelectionRequest,
+)
+from app.services.ai_regeneration import AIRegenerationError, AIRegenerationService
+from app.services.ai_creative_generation import (
+    AICreativeGenerationError,
+    AICreativeGenerationService,
+    AIGeneratedAssetStorage,
+)
 from app.services.creative_rendering import CreativeRenderError, CreativeRenderService
 from app.services.pin_proposals import PinProposalService
 
@@ -65,6 +77,56 @@ def creative_qa():
     return CreativeRenderService().qa_report()
 
 
+@router.get("/proposals/{draft_id}/versions")
+def proposal_versions(draft_id: str):
+    try:
+        return AIRegenerationService().versions(draft_id)
+    except AIRegenerationError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@router.post("/proposals/{draft_id}/regenerate")
+def regenerate_proposal(draft_id: str, body: RegenerationRequest):
+    service = AIRegenerationService()
+    try:
+        if body.kind == "copy":
+            variants = [service.regenerate_copy(draft_id) for _ in range(body.count)]
+        elif body.kind == "creative":
+            if not body.template_key:
+                raise AIRegenerationError("A creative template is required for a creative variant.")
+            if body.count != 1:
+                raise AIRegenerationError("Deterministic creative template variants are created one at a time.")
+            variants = [service.regenerate_creative(draft_id, body.template_key)]
+        else:
+            generation = AICreativeGenerationService()
+            if body.kind == "image_background":
+                if not body.style_key:
+                    raise AICreativeGenerationError("A background style is required.")
+                variants = [
+                    generation.generate_background(draft_id, body.style_key, body.channel)
+                    for _ in range(body.count)
+                ]
+            else:
+                variants = [
+                    generation.generate_structured(draft_id, body.kind, body.channel)
+                    for _ in range(body.count)
+                ]
+        return variants[0] if len(variants) == 1 else {"variants": variants}
+    except (AIRegenerationError, AICreativeGenerationError, CreativeRenderError) as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@router.post("/proposals/{draft_id}/active-version")
+def select_proposal_version(draft_id: str, body: VersionSelectionRequest):
+    try:
+        return AIRegenerationService().select_version(draft_id, body.version_id)
+    except AIRegenerationError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
 @router.get("/creatives/{creative_id}/image")
 def creative_image(creative_id: str):
     storage = CreativeRenderService().storage
@@ -74,6 +136,18 @@ def creative_image(creative_id: str):
         raise HTTPException(status_code=404, detail="Creative image was not found.") from exc
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Creative image was not found.")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, no-store"})
+
+
+@router.get("/ai-assets/{asset_id}/image")
+def generated_asset_image(asset_id: str):
+    storage = AIGeneratedAssetStorage()
+    try:
+        path = storage.path_for(asset_id)
+    except AICreativeGenerationError as exc:
+        raise HTTPException(status_code=404, detail="Generated asset was not found.") from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Generated asset was not found.")
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, no-store"})
 
 

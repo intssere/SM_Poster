@@ -142,12 +142,16 @@ def _lines(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, m
     return out
 
 
-def render_png(spec: dict[str, Any], source: Image.Image) -> bytes:
+def render_png(spec: dict[str, Any], source: Image.Image, background: Image.Image | None = None) -> bytes:
     template = spec["template_key"]
     tokens = TEMPLATES.get(template)
     if not tokens:
         raise CreativeRenderError("Unsupported creative template.")
-    canvas = Image.new("RGBA", CANVAS, tokens["background"])
+    canvas = (
+        ImageOps.fit(background.convert("RGBA"), CANVAS, method=Image.Resampling.LANCZOS)
+        if background is not None
+        else Image.new("RGBA", CANVAS, tokens["background"])
+    )
     draw = ImageDraw.Draw(canvas)
     # All four paths share deterministic geometry but retain distinct token palettes.
     image_box = (80, 140 if template != "gift_guide_gift_set" else 180, 920, 870)
@@ -235,6 +239,73 @@ class CreativeRenderService:
         finally:
             db.close()
 
+    def render_variant(
+        self,
+        draft_id: str,
+        template_key: str,
+        *,
+        snapshot: dict[str, Any] | None = None,
+        background_bytes: bytes | None = None,
+        background_metadata: dict[str, Any] | None = None,
+        db: Any = None,
+    ) -> dict[str, Any]:
+        """Render one additive variant without changing the proposal or its original creative."""
+        if template_key not in TEMPLATES:
+            raise CreativeRenderError("Unsupported creative template.")
+        owns_session = db is None
+        db = db or self.session_factory()
+        try:
+            row = db.execute(
+                select(PinDraft, PinConcept, Product)
+                .join(PinConcept, PinConcept.id == PinDraft.concept_id)
+                .join(Product, Product.id == PinConcept.product_id)
+                .where(PinDraft.id == draft_id)
+            ).first()
+            if not row:
+                raise CreativeRenderError("Proposal was not found.")
+            draft, concept, product = row
+            if draft.status != DraftStatus.READY_FOR_REVIEW:
+                raise CreativeRenderError("Only proposals in REVIEW can receive a creative variant.")
+            template = db.scalar(
+                select(CreativeTemplate).where(
+                    CreativeTemplate.key == template_key,
+                    CreativeTemplate.version == 1,
+                )
+            )
+            if not template:
+                db.add(CreativeTemplate(
+                    key=template_key,
+                    version=1,
+                    name=template_key.replace("_", " ").title(),
+                    renderer="pillow",
+                    definition={"renderer_active": True, "authentic_product_image_required": True},
+                    active=True,
+                ))
+                db.flush()
+            background = _decode_source(background_bytes) if background_bytes else None
+            result = self._render_one(
+                db,
+                draft,
+                concept,
+                product,
+                template_key_override=template_key,
+                copy_snapshot=snapshot,
+                background=background,
+                background_metadata=background_metadata,
+            )
+            if result["status"] not in {"RENDERED", "EXISTING"}:
+                raise CreativeRenderError(result.get("error") or "Creative variant could not be rendered.")
+            if owns_session:
+                db.commit()
+            return result
+        except Exception:
+            if owns_session:
+                db.rollback()
+            raise
+        finally:
+            if owns_session:
+                db.close()
+
     def qa_report(self) -> dict[str, Any]:
         db = self.session_factory()
         try:
@@ -268,11 +339,22 @@ class CreativeRenderService:
         finally:
             db.close()
 
-    def _render_one(self, db: Any, draft: PinDraft, concept: PinConcept, product: Product) -> dict[str, Any]:
+    def _render_one(
+        self,
+        db: Any,
+        draft: PinDraft,
+        concept: PinConcept,
+        product: Product,
+        *,
+        template_key_override: str | None = None,
+        copy_snapshot: dict[str, Any] | None = None,
+        background: Image.Image | None = None,
+        background_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         rationale = concept.rationale or {}
         image_data = rationale.get("authentic_image") or {}
         image = db.get(ProductImage, image_data.get("id"))
-        template_key = rationale.get("creative_template_key")
+        template_key = template_key_override or rationale.get("creative_template_key")
         template = db.scalar(select(CreativeTemplate).where(CreativeTemplate.key == template_key, CreativeTemplate.version == rationale.get("template_version", 1)))
         parsed = urlparse(image.source_url) if image else None
         if not image or image.product_id != concept.product_id or not image.shopify_media_id or not image.editorial_eligible or image.source_url != image_data.get("url") or not parsed or parsed.scheme != "https" or parsed.hostname != "cdn.shopify.com" or not template:
@@ -290,6 +372,10 @@ class CreativeRenderService:
             source_sha = hashlib.sha256(raw).hexdigest()
             if expected_checksum and expected_checksum != source_sha:
                 raise CreativeRenderError("Downloaded image does not match the persisted source checksum.")
+            copy = copy_snapshot or {}
+            headline = copy.get("headline") or rationale["headline"]
+            supporting_text = copy.get("title") or draft.title
+            text_hash = copy.get("text_fingerprint") or draft.text_fingerprint
             spec = {
                 "version": 1, "design_token_version": 1,
                 "draft_id": draft.id, "proposal_id": draft.id, "concept_id": concept.id,
@@ -302,17 +388,20 @@ class CreativeRenderService:
                 },
                 "canvas": {"width": 1000, "height": 1500}, "template_key": template_key,
                 "template_version": template.version, "headline": rationale["headline"],
-                "supporting_text": draft.title, "content_angle": rationale.get("content_angle"),
+                "supporting_text": supporting_text, "content_angle": rationale.get("content_angle"),
                 "board": rationale.get("board_mapping"), "tokens": TEMPLATES.get(template_key),
             }
-            fingerprint = creative_fingerprint(source_image_sha256=source_sha, template_key=template_key, template_version=template.version, text_hash=draft.text_fingerprint, layout_parameters=spec)
+            if background_metadata:
+                spec["background"] = dict(background_metadata)
+            spec["headline"] = headline
+            fingerprint = creative_fingerprint(source_image_sha256=source_sha, template_key=template_key, template_version=template.version, text_hash=text_hash, layout_parameters=spec)
             existing = db.scalar(select(PinCreative).where(PinCreative.creative_fingerprint == fingerprint))
             if existing and existing.render_status == "RENDERED":
                 return {"draft_id": draft.id, "creative_id": existing.id, "status": "EXISTING", "image_url": existing.rendered_url}
             creative = existing or PinCreative(draft_id=draft.id, template_id=template.id, source_image_id=image.id, creative_fingerprint=fingerprint, width=1000, height=1500)
             if not existing: db.add(creative); db.flush()
             started = time.monotonic()
-            png = render_png(spec, source)
+            png = render_png(spec, source, background=background)
             creative.sha256, creative.rendered_url = hashlib.sha256(png).hexdigest(), self.storage.write_png(creative.id, png)
             creative.render_status, creative.render_error, creative.render_spec = "RENDERED", None, json.loads(json.dumps(spec, sort_keys=True))
             creative.rendered_at, creative.render_duration_ms, creative.size_bytes = datetime.now(timezone.utc), int((time.monotonic() - started) * 1000), len(png)
