@@ -16,7 +16,7 @@ from app.services.ai_creative_generation import (
     AICreativeGenerationService,
     AIGeneratedAssetStorage,
 )
-from app.services.creative_rendering import CreativeRenderError, CreativeRenderService
+from app.services.creative_rendering import CreativeRenderError, CreativeRenderService, CreativeStorage
 from app.services.pin_proposals import PinProposalService
 
 
@@ -148,7 +148,7 @@ def select_proposal_version(draft_id: str, body: VersionSelectionRequest):
 
 @router.get("/creatives/{creative_id}/image")
 def creative_image(creative_id: str):
-    storage = CreativeRenderService().storage
+    storage = CreativeStorage()
     try:
         path = storage.path_for(creative_id)
     except CreativeRenderError as exc:
