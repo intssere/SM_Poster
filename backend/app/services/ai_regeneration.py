@@ -215,7 +215,10 @@ def _provider_prompt(
         "Create one alternate social copy edit for the catalog product below. "
         "This is TEXT ONLY: do not generate, redraw, describe invented, or alter product imagery. "
         "Use only the supplied facts. Do not add claims about popularity, performance, discounts, seasons, "
-        "moods, exclusivity, or rankings. Return JSON with exactly headline, title, description, and alt_text. "
+        "moods, exclusivity, or rankings. Neutral references to a listed price band, generic product link, "
+        "and grounded product category are permitted. Do not state URLs, internal metadata, exact prices, "
+        "inventory, IDs, specifications, discounts, rankings, or unsupported facts. "
+        "Return JSON with exactly headline, title, description, and alt_text. "
         "Keep headline/title/alt_text <= 500 characters and description <= 800 characters.\n"
         f"Persisted facts: {json.dumps(facts, sort_keys=True)}\n"
         f"Approved proposal context: {json.dumps(approved_context, sort_keys=True)}\n"
@@ -275,6 +278,17 @@ def _identity_words(value: str) -> set[str]:
         "a", "an", "and", "at", "by", "de", "for", "from", "in", "men", "of", "on",
         "oz", "professional", "the", "unisex", "with", "women",
     }
+
+
+def _catalog_reference_words(product: Product, intelligence: ProductIntelligence) -> set[str]:
+    words = {"listed", "provided"}
+    if intelligence.price_band:
+        words.update({"price", "band"})
+    if _clean(product.product_url):
+        words.add("link")
+    if "tools" in _words(product.product_type):
+        words.add("tool")
+    return words
 
 
 def _validate_provider_copy(
@@ -350,7 +364,12 @@ def _validate_provider_copy(
         "in is it its look meet new of on online or our pick product products see select "
         "shop shopify shown social spotlight style the this to using verified view with"
     )
-    unsupported_words = sorted(_words(combined) - _words(trusted_text) - safe_connective)
+    unsupported_words = sorted(
+        _words(combined)
+        - _words(trusted_text)
+        - safe_connective
+        - _catalog_reference_words(product, intelligence)
+    )
     if unsupported_words:
         raise AIRegenerationError(
             "Safe regeneration introduced unsupported catalog wording: "

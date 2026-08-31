@@ -32,6 +32,7 @@ from app.services.ai_regeneration import (
     AIRegenerationError,
     AIRegenerationService,
     AISettingsService,
+    _provider_prompt,
     _validate_provider_copy,
 )
 
@@ -724,6 +725,45 @@ def test_adagio_copy_accepts_typed_price_band_threshold():
     )
 
 
+def test_adagio_copy_accepts_grounded_catalog_reference_language():
+    validate_adagio(
+        description="Listed price band under $50. Provided product link for this Adagio tool."
+    )
+
+
+def test_catalog_reference_terms_require_typed_grounding():
+    product, intelligence, rationale = adagio_context()
+    output = {
+        "headline": "New arrival from Adagio",
+        "title": "Adagio 2,500 Marble Blow Dryer",
+        "description": "Listed price band for this Adagio product.",
+        "alt_text": "Adagio marble blow dryer shown in the authentic product image.",
+    }
+    intelligence.price_band = None
+    with pytest.raises(AIRegenerationError, match="unsupported catalog wording"):
+        _validate_provider_copy(output, product, intelligence, rationale)
+
+    product, intelligence, rationale = adagio_context()
+    output["description"] = "Provided product link for this Adagio product."
+    product.product_url = None
+    with pytest.raises(AIRegenerationError, match="unsupported catalog wording"):
+        _validate_provider_copy(output, product, intelligence, rationale)
+
+    product, intelligence, rationale = adagio_context()
+    output["description"] = "This Adagio tool is a new arrival."
+    product.product_type = "Hair Dryer"
+    with pytest.raises(AIRegenerationError, match="unsupported catalog wording"):
+        _validate_provider_copy(output, product, intelligence, rationale)
+
+
+def test_provider_prompt_describes_safe_catalog_reference_boundary():
+    product, intelligence, rationale = adagio_context()
+    prompt = _provider_prompt(product, intelligence, rationale)
+    assert "listed price band" in prompt
+    assert "generic product link" in prompt
+    assert "Do not state URLs, internal metadata, exact prices, inventory, IDs, specifications" in prompt
+
+
 def test_adagio_copy_does_not_trust_url_vocabulary_or_changed_numeric_signs():
     product, intelligence, rationale = adagio_context()
     product.product_url = "https://diamondshelf.example/products/waterproof-adagio"
@@ -752,8 +792,24 @@ def test_adagio_copy_rejects_numbers_not_in_typed_trusted_facts(unsupported_numb
 @pytest.mark.parametrize(
     "description, error",
     [
+        (
+            "Adagio product link https://diamondshelf.us/products/bx25001.",
+            "unsupported catalog wording",
+        ),
+        (
+            "Adagio product link https://cdn.shopify.com/adagio.jpg?v=1787155001.",
+            "numeric claim",
+        ),
+        ("Adagio is listed at a price of $36.99.", "numeric claim"),
+        ("Adagio has 99 units in inventory.", "numeric claim"),
+        ("Adagio product ID is gid://shopify/Product/38881933557959.", "numeric claim"),
         ("Adagio includes an Italian leather case.", "unsupported catalog wording"),
+        ("Adagio includes an ionic coating.", "unsupported catalog wording"),
+        ("Adagio comes in a black finish.", "unsupported catalog wording"),
         ("Adagio features ionic technology and a 2000W motor.", "numeric claim"),
+        ("Adagio offers salon-quality drying.", "unsupported claim"),
+        ("Adagio is on sale.", "unsupported claim"),
+        ("Adagio is #1.", "numeric claim"),
         ("The number one Adagio dryer delivers salon-quality results.", "unsupported claim"),
     ],
 )
