@@ -70,6 +70,16 @@ PHASE0_CREATIVE_COLUMNS = (
     "created_at",
 )
 
+PHASE0_APPROVAL_COLUMNS = (
+    "id", "draft_id", "decision", "decided_by", "note", "created_at",
+)
+
+PHASE0_PUBLICATION_COLUMNS = (
+    "id", "draft_id", "creative_id", "board_id", "publication_fingerprint",
+    "status", "scheduled_for", "attempt_started_at", "pinterest_pin_id",
+    "provider_response", "error_code", "error_message", "published_at", "created_at",
+)
+
 
 def phase0_metadata() -> sa.MetaData:
     """Build the immutable Phase 0 schema without later model additions."""
@@ -93,8 +103,23 @@ def phase0_metadata() -> sa.MetaData:
         sa.UniqueConstraint("creative_fingerprint", name="uq_pin_creative_fingerprint"),
     )
 
+    approval = source.tables["pin_approvals"]
+    sa.Table(
+        "pin_approvals",
+        metadata,
+        *(approval.c[name]._copy() for name in PHASE0_APPROVAL_COLUMNS),
+    )
+
+    publication = source.tables["pin_publications"]
+    sa.Table(
+        "pin_publications",
+        metadata,
+        *(publication.c[name]._copy() for name in PHASE0_PUBLICATION_COLUMNS),
+        sa.UniqueConstraint("publication_fingerprint", name="uq_pin_publication_fingerprint"),
+    )
+
     for name in PHASE0_TABLES:
-        if name not in {"stores", "products", "pin_creatives"}:
+        if name not in {"stores", "products", "pin_creatives", "pin_approvals", "pin_publications"}:
             source.tables[name].to_metadata(metadata)
     return metadata
 

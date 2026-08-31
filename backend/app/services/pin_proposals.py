@@ -1305,9 +1305,19 @@ class PinProposalService:
                 raise ValueError("Proposal was not found.")
             if draft.status != DraftStatus.READY_FOR_REVIEW:
                 raise ValueError("Only proposals in REVIEW can be approved or rejected.")
+            revision = None
+            creative = None
+            version_id = "original"
+            if decision == "APPROVED":
+                from app.services.publication_identity import resolve_active_identity
+
+                revision, creative, version_id = resolve_active_identity(db, draft)
             draft.status = DraftStatus.APPROVED if decision == "APPROVED" else DraftStatus.REJECTED
             db.add(PinApproval(
                 draft_id=draft.id,
+                revision_id=revision.id if revision else None,
+                creative_id=creative.id if creative else None,
+                approved_version_id=version_id,
                 decision=decision,
                 decided_by="manual_dashboard_action",
                 note=note,

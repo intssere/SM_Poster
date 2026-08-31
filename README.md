@@ -68,6 +68,16 @@ Compose `db` service and is separate from Replit PostgreSQL.
 
 `PUBLISHING_ENABLED=false` by default. Phase 1 must remain generation/review focused. Production publishing is a Phase 2 capability after Pinterest OAuth/testing/access requirements are satisfied.
 
+## Authoritative project documentation
+
+- [Project state](docs/PROJECT_STATE.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Decisions](docs/DECISIONS.md)
+- [Session handoff](docs/HANDOFF.md)
+- [Changelog](docs/CHANGELOG.md)
+- [Security and safety](docs/SECURITY.md)
+
 ## Shopify catalog sync
 
 The Products screen reads the normalized catalog from PostgreSQL and shows Shopify

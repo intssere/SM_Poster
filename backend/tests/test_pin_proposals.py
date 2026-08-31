@@ -131,6 +131,25 @@ def add_product(
     return product
 
 
+def add_review_creative(db, draft_id, suffix="review"):
+    draft = db.get(PinDraft, draft_id)
+    concept = db.get(PinConcept, draft.concept_id)
+    template = db.scalar(select(CreativeTemplate).order_by(CreativeTemplate.id))
+    image = db.scalar(
+        select(ProductImage).where(ProductImage.product_id == concept.product_id)
+    )
+    creative = PinCreative(
+        draft_id=draft.id,
+        template_id=template.id,
+        source_image_id=image.id,
+        creative_fingerprint=f"{suffix:0<64}"[:64],
+        render_status="RENDERED",
+    )
+    db.add(creative)
+    db.commit()
+    return creative
+
+
 def test_controlled_proposal_uses_authentic_image_and_fact_safe_copy():
     db, store, service = setup_service()
     product = add_product(db, store, suffix="1")
@@ -246,6 +265,7 @@ def test_approval_requires_review_and_creates_audit_decision():
     add_product(db, store, suffix="1")
     report = service.generate_controlled_batch(product_limit=1, max_proposals_per_product=1)
     draft_id = report["representative_proposals"][0]["id"]
+    creative = add_review_creative(db, draft_id)
 
     result = service.decide(draft_id, "APPROVED", "Fact-safe and ready.")
 
@@ -258,6 +278,9 @@ def test_approval_requires_review_and_creates_audit_decision():
     approval = db.scalar(select(PinApproval).where(PinApproval.draft_id == draft_id))
     assert approval.decision == "APPROVED"
     assert approval.decided_by == "manual_dashboard_action"
+    assert approval.approved_version_id == "original"
+    assert approval.revision_id is None
+    assert approval.creative_id == creative.id
     try:
         service.decide(draft_id, "REJECTED")
     except ValueError as exc:

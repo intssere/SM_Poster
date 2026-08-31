@@ -1,0 +1,21 @@
+# Decisions
+
+## Authentic Shopify product imagery
+
+Branded products and packaging must come from persisted Shopify product images. AI may create approved background/supporting material only and may not recreate products, packages, or logos.
+
+## Human control
+
+Generation never implies selection, approval, scheduling, or publication. Version selection is explicit. Approval binds the exact selected revision/creative and does not cover future revisions.
+
+## Immutable publication identity
+
+Publication rows are snapshots, not joins to mutable current state. Nullable v2 columns preserve historical rows without fabricating provenance. Duplicate publication identity is enforced by a deterministic unique fingerprint.
+
+## Provider policy
+
+Hosted text defaults to `gpt-5.6-luna`; `gpt-5.6-terra` is explicit-only escalation. Images use `gpt-image-2`. Hosted failures fail closed. Video remains a reviewable specification with rendering disabled.
+
+## Publishing policy
+
+`PUBLISHING_ENABLED=false` is authoritative. No Pinterest API, scheduling worker, auto-approval, or automatic publication is permitted in the current phase.
