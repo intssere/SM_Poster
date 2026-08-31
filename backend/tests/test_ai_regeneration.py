@@ -40,7 +40,7 @@ def test_ai_settings_are_disabled_by_default_and_background_generation_requires_
     assert default["image_model"] == "gpt-image-2"
     assert default["hosted_model_options"] == [
         {"id": "gpt-5.6-luna", "pricing_configured": True, "automatic_selection": True},
-        {"id": "gpt-5.6-terra", "pricing_configured": False, "automatic_selection": False},
+        {"id": "gpt-5.6-terra", "pricing_configured": True, "automatic_selection": False},
     ]
     local = settings.update(
         enabled=True,

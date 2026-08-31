@@ -42,8 +42,9 @@ from app.services.ai_providers import (
 PROVIDER_MODES = ("disabled", "local_free", "hosted_paid")
 DEFAULT_PRICING = {
     "gpt-5.6-luna": {"input_per_1m": 0.20, "output_per_1m": 1.20},
-    # Terra is explicit-only and intentionally has no invented price. It
-    # remains blocked by preflight until an approved price is configured.
+    # Terra is priced for explicit operator escalation, but is never selected
+    # automatically or reached through fallback.
+    "gpt-5.6-terra": {"input_per_1m": 2.00, "output_per_1m": 12.00},
     "gpt-4o-mini": {"input_per_1m": 0.15, "output_per_1m": 0.60},
 }
 HOSTED_TEXT_MODELS = ("gpt-5.6-luna", "gpt-5.6-terra")
