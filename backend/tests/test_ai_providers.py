@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 
 from app.models.domain import (
     AIRequestTelemetry,
+    AISettings,
     ContentRevision,
     PinApproval,
     PinCreative,
@@ -391,11 +392,11 @@ def test_paid_budget_blocks_provider_call_and_leaves_local_mode_available():
     AISettingsService(proposal_service.session_factory).update(
         enabled=True,
         provider_mode="hosted_paid",
-        hosted_model="gpt-5.6-luna",
+        hosted_model="gpt-5.6-terra",
         daily_budget_usd=0.000001,
         monthly_budget_usd=0.000001,
     )
-    hosted = FakeProvider(safe_copy(product.title), name="openai", model="gpt-5.6-luna")
+    hosted = FakeProvider(safe_copy(product.title), name="openai", model="gpt-5.6-terra")
     service = AIRegenerationService(
         proposal_service.session_factory,
         provider_factory=lambda _: hosted,
@@ -421,7 +422,7 @@ def test_paid_budget_blocks_provider_call_and_leaves_local_mode_available():
     db.close()
 
 
-def test_paid_zero_budget_and_unpriced_model_fail_closed_without_provider_calls():
+def test_paid_zero_budget_and_invalid_pricing_fail_closed_without_provider_calls():
     db, product, proposal_service, draft_id = prepared("budget-fail-closed")
     provider = FakeProvider(safe_copy(product.title), name="openai", model="gpt-5.6-terra")
     AISettingsService(proposal_service.session_factory).update(
@@ -431,6 +432,11 @@ def test_paid_zero_budget_and_unpriced_model_fail_closed_without_provider_calls(
         daily_budget_usd=10,
         monthly_budget_usd=100,
     )
+    settings_row = db.scalar(select(AISettings))
+    settings_row.pricing_metadata = {
+        "gpt-5.6-terra": {"input_per_1m": "not-a-price", "output_per_1m": 12.00},
+    }
+    db.commit()
     revision = AIRegenerationService(
         proposal_service.session_factory,
         provider_factory=lambda _: provider,
@@ -450,6 +456,36 @@ def test_paid_zero_budget_and_unpriced_model_fail_closed_without_provider_calls(
     ).regenerate_copy(draft_id)
     assert priced.calls == 0
     assert zero_revision["generation_mode"] == "fallback_budget_exceeded"
+    db.close()
+
+
+def test_terra_pricing_is_explicitly_selectable_and_costed():
+    db, product, proposal_service, draft_id = prepared("terra-pricing")
+    AISettingsService(proposal_service.session_factory).update(
+        enabled=True,
+        provider_mode="hosted_paid",
+        hosted_model="gpt-5.6-terra",
+        daily_budget_usd=5,
+        monthly_budget_usd=20,
+    )
+    provider = FakeProvider(
+        safe_copy(product.title),
+        name="openai",
+        model="gpt-5.6-terra",
+        usage=(1000, 500, 1500),
+    )
+
+    revision = AIRegenerationService(
+        proposal_service.session_factory,
+        provider_factory=lambda _: provider,
+    ).regenerate_copy(draft_id)
+
+    usage = db.scalar(select(AIRequestTelemetry))
+    assert provider.calls == 1
+    assert usage.model == "gpt-5.6-terra"
+    assert revision["estimated_cost_usd"] == 0.008
+    assert usage.estimated_cost_usd == Decimal("0.00800000")
+    assert revision["actual_cost_usd"] is None
     db.close()
 
 
