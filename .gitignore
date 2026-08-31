@@ -1,0 +1,14 @@
+.env
+.venv/
+.pythonlibs/
+__pycache__/
+.pytest_cache/
+node_modules/
+dist/
+*.tsbuildinfo
+*.pyc
+*.log
+.DS_Store
+screenshots/
+storage/
+backend/generated-creatives/
