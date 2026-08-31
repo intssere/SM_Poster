@@ -1,0 +1,316 @@
+from __future__ import annotations
+
+import enum
+import uuid
+from datetime import datetime
+from decimal import Decimal
+
+from sqlalchemy import (
+    Boolean, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text,
+    UniqueConstraint, func, text
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.base import Base
+
+
+def uuid_str() -> str:
+    return str(uuid.uuid4())
+
+
+class DraftStatus(str, enum.Enum):
+    GENERATED = "GENERATED"
+    READY_FOR_REVIEW = "READY_FOR_REVIEW"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
+class PublicationStatus(str, enum.Enum):
+    APPROVED = "APPROVED"
+    SCHEDULED = "SCHEDULED"
+    PUBLISHING = "PUBLISHING"
+    PUBLISHED = "PUBLISHED"
+    PUBLISH_FAILED = "PUBLISH_FAILED"
+    PUBLISH_UNKNOWN = "PUBLISH_UNKNOWN"
+    CANCELLED = "CANCELLED"
+
+
+class Store(Base):
+    __tablename__ = "stores"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    shop_domain: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    market: Mapped[str] = mapped_column(String(20), default="US")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Product(Base):
+    __tablename__ = "products"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    shopify_product_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    handle: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    vendor: Mapped[str | None] = mapped_column(String(255))
+    product_type: Mapped[str | None] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(30), default="ACTIVE")
+    product_url: Mapped[str] = mapped_column(Text, nullable=False)
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    attributes: Mapped[dict] = mapped_column(JSON, default=dict)
+    collections: Mapped[list] = mapped_column(JSON, default=list)
+    shopify_data: Mapped[dict] = mapped_column(JSON, default=dict)
+    inventory_total: Mapped[int] = mapped_column(Integer, default=0)
+    price_min: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    compare_at_min: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    manual_priority: Mapped[int] = mapped_column(Integer, default=0)
+    excluded_from_editorial: Mapped[bool] = mapped_column(Boolean, default=False)
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    shopify_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    shopify_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    __table_args__ = (UniqueConstraint("store_id", "shopify_product_id", name="uq_product_shopify"),)
+
+
+class ProductIntelligence(Base):
+    __tablename__ = "product_intelligence"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    product_id: Mapped[str] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    brand: Mapped[str | None] = mapped_column(String(255))
+    audience: Mapped[str | None] = mapped_column(String(100))
+    designer: Mapped[str | None] = mapped_column(String(255))
+    niche: Mapped[str | None] = mapped_column(String(255))
+    arabian_classification: Mapped[str | None] = mapped_column(String(100))
+    fragrance_family: Mapped[str | None] = mapped_column(String(255))
+    fragrance_notes: Mapped[list] = mapped_column(JSON, default=list)
+    concentration: Mapped[str | None] = mapped_column(String(100))
+    size: Mapped[str | None] = mapped_column(String(100))
+    price_band: Mapped[str | None] = mapped_column(String(50))
+    gift_suitability: Mapped[str | None] = mapped_column(String(50))
+    season: Mapped[str | None] = mapped_column(String(100))
+    occasion: Mapped[str | None] = mapped_column(String(100))
+    image_quality: Mapped[float] = mapped_column(Numeric(4, 3), default=0)
+    image_available: Mapped[bool] = mapped_column(Boolean, default=False)
+    inventory_eligible: Mapped[bool] = mapped_column(Boolean, default=False)
+    eligibility_score: Mapped[float] = mapped_column(Numeric(6, 2), default=0)
+    eligibility_status: Mapped[str] = mapped_column(String(30), default="INELIGIBLE")
+    eligibility_reasons: Mapped[list] = mapped_column(JSON, default=list)
+    normalization_status: Mapped[str] = mapped_column(String(30), default="UNKNOWN")
+    normalized_data: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CatalogSyncJob(Base):
+    __tablename__ = "catalog_sync_jobs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED", index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    total_seen: Mapped[int] = mapped_column(Integer, default=0)
+    products_imported: Mapped[int] = mapped_column(Integer, default=0)
+    products_updated: Mapped[int] = mapped_column(Integer, default=0)
+    products_failed: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    provider_operation_id: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (
+        Index(
+            "uq_catalog_sync_active",
+            "store_id",
+            unique=True,
+            postgresql_where=text("status IN ('QUEUED', 'RUNNING')"),
+            sqlite_where=text("status IN ('QUEUED', 'RUNNING')"),
+        ),
+    )
+
+
+class ProductVariant(Base):
+    __tablename__ = "product_variants"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
+    shopify_variant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    sku: Mapped[str | None] = mapped_column(String(255), index=True)
+    title: Mapped[str | None] = mapped_column(String(500))
+    price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    compare_at_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    inventory_quantity: Mapped[int] = mapped_column(Integer, default=0)
+    available: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class ProductImage(Base):
+    __tablename__ = "product_images"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
+    shopify_media_id: Mapped[str | None] = mapped_column(String(64))
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    alt_text: Mapped[str | None] = mapped_column(Text)
+    width: Mapped[int | None] = mapped_column(Integer)
+    height: Mapped[int | None] = mapped_column(Integer)
+    source_sha256: Mapped[str | None] = mapped_column(String(64), index=True)
+    perceptual_hash: Mapped[str | None] = mapped_column(String(128), index=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    editorial_eligible: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Board(Base):
+    __tablename__ = "boards"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    pinterest_board_id: Mapped[str | None] = mapped_column(String(80), index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(255), nullable=False)
+    rules: Mapped[dict] = mapped_column(JSON, default=dict)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    __table_args__ = (UniqueConstraint("store_id", "slug", name="uq_board_slug"),)
+
+
+class ContentAngle(Base):
+    __tablename__ = "content_angles"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    key: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    rules: Mapped[dict] = mapped_column(JSON, default=dict)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class KeywordCluster(Base):
+    __tablename__ = "keyword_clusters"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    key: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    keywords: Mapped[list] = mapped_column(JSON, default=list)
+    intent: Mapped[str | None] = mapped_column(String(100))
+
+
+class CreativeTemplate(Base):
+    __tablename__ = "creative_templates"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    key: Mapped[str] = mapped_column(String(120), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    renderer: Mapped[str] = mapped_column(String(50), default="satori")
+    definition: Mapped[dict] = mapped_column(JSON, default=dict)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    __table_args__ = (UniqueConstraint("key", "version", name="uq_template_version"),)
+
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(255), nullable=False)
+    utm_campaign: Mapped[str] = mapped_column(String(255), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    __table_args__ = (UniqueConstraint("store_id", "slug", name="uq_campaign_slug"),)
+
+
+class PinConcept(Base):
+    __tablename__ = "pin_concepts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
+    content_angle_id: Mapped[str] = mapped_column(ForeignKey("content_angles.id"), index=True)
+    keyword_cluster_id: Mapped[str | None] = mapped_column(ForeignKey("keyword_clusters.id"), index=True)
+    board_id: Mapped[str | None] = mapped_column(ForeignKey("boards.id"), index=True)
+    campaign_id: Mapped[str | None] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    rationale: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PinDraft(Base):
+    __tablename__ = "pin_drafts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    concept_id: Mapped[str] = mapped_column(ForeignKey("pin_concepts.id", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    alt_text: Mapped[str] = mapped_column(Text, nullable=False)
+    destination_url: Mapped[str] = mapped_column(Text, nullable=False)
+    utm_url: Mapped[str] = mapped_column(Text, nullable=False)
+    text_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[DraftStatus] = mapped_column(Enum(DraftStatus), default=DraftStatus.GENERATED)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (UniqueConstraint("concept_id", "version", name="uq_draft_version"),)
+
+
+class PinCreative(Base):
+    __tablename__ = "pin_creatives"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    draft_id: Mapped[str] = mapped_column(ForeignKey("pin_drafts.id", ondelete="CASCADE"), index=True)
+    template_id: Mapped[str] = mapped_column(ForeignKey("creative_templates.id"), index=True)
+    source_image_id: Mapped[str] = mapped_column(ForeignKey("product_images.id"), index=True)
+    rendered_url: Mapped[str | None] = mapped_column(Text)
+    sha256: Mapped[str | None] = mapped_column(String(64), index=True)
+    perceptual_hash: Mapped[str | None] = mapped_column(String(128), index=True)
+    creative_fingerprint: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    width: Mapped[int] = mapped_column(Integer, default=1000)
+    height: Mapped[int] = mapped_column(Integer, default=1500)
+    render_status: Mapped[str] = mapped_column(String(30), default="PENDING", index=True)
+    render_error: Mapped[str | None] = mapped_column(Text)
+    render_spec: Mapped[dict] = mapped_column(JSON, default=dict)
+    rendered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    render_duration_ms: Mapped[int | None] = mapped_column(Integer)
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PinApproval(Base):
+    __tablename__ = "pin_approvals"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    draft_id: Mapped[str] = mapped_column(ForeignKey("pin_drafts.id", ondelete="CASCADE"), index=True)
+    decision: Mapped[str] = mapped_column(String(20), nullable=False)
+    decided_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PinPublication(Base):
+    __tablename__ = "pin_publications"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    draft_id: Mapped[str] = mapped_column(ForeignKey("pin_drafts.id", ondelete="CASCADE"), index=True)
+    creative_id: Mapped[str] = mapped_column(ForeignKey("pin_creatives.id"), index=True)
+    board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), index=True)
+    publication_fingerprint: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    status: Mapped[PublicationStatus] = mapped_column(Enum(PublicationStatus), default=PublicationStatus.APPROVED)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    attempt_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pinterest_pin_id: Mapped[str | None] = mapped_column(String(80), index=True)
+    provider_response: Mapped[dict] = mapped_column(JSON, default=dict)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class IntegrationAccount(Base):
+    __tablename__ = "integration_accounts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    external_account_id: Mapped[str | None] = mapped_column(String(255))
+    encrypted_credentials: Mapped[str | None] = mapped_column(Text)
+    scopes: Mapped[list] = mapped_column(JSON, default=list)
+    access_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    refresh_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    __table_args__ = (UniqueConstraint("store_id", "provider", name="uq_store_provider"),)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    actor: Mapped[str] = mapped_column(String(255), nullable=False)
+    action: Mapped[str] = mapped_column(String(120), index=True, nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    entity_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    correlation_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -1,0 +1,410 @@
+Create and implement the next task: Diamond Shelf Pinterest Creative Renderer MVP.
+
+Build the deterministic visual-rendering layer on top of the completed Pinterest Pin Proposal Engine.
+
+This task creates actual Pinterest-ready visual previews from REVIEW proposals.
+
+Do not implement Pinterest OAuth, scheduling, publishing, analytics, automatic approval, or AI-generated branded products.
+
+Keep PUBLISHING_ENABLED=false.
+
+1. Creative output specification
+
+Render Pinterest creatives at exactly:
+
+1000 × 1500 pixels
+
+Aspect ratio:
+
+2:3
+
+Primary output:
+
+PNG
+
+Rendering must be deterministic: identical source inputs + identical template version must produce visually identical output.
+
+Prefer a server-side deterministic SVG → PNG rendering architecture compatible with the existing project. Satori/resvg or an equivalent production-safe renderer is appropriate if compatible with the current stack.
+
+Do not introduce a separate microservice unless genuinely necessary.
+
+2. Authentic Shopify product image is mandatory
+
+The rendered product itself must always come from the authentic Shopify/catalog image belonging to that exact imported product.
+
+Never:
+
+generate a branded perfume bottle with AI
+redraw the bottle
+substitute another product
+reconstruct logos
+alter brand text
+replace packaging
+hallucinate missing product imagery
+
+The source image relationship must be verified against the imported Shopify image record before rendering.
+
+If the image cannot be verified, rendering must fail safely.
+
+Background removal may eventually be supported, but any extracted product foreground must originate from the authentic Shopify image and must not change packaging, logos, bottle geometry, or labeling.
+
+For this MVP, prefer safe containment of the authentic source image rather than aggressive image manipulation.
+
+3. Prevent arbitrary-image fetching
+
+Do not allow the renderer to fetch arbitrary external URLs.
+
+It may use only image URLs associated with the selected imported Shopify product and approved catalog-media provenance.
+
+Add reasonable:
+
+download timeout
+file-size limits
+image decode validation
+MIME validation
+dimension validation
+
+Prevent SSRF or arbitrary URL fetching.
+
+4. Diamond Shelf visual system
+
+Establish a reusable Diamond Shelf Pinterest design system.
+
+Overall style:
+
+premium
+editorial
+modern
+clean
+sophisticated
+fragrance/beauty-oriented
+
+Primary palette:
+
+dark charcoal / black
+warm gold
+cream
+soft beige
+white where appropriate
+
+Typography:
+
+elegant editorial serif for major headlines where appropriate
+clean sans-serif for supporting text
+
+Avoid:
+
+clutter
+excessive badges
+cheap promotional graphics
+neon styling
+fake discount stickers
+excessive text
+
+Build centralized design tokens for:
+
+spacing
+margins
+typography
+logo placement
+headline sizes
+supporting-copy sizes
+background treatment
+product-image zones
+safe areas
+5. Initial four creative templates
+
+Implement these four deterministic templates:
+
+A. Luxury Product Spotlight
+
+Large product-focused editorial layout.
+
+Important: “Luxury Product Spotlight” is the internal template name.
+
+Using this visual template must NOT automatically produce the word “luxury” in consumer-facing copy.
+
+The rendered text may claim that something is luxury only if the proposal has explicit source evidence supporting that claim.
+
+B. Product + Classification
+
+Suitable for supported facts such as:
+
+Arabian Fragrance
+Designer Fragrance
+Niche Fragrance
+Men's Fragrance
+Women's Fragrance
+Unisex Fragrance
+
+Only render classifications present in the approved ProductIntelligence/proposal evidence.
+
+C. Gift Guide / Gift Set
+
+Designed for explicitly identified gift sets.
+
+Do not describe ordinary single products as gift sets.
+
+D. Editorial Product Pick
+
+General-purpose premium editorial treatment for products where narrower classifications are unavailable or inappropriate.
+
+6. Fact-safe creative text
+
+Render only text already supported by the proposal and its persisted evidence.
+
+Do not independently invent new marketing claims inside the renderer.
+
+In particular, never add unsupported:
+
+fragrance notes
+fragrance accords
+scent descriptions
+season
+occasion
+mood
+longevity
+projection
+sillage
+compliment claims
+popularity
+rankings
+bestseller claims
+scarcity
+discount percentages
+review scores
+
+The renderer is a presentation layer, not a second content-generation engine.
+
+7. Text fitting and layout safety
+
+Implement deterministic text fitting.
+
+Handle:
+
+long product names
+long brands
+long classifications
+two-line and three-line titles
+
+Text must never:
+
+overlap the product
+overflow the canvas
+leave the canvas
+collide with the Diamond Shelf branding
+become unreadably small
+
+Define reasonable maximum lengths and fallback layout behavior rather than silently clipping important text.
+
+Add automated tests for extreme-length titles.
+
+8. Product-image layout
+
+Preserve product proportions.
+
+Do not stretch or distort images.
+
+Use contain/fit behavior appropriate to each template.
+
+Images should remain visually prominent without colliding with typography.
+
+Account for source images with:
+
+white backgrounds
+transparent backgrounds
+tall bottles
+wide gift sets
+candles
+beauty/body products
+9. Creative specification and reproducibility
+
+Persist or otherwise maintain a canonical creative specification containing at least:
+
+proposal/draft ID
+product ID
+source Shopify image ID
+source image provenance
+template
+template version
+rendered headline
+supporting text
+brand
+content angle
+intended board
+dimensions
+design-token version
+
+Generate a deterministic SHA-256 creative fingerprint from the canonical rendering specification.
+
+If practical, also calculate a perceptual image hash for rendered images so future duplicate detection can identify visually near-identical Pins.
+
+10. Template versioning
+
+Templates must be versioned.
+
+Example conceptually:
+
+editorial_product_pick:v1
+
+A later visual redesign must not silently change the rendering definition of historical creatives.
+
+Existing creative records should retain the template version with which they were rendered.
+
+11. Rendering/storage architecture
+
+Do not store large PNG binaries directly inside ordinary relational database columns.
+
+Keep creative metadata/specification in PostgreSQL.
+
+Use a clean rendering/storage abstraction so durable object storage/CDN can be introduced before Pinterest production publishing.
+
+For the current MVP, use the simplest reliable approach supported by the existing Replit application while keeping that storage boundary clean.
+
+The approval UI must be able to display the rendered result.
+
+12. Approval Queue integration
+
+Extend the existing proposal review UI so REVIEW proposals can display:
+
+rendered Pin preview
+template
+template version
+authentic source product image
+rendered image
+content angle
+source facts
+creative fingerprint
+render status
+render errors/warnings
+
+Do not automatically approve a proposal because its image rendered successfully.
+
+Rendering and approval are separate states.
+
+Existing APPROVE/REJECT behavior must remain manual.
+
+13. Creative validation
+
+Before marking a creative render successful, validate:
+
+dimensions = exactly 1000×1500
+valid PNG output
+correct product-image provenance
+known template/version
+valid associated proposal
+no unsupported text fields introduced
+no text overflow
+no missing required design elements
+
+Rendering failures must produce a clear failure reason rather than a corrupted creative.
+
+14. Existing historical proposals
+
+Preserve the existing 40 REVIEW proposals.
+
+Do not alter their:
+
+titles
+descriptions
+angles
+board mappings
+fingerprints
+review status
+
+The renderer may attach new creative records/previews to selected proposals, but it must not rewrite the proposal content itself.
+
+15. Controlled first rendering batch
+
+After implementation and automated tests, render only approximately 12 representative creatives from the existing REVIEW queue.
+
+Select a diverse sample covering where available:
+
+Designer fragrance
+Arabian fragrance
+Niche fragrance
+Men
+Women
+Unisex
+Gift set
+Home fragrance
+Beauty/body
+different price bands
+
+Exercise all templates possible from real proposals.
+
+If a template cannot legitimately be exercised by an existing proposal, use a test fixture or non-persisting preview for visual/technical verification rather than changing product facts or proposals merely to trigger it.
+
+Do not render all 40 proposals yet.
+
+16. Rendering QA report
+
+After the controlled batch report:
+
+creatives attempted
+creatives rendered successfully
+failed renders
+template distribution
+product-category distribution
+authentic-image provenance failures
+image dimension failures
+text-overflow failures
+creative SHA-256 uniqueness
+perceptual-hash near duplicates if implemented
+average render time
+maximum render time
+approximate PNG size range
+
+Confirm that no unsupported consumer-facing claims were introduced by the rendering layer.
+
+17. Representative visual review
+
+Make the approximately 12 rendered creatives visible through the existing frontend so they can be manually reviewed.
+
+Do not automatically approve them.
+
+Stop after rendering and QA so the visual designs can be inspected before scaling.
+
+18. Tests
+
+Add tests for at least:
+
+exact 1000×1500 output
+deterministic rendering
+creative fingerprint determinism
+source-image provenance validation
+arbitrary URL rejection
+image aspect-ratio preservation
+long headline fitting
+missing-image failure
+invalid-image failure
+unsupported-fact exclusion
+template version preservation
+all four template render paths
+no proposal-status mutation from rendering
+no Pinterest API activity
+
+Run the complete backend test suite.
+
+Run frontend TypeScript checks and production build.
+
+19. Explicitly out of scope
+
+Do NOT add:
+
+Pinterest OAuth
+Pinterest API publishing
+scheduler
+automatic approval
+Pinterest analytics
+AI-generated branded product imagery
+AI bottle reconstruction
+Redis/Celery
+bulk generation for all catalog products
+automatic posting
+
+Keep:
+
+PUBLISHING_ENABLED=false
+
+Stop when the renderer, 12-creatives controlled batch, frontend visual review, tests, and QA report are complete.

@@ -1,0 +1,196 @@
+Continue development of the existing Diamond Shelf Pinterest Engine.
+
+NEXT TASK: Shopify Catalog Connection + Product Normalization
+
+Do not redesign the application and do not enable Pinterest publishing.
+
+Goal:
+Connect the existing application to the real Diamond Shelf Shopify catalog using the official Shopify GraphQL Admin API, then synchronize products into the existing PostgreSQL database and expose them in the internal dashboard.
+
+Requirements:
+
+1. Preserve the current:
+
+* React/Vite frontend
+* FastAPI backend
+* PostgreSQL database
+* Alembic migrations
+* existing tests
+* publishing safety gate
+
+2. Shopify credentials
+
+* Read Shopify credentials only from environment/Replit Secrets.
+* Do not hardcode credentials.
+* Do not invent credentials.
+* If credentials are missing, implement the integration and show a clear “Shopify not connected” state instead of failing the application.
+
+3. Shopify API
+   Use the official Shopify GraphQL Admin API.
+   Do not scrape the storefront.
+   Keep the Shopify API version configurable.
+
+4. Initial catalog synchronization
+   Design the sync for approximately 3,000 products now and 10,000+ later.
+
+Import and persist where available:
+
+* Shopify product ID
+* title
+* handle
+* product URL / canonical destination
+* status
+* vendor / brand
+* product type
+* tags
+* collections
+* featured image
+* additional product images
+* variants
+* SKU
+* price
+* compare-at price
+* inventory quantity / availability
+* selected useful metafields
+* created/updated timestamps
+
+Use Shopify Bulk Operations where appropriate for the initial full catalog import.
+
+5. Normalization layer
+   Add a separate normalized product intelligence layer rather than modifying raw Shopify values.
+
+Normalized attributes should support:
+
+* brand
+* gender / audience
+* designer / niche / Arabian classification
+* fragrance family
+* fragrance notes
+* concentration
+* size
+* price band
+* gift suitability
+* season
+* occasion
+* image quality / image availability
+* inventory eligibility
+
+CRITICAL:
+Do not invent fragrance notes, families, gender, concentration, season, occasion, or other product facts.
+
+If the Shopify catalog does not support an attribute, store it as unknown/null until a trusted source or manual value is available.
+
+6. Product eligibility
+   Create deterministic scoring/eligibility logic using data that is actually available.
+
+Initial factors may include:
+
+* in stock
+* usable authentic product image
+* active Shopify product
+* recognizable vendor/brand
+* category
+* price
+* newness
+* manual priority
+* existing Pinterest content coverage later
+
+Return:
+
+* eligibility status
+* score
+* reason(s)
+
+7. Dashboard
+   Add a Products/Catalog screen to the existing internal dashboard.
+
+Show:
+
+* product image
+* title
+* vendor/brand
+* price
+* inventory status
+* category/type
+* eligibility score
+* eligibility status
+* normalization status
+
+Add filters for:
+
+* brand/vendor
+* product type
+* stock status
+* eligibility
+* price range
+* normalization status
+
+Add product search.
+
+Do not redesign the overall application.
+
+8. Sync controls
+   Provide:
+
+* Shopify connection status
+* last successful sync time
+* Start Catalog Sync button
+* sync progress/status
+* products imported
+* products updated
+* products failed
+* last error if applicable
+
+Prevent multiple full syncs from accidentally running concurrently.
+
+9. Database
+   Add proper Alembic migrations for any schema changes.
+   Do not manually mutate the production database schema outside Alembic.
+
+Keep raw Shopify data logically separated from normalized editorial attributes.
+
+10. Safety and observability
+
+* Log sync jobs.
+* Do not log access tokens.
+* Store Shopify external IDs reliably.
+* Make imports upsert/idempotent.
+* A repeated sync must update existing records rather than duplicate products.
+
+11. Tests
+    Add tests for:
+
+* Shopify product normalization
+* Shopify product upsert/idempotency
+* missing-field handling
+* eligibility scoring
+* no unsupported attribute invention
+* sync concurrency protection
+
+Keep all existing tests passing.
+
+12. Do NOT implement yet:
+
+* Pinterest OAuth
+* Pinterest publishing
+* scheduling
+* Redis/Celery
+* analytics
+* AI image generation
+* automatic Pinterest board publishing
+* autonomous learning
+
+When complete, stop and report:
+
+1. Files/features changed
+2. Database migrations added
+3. Shopify integration status
+4. Whether real Shopify credentials are still required
+5. Product fields being synchronized
+6. Normalization logic implemented
+7. Dashboard changes
+8. Test results
+9. Any Shopify API limitations encountered
+10. Exact Replit Secrets I need to provide next
+
+Do not proceed to Pinterest integration until I explicitly approve it.

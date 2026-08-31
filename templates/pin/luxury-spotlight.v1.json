@@ -1,0 +1,13 @@
+{
+  "key": "luxury-spotlight",
+  "version": 1,
+  "canvas": {"width": 1000, "height": 1500},
+  "brand": {"background": "charcoal", "accent": "warm-gold", "text": "soft-cream"},
+  "zones": {
+    "brand": {"x": 80, "y": 65, "w": 840, "h": 80},
+    "headline": {"x": 90, "y": 180, "w": 820, "h": 220},
+    "product": {"x": 140, "y": 420, "w": 720, "h": 720},
+    "subhead": {"x": 100, "y": 1180, "w": 800, "h": 160}
+  },
+  "rules": {"max_headline_chars": 62, "real_product_image_required": true}
+}

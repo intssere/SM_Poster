@@ -1,0 +1,207 @@
+Create the next implementation task: Task #8 — Pinterest Pin Proposal Engine + Approval Queue MVP.
+
+Build on the existing Shopify catalog and ProductIntelligence v2. Do not implement Pinterest OAuth or publishing yet.
+
+The purpose of this task is to generate fact-safe editorial Pinterest Pin proposals from eligible Diamond Shelf products and place them into a human approval workflow.
+
+Requirements:
+
+1. Product selection
+
+Generate proposals only for products with eligibility_status = eligible.
+
+Product selection should support:
+
+category
+brand/vendor
+audience
+designer/niche/Arabian classification
+price band
+concentration
+fragrance family
+inventory level
+normalization status
+
+Avoid repeatedly selecting the same products when sufficient alternatives exist.
+
+2. Content-angle engine
+
+Implement deterministic content-angle selection based only on available ProductIntelligence facts.
+
+Initial angles:
+
+Luxury Product Spotlight
+New Arrival
+Men’s Fragrance
+Women’s Fragrance
+Unisex Fragrance
+Arabian Fragrance
+Designer Fragrance
+Niche Fragrance
+Gift Set
+Home Fragrance
+Beauty / Body
+Price-focused editorial angle where appropriate
+
+An angle must only be selected when supporting facts exist.
+
+Do not generate note-based, seasonal, occasion-based, mood-based, longevity, projection, compliment, or performance claims when those facts are unavailable.
+
+3. Fact-safe copy
+
+Generate:
+
+Pin headline
+Pin title
+description
+CTA
+destination URL
+keyword cluster
+selected content angle
+
+Copy must be grounded exclusively in catalog/ProductIntelligence facts.
+
+Do not fabricate:
+
+fragrance notes
+scent character
+season
+occasion
+longevity
+projection/sillage
+popularity
+rankings
+reviews
+discounts
+scarcity
+
+unless explicitly supported by persisted source data.
+
+4. Controlled template eligibility
+
+Prepare proposal support for these first four creative templates:
+
+Luxury Product Spotlight
+Product + Classification
+Gift Guide / Gift Set
+Editorial Product Pick
+
+Do not render final graphics yet if the creative renderer is not already implemented.
+
+Each proposal should record which creative template it expects to use.
+
+5. Authentic-product-image rule
+
+Every proposal must reference the authentic Shopify/catalog image for that exact product.
+
+Never generate or substitute a branded perfume bottle with AI.
+
+AI-generated decorative backgrounds may be added later, but the product itself must remain the authentic catalog photograph.
+
+6. Duplicate prevention
+
+Add deterministic duplicate protection using a canonical fingerprint containing at least:
+
+product_id + creative_template + content_angle + keyword_cluster + board_mapping
+
+Store a SHA-256 fingerprint.
+
+The same exact concept must not be generated twice.
+
+Allow intentional variants only when they differ meaningfully and record the variation reason.
+
+7. Board mapping
+
+Implement internal deterministic board recommendations based on existing product facts/category/audience/classification.
+
+Do not call Pinterest API yet.
+
+Store the intended board mapping with the proposal.
+
+8. URL generation
+
+Use the product's real Diamond Shelf product URL.
+
+Add deterministic UTM parameters for Pinterest editorial traffic.
+
+Preserve the canonical product URL separately from the tracked URL.
+
+9. Approval workflow
+
+Implement:
+
+GENERATED → REVIEW → APPROVED → REJECTED
+
+Also reserve future states:
+
+SCHEDULED → PUBLISHED → FAILED → PUBLISH_UNKNOWN
+
+but do not implement publishing.
+
+A human must explicitly approve each proposal before it could ever progress toward scheduling.
+
+10. Dashboard
+
+Add a Pin Proposals/Approval Queue section showing:
+
+authentic product image
+product
+brand
+content angle
+template
+headline
+title
+description
+keywords
+intended board
+destination URL
+intelligence facts used
+warnings/missing facts
+duplicate fingerprint
+approval status
+
+Provide Approve and Reject controls.
+
+11. First controlled test batch
+
+After implementation and tests, generate only 20 representative products × maximum 2 proposals each, for a maximum of 40 proposals.
+
+Stratify the batch across:
+
+designer
+Arabian
+niche
+men
+women
+unisex
+gift sets
+home fragrance
+beauty/body
+different price bands
+
+Do not generate proposals for all 2,730 eligible products.
+
+12. QA report
+
+After the controlled batch, report:
+
+products selected
+proposals generated
+duplicate attempts prevented
+content-angle distribution
+template distribution
+board-mapping distribution
+normalization COMPLETE vs PARTIAL used
+proposals using partial records
+any unsupported claims detected
+any products skipped because sufficient facts were unavailable
+backend test results
+frontend production build result
+
+Show approximately 10–15 representative proposals for review.
+
+Do not implement Pinterest OAuth, API publishing, scheduling, analytics, or automatic approval.
+
+Keep PUBLISHING_ENABLED=false.
+
+Stop after the controlled draft batch for human review.

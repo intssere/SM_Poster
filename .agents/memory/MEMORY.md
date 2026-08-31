@@ -1,0 +1,1 @@
+- [Historical migration baseline](historical-migration-baseline.md) — freeze the remaining Phase 0 schema before future model migrations to prevent clean-install drift.

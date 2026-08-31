@@ -1,0 +1,173 @@
+Implement Phase 1 ProductIntelligence Normalization v2 for the already imported Diamond Shelf catalog.
+
+Do not build Pinterest Pin generation yet.
+Do not call Shopify sync again unless explicitly required for testing.
+Keep Pinterest publishing disabled.
+
+The goal is to improve deterministic, fact-safe normalization using only existing Shopify/catalog facts. Do not use AI to guess product attributes.
+
+1. Category-aware completeness
+
+Replace the current universal COMPLETE rule with category-aware completeness requirements.
+
+At minimum distinguish:
+
+Fragrance
+Gift Set
+Bath & Body
+Beauty / Skin Care / Hair
+Home Fragrance / Candles
+Other
+
+A candle or skin-care product must not be marked PARTIAL merely because it lacks fragrance concentration, designer/niche classification, fragrance notes, etc.
+
+Define required vs optional intelligence fields per category and document the rules.
+
+2. Deterministic size extraction
+
+Parse size only when explicitly present in trusted source data such as title/metafields.
+
+Support common formats such as:
+
+oz
+fl oz
+ml
+g
+gram
+piece / pieces
+2-piece / 3-piece etc.
+
+Preserve both the source value and normalized representation where appropriate.
+
+Do not infer size when it is absent.
+
+3. Audience normalization
+
+Use deterministic evidence from:
+
+explicit title text
+Shopify collections
+trusted tags/metafields
+
+Recognize values such as:
+
+Men
+Women
+Unisex
+Kids
+
+Do not infer audience from brand alone.
+
+4. Concentration normalization
+
+Improve deterministic parsing of explicit concentration terms:
+
+Parfum
+Extrait de Parfum
+Eau de Parfum / EDP
+Eau de Toilette / EDT
+Eau de Cologne / EDC
+Cologne
+Body spray
+Perfumed deodorant
+After shave where appropriate
+
+Only classify when explicitly supported by product data.
+
+5. Gift suitability
+
+Mark products as gift-set/gift-suitable when explicitly supported by:
+
+Shopify Product Type Gift Set
+Fragrance Gift Sets collection
+explicit title/tag indicating a set
+
+Do not mark ordinary single products as gift-suitable based on subjective assumptions.
+
+6. Brand classification taxonomy
+
+Add a maintainable curated taxonomy for:
+
+Designer
+Niche
+Arabian / Middle Eastern fragrance brands
+
+Classification must be based on an explicit curated vendor/brand mapping, not an LLM guess.
+
+Keep unknown brands unclassified.
+
+The taxonomy should be easy to review and extend.
+
+7. Fragrance family
+
+Continue using only explicit trusted taxonomy such as collections/tags/metafields.
+
+Examples include Floral, Woody, Amber, Aromatic/Fougère, etc.
+
+Do not infer fragrance family from the product name unless an explicit rule is defensible and documented.
+
+8. Preserve unknown fields
+
+Continue leaving:
+
+fragrance notes
+season
+occasion
+
+null/unknown unless actual trusted source data exists.
+
+Do not fabricate these for the sake of obtaining COMPLETE status.
+
+9. Product-type sanity diagnostics
+
+Add diagnostics for suspicious source taxonomy, without automatically rewriting Shopify data.
+
+Examples already observed:
+
+Marvel Spiderman Duffle Bag classified as Perfume & Cologne
+Living Proof Dry Shampoo classified as Skin Care while in Hair collection
+
+Flag these as catalog QA warnings only.
+
+10. Eligibility
+
+Preserve the existing eligibility logic, but distinguish:
+
+positive evidence
+exclusion/blocking reasons
+
+The UI/API should make the decisive reason for an ineligible product clear.
+
+11. Re-normalize existing 2,997 records
+
+After implementing and testing Normalization v2, re-run normalization locally against the existing imported database records.
+
+Do not re-fetch the Shopify catalog unless necessary.
+
+This normalization pass must be idempotent.
+
+12. Verification report
+
+Report before vs after counts for:
+
+COMPLETE
+PARTIAL
+UNKNOWN
+audience populated
+size populated
+concentration populated
+fragrance family populated
+designer classified
+niche classified
+Arabian classified
+gift suitability populated
+
+Also provide counts by product category.
+
+Show approximately 25 representative products and their normalized results.
+
+Explicitly identify any attributes that remain unavailable rather than filling them with guesses.
+
+Run the full backend test suite and frontend production build.
+
+Do not proceed to Pinterest draft generation after finishing. Stop for review.

@@ -1,0 +1,166 @@
+Create and implement the next task: Pinterest Proposal Diversity & Angle Ranking v2.
+
+This is a refinement of the completed Pin Proposal Engine. Do not build the image renderer yet and do not implement Pinterest OAuth, scheduling, publishing, or analytics.
+
+The current controlled batch exposed an angle-ranking bias:
+
+New Arrival: 20
+Women’s Fragrance: 6
+Unisex Fragrance: 6
+Men’s Fragrance: 3
+Beauty / Body: 3
+Gift Set: 1
+Home Fragrance: 1
+Designer Fragrance: 0
+Arabian Fragrance: 0
+Niche Fragrance: 0
+
+The underlying Designer, Arabian, and Niche classifications are correctly persisted and evidence-gated. They are being starved because each product currently receives at most two proposals and candidate priority favors New Arrival + audience before classification.
+
+Goal
+
+Replace rigid angle ordering with a deterministic, diversity-aware proposal-ranking system while remaining fully fact-safe.
+
+Requirements
+
+1. Do not make New Arrival a default first proposal for every qualifying product.
+
+New Arrival should remain available when explicitly supported by Shopify data, but it should be treated as one candidate among multiple valid editorial angles.
+
+2. Create a deterministic angle scoring/ranking system.
+
+Rank supported angles using factors such as:
+
+specificity
+product classification
+editorial usefulness
+portfolio diversity
+recent angle usage within the current generation batch
+
+Do not use AI or randomness as the core decision mechanism.
+
+3. Prefer specific supported classifications over generic ones where appropriate.
+
+For example, if a fragrance is explicitly classified as Arabian and Unisex and New Arrival, valid candidates may include:
+
+Arabian Fragrance
+Unisex Fragrance
+New Arrival
+
+The system should not always choose New Arrival + Unisex.
+
+Similarly support:
+
+Designer Fragrance
+Niche Fragrance
+
+when the curated ProductIntelligence taxonomy provides explicit evidence.
+
+4. Add batch-level diversity controls.
+
+For controlled generation, prevent one generic angle from dominating the batch when other supported angles are available.
+
+Do not impose artificial quotas that would create unsupported claims.
+
+Diversity may only choose between angles already supported by facts.
+
+5. Preserve maximum 2 proposals per product.
+
+The two proposals should, where possible, represent meaningfully different editorial intents rather than two near-equivalent generic classifications.
+
+Example:
+
+Prefer:
+
+Arabian Fragrance + Unisex Fragrance
+
+over:
+
+New Arrival + Unisex Fragrance
+
+when all three are supported and New Arrival is already heavily represented elsewhere in the batch.
+
+6. Maintain fact safety.
+
+Continue prohibiting unsupported:
+
+fragrance notes
+season
+occasion
+mood
+longevity
+projection/sillage
+popularity
+rankings
+scarcity
+discount claims
+
+7. Keep board mapping independent.
+
+Board mapping may continue giving classification precedence.
+
+Do not force the content angle to equal the board name.
+
+8. Add diversity diagnostics to QA reporting.
+
+Report:
+
+candidate angles available
+selected angles
+rejected/skipped candidate angles
+reason each angle was selected
+batch angle distribution
+maximum share of any single angle
+classification-angle coverage
+
+9. Do not alter the existing 40 REVIEW proposals yet.
+
+Preserve them exactly as historical QA output.
+
+Add a dry-run/non-persisting generation mode that evaluates the improved ranking against a comparable 20-product controlled sample.
+
+The dry run must not create concepts, drafts, approvals, fingerprints, or publication records.
+
+10. Verification target
+
+Run the improved engine in dry-run mode over approximately 20 representative eligible products.
+
+The sample should contain sufficient:
+
+Designer
+Arabian
+Niche
+Men
+Women
+Unisex
+Gift Set
+Home Fragrance
+Beauty/Body
+
+Verify that, when supported by the selected products, the resulting proposals actually exercise:
+
+Designer Fragrance
+Arabian Fragrance
+Niche Fragrance
+
+rather than having all three remain at zero.
+
+Do not manipulate the sample solely to hit arbitrary counts.
+
+11. Tests
+
+Add tests proving:
+
+generic New Arrival cannot systematically starve more specific supported classifications
+unsupported classification angles remain impossible
+two proposals for one product are meaningfully distinct
+batch diversity does not override evidence requirements
+dry-run mode makes zero database mutations
+
+Run the full backend test suite and frontend production build.
+
+Keep all current 40 proposals in REVIEW.
+
+Keep PUBLISHING_ENABLED=false.
+
+Stop after the dry-run QA report for review.

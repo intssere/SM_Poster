@@ -1,0 +1,104 @@
+Before running the first real Shopify catalog sync, update the Shopify authentication architecture to support Shopify's current recommended Client Credentials grant for an API-only app operating on our own store.
+
+Do not run a catalog sync yet.
+
+Requirements:
+
+1. Primary authentication method
+
+Support these Replit Secrets/environment variables:
+
+* SHOPIFY_SHOP
+* SHOPIFY_CLIENT_ID
+* SHOPIFY_CLIENT_SECRET
+* SHOPIFY_API_VERSION
+
+SHOPIFY_API_VERSION should continue to default to 2026-07.
+
+SHOPIFY_SHOP should represent the store's myshopify.com shop/subdomain in the format expected by Shopify's authentication and Admin GraphQL endpoints.
+
+2. Client Credentials flow
+
+When the Shopify integration needs an Admin API access token:
+
+* Request it programmatically from Shopify using the Client Credentials grant.
+* Never expose the client secret to the frontend.
+* Cache the returned access token server-side.
+* Respect the token expiration returned by Shopify.
+* Refresh/request a new token before or when the current token expires.
+* Handle authentication failures cleanly.
+* Do not log tokens or client secrets.
+
+3. Compatibility
+
+You may retain SHOPIFY_ACCESS_TOKEN as an optional fallback for existing/legacy installations, but it should not be required when Client Credentials authentication is configured.
+
+Authentication priority should be:
+
+Client Credentials configuration
+→ dynamically acquired access token
+
+otherwise:
+
+explicit SHOPIFY_ACCESS_TOKEN
+→ use existing access-token mode
+
+otherwise:
+
+Shopify not connected
+
+4. Connection status
+
+Update the Shopify status endpoint/dashboard so it distinguishes:
+
+* Connected — Client Credentials
+* Connected — Access Token
+* Not configured
+* Authentication failed
+* Insufficient Shopify scopes
+
+Do not expose credentials or tokens in status responses.
+
+5. Required scopes
+
+The integration currently requires at least:
+
+* read_products
+* read_inventory
+
+Keep these requirements explicit and detect/report missing or insufficient access where Shopify provides that information.
+
+6. Tests
+
+Add tests for:
+
+* Client Credentials token acquisition
+* token caching
+* token expiry/renewal
+* authentication failure
+* access-token fallback
+* missing credentials
+* no secrets exposed through status endpoints
+
+Keep all existing tests passing.
+
+7. Do NOT change:
+
+* catalog normalization architecture
+* product upsert behavior
+* eligibility logic
+* dashboard design
+* Alembic migration history unless actually required
+* Pinterest configuration
+
+Pinterest publishing must remain disabled.
+
+When finished, stop and report:
+
+1. Authentication methods supported
+2. Secrets now required
+3. Token lifetime/refresh behavior
+4. Test results
+5. Whether we are ready to connect the real Diamond Shelf Shopify store
+
+Do not start the Shopify catalog sync until I explicitly approve it.
