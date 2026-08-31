@@ -213,11 +213,12 @@ def test_openai_credentials_cannot_be_routed_to_arbitrary_compatible_endpoints(m
 def test_openai_image_adapter_requires_inline_output_and_background_safety_gate():
     import base64
 
+    secret = "sk-image-test-secret"
     image_bytes = png((1024, 1536))
     calls = []
 
     def request(method, url, headers, payload, timeout):
-        calls.append((url, payload))
+        calls.append((url, headers, payload))
         if url.endswith("/images/generations"):
             return 200, {"data": [{"b64_json": base64.b64encode(image_bytes).decode()}]}
         return 200, {"output": [{
@@ -233,14 +234,27 @@ def test_openai_image_adapter_requires_inline_output_and_background_safety_gate(
         }]}
 
     provider = OpenAIImageProvider(
-        "gpt-image-2", api_key="test-only", safety_model="gpt-5.6-luna", requester=request,
+        "gpt-image-2", api_key=secret, safety_model="gpt-5.6-luna", requester=request,
     )
     result = provider.generate_background("Muted editorial light.")
+    image_call = calls[0]
+    assert image_call[0] == "https://api.openai.com/v1/images/generations"
+    assert image_call[1]["Authorization"] == f"Bearer {secret}"
+    assert image_call[2]["model"] == "gpt-image-2"
+    assert image_call[2]["size"] == "1024x1536"
+    assert image_call[2]["n"] == 1
+    assert "response_format" not in image_call[2]
+    assert image_call[2]["output_format"] == "png"
+    assert result.image_bytes == image_bytes
+    assert secret not in json.dumps(image_call[2])
+    assert secret not in repr(result)
+
     decision = provider.validate_background(result.image_bytes)
+    safety_call = calls[-1]
     assert decision["background_only"] is True
-    assert calls[-1][0] == "https://api.openai.com/v1/responses"
-    assert calls[-1][1]["text"]["format"]["type"] == "json_schema"
-    assert "data:image/png;base64," in json.dumps(calls[-1][1])
+    assert safety_call[0] == "https://api.openai.com/v1/responses"
+    assert safety_call[2]["text"]["format"]["type"] == "json_schema"
+    assert "data:image/png;base64," in json.dumps(safety_call[2])
 
     url_only = OpenAIImageProvider(
         "gpt-image-2", api_key="test-only",

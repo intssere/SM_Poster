@@ -391,7 +391,7 @@ class OpenAIImageProvider:
             ),
             "size": "1024x1536",
             "n": 1,
-            "response_format": "b64_json",
+            "output_format": "png",
         })
         items = body.get("data") if isinstance(body, dict) else None
         encoded = items[0].get("b64_json") if items else None
