@@ -28,7 +28,12 @@ from app.services.ai_providers import (
     provider_for_settings,
     video_provider_for_settings,
 )
-from app.services.ai_regeneration import AIRegenerationError, AIRegenerationService, AISettingsService
+from app.services.ai_regeneration import (
+    AIRegenerationError,
+    AIRegenerationService,
+    AISettingsService,
+    _validate_provider_copy,
+)
 
 from test_creative_rendering import CreativeRenderService, CreativeStorage, png
 from test_pin_proposals import add_product, setup_service
@@ -74,6 +79,49 @@ def prepared(suffix):
         product_limit=1, max_proposals_per_product=1
     )["representative_proposals"][0]["id"]
     return db, product, proposal_service, draft_id
+
+
+def adagio_context():
+    product = SimpleNamespace(
+        title="Adagio Professional 2500 Blow Dryer by Adagio – Marble",
+        vendor="Adagio",
+        product_type="Hair Tools",
+        product_url="https://diamondshelf.example/products/adagio-2500",
+    )
+    intelligence = SimpleNamespace(
+        brand="Adagio",
+        audience=None,
+        designer=None,
+        niche=None,
+        arabian_classification=None,
+        fragrance_family=None,
+        concentration=None,
+        size=None,
+        price_band="under_50",
+        gift_suitability=None,
+        normalization_status="NORMALIZED",
+        normalized_data={"normalization_category": "beauty"},
+    )
+    rationale = {
+        "headline": "New Arrival: Adagio",
+        "content_angle": "New Arrival",
+        "cta": "Shop the authentic product",
+        "keywords": ["diamond shelf", "adagio", "beauty", "products under 50"],
+        "authentic_image": {"url": "https://cdn.shopify.com/adagio.jpg"},
+    }
+    return product, intelligence, rationale
+
+
+def validate_adagio(**overrides):
+    product, intelligence, rationale = adagio_context()
+    output = {
+        "headline": "New arrival from Adagio",
+        "title": "Adagio 2,500 Marble Blow Dryer",
+        "description": "Discover this beauty pick at Diamond Shelf. Shop the authentic product.",
+        "alt_text": "Adagio marble blow dryer shown in the authentic product image.",
+        **overrides,
+    }
+    _validate_provider_copy(output, product, intelligence, rationale)
 
 
 def test_ollama_adapter_success_health_and_failure_are_sanitized():
@@ -533,6 +581,44 @@ def test_hosted_fact_safety_rejection_preserves_telemetry_without_revision():
     db.close()
 
 
+def test_hosted_invented_spec_rejection_preserves_failure_only_semantics():
+    db, product, proposal_service, draft_id = prepared("hosted-invented-spec")
+    AISettingsService(proposal_service.session_factory).update(
+        enabled=True,
+        provider_mode="hosted_paid",
+        hosted_model="gpt-5.6-luna",
+        daily_budget_usd=5,
+        monthly_budget_usd=20,
+    )
+    provider = FakeProvider(
+        json.dumps({
+            "headline": product.title,
+            "title": product.title,
+            "description": f"{product.title} includes an Italian leather case.",
+            "alt_text": f"{product.title} product image",
+        }),
+        name="openai",
+        model="gpt-5.6-luna",
+    )
+
+    with pytest.raises(AIRegenerationError, match="unsupported catalog wording"):
+        AIRegenerationService(
+            proposal_service.session_factory,
+            provider_factory=lambda _: provider,
+        ).regenerate_copy(draft_id)
+
+    telemetry = db.scalars(select(AIRequestTelemetry)).all()
+    assert provider.calls == 1
+    assert len(telemetry) == 1
+    assert telemetry[0].failure_code == "fact_safety_rejected"
+    assert telemetry[0].fallback_used is False
+    assert db.scalar(select(func.count(ContentRevision.id))) == 0
+    assert db.scalar(select(func.count(ContentVersionSelection.id))) == 0
+    assert db.scalar(select(func.count(PinApproval.id))) == 0
+    assert db.scalar(select(func.count(PinPublication.id))) == 0
+    db.close()
+
+
 def test_hosted_authentication_error_message_and_telemetry_do_not_leak_secret():
     db, product, proposal_service, draft_id = prepared("hosted-auth-secret")
     secret = "sk-never-persist-or-return"
@@ -626,6 +712,65 @@ def test_nonnumeric_hallucinated_catalog_fact_is_rejected():
         raise AssertionError("Unverified nonnumeric facts must not be stored")
     assert db.scalar(select(func.count(ContentRevision.id))) == 0
     db.close()
+
+
+def test_adagio_copy_accepts_approved_context_short_title_and_formatted_number():
+    validate_adagio()
+
+
+def test_adagio_copy_does_not_trust_url_vocabulary_or_changed_numeric_signs():
+    product, intelligence, rationale = adagio_context()
+    product.product_url = "https://diamondshelf.example/products/waterproof-adagio"
+    output = {
+        "headline": "New arrival from Adagio",
+        "title": "Adagio 2,500 Marble Blow Dryer",
+        "description": "The Adagio blow dryer is waterproof.",
+        "alt_text": "Adagio marble blow dryer shown in the authentic product image.",
+    }
+    with pytest.raises(AIRegenerationError, match="unsupported catalog wording"):
+        _validate_provider_copy(output, product, intelligence, rationale)
+
+    output["description"] = "Adagio -2500W marble blow dryer."
+    with pytest.raises(AIRegenerationError, match="numeric claim"):
+        _validate_provider_copy(output, product, intelligence, rationale)
+
+
+@pytest.mark.parametrize(
+    "description, error",
+    [
+        ("Adagio includes an Italian leather case.", "unsupported catalog wording"),
+        ("Adagio features ionic technology and a 2000W motor.", "numeric claim"),
+        ("The number one Adagio dryer delivers salon-quality results.", "unsupported claim"),
+    ],
+)
+def test_adagio_copy_rejects_invented_specs_numbers_and_performance_claims(description, error):
+    with pytest.raises(AIRegenerationError, match=error):
+        validate_adagio(description=description)
+
+
+def test_adagio_copy_requires_unambiguous_product_identity():
+    with pytest.raises(AIRegenerationError, match="product identity"):
+        validate_adagio(
+            headline="New beauty arrival",
+            title="A new beauty pick",
+            description="Discover this product at Diamond Shelf.",
+            alt_text="Authentic product image.",
+        )
+
+
+def test_provider_copy_retains_every_multiword_brand_token_in_title():
+    product, intelligence, rationale = adagio_context()
+    product.title = "Maison Francis Kurkdjian Baccarat Rouge 540"
+    product.vendor = "Maison Francis Kurkdjian"
+    intelligence.brand = product.vendor
+    output = {
+        "headline": "New arrival",
+        "title": "Maison Baccarat Rouge 540",
+        "description": "Discover this product.",
+        "alt_text": "Authentic product image.",
+    }
+    with pytest.raises(AIRegenerationError, match="product identity"):
+        _validate_provider_copy(output, product, intelligence, rationale)
 
 
 def test_paid_budget_blocks_provider_call_and_leaves_local_mode_available():

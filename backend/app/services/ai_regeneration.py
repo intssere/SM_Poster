@@ -54,11 +54,13 @@ MONEY_QUANTUM = Decimal("0.00000001")
 UNSUPPORTED_CLAIM_PATTERNS = (
     re.compile(r"\b(?:best|#1|number one|popular|trending|viral|bestseller)\b", re.I),
     re.compile(r"\b(?:sale|discount|deal|save|limited time|exclusive)\b", re.I),
-    re.compile(r"\b(?:long[- ]lasting|long lasting|all[- ]day|projection|sillage|compliment)\b", re.I),
+    re.compile(
+        r"\b(?:long[- ]lasting|long lasting|all[- ]day|projection|sillage|compliment|"
+        r"salon[- ]quality|fast(?:er)? drying|dries faster|powerful performance)\b",
+        re.I,
+    ),
     re.compile(r"\b(?:mood|seasonal|for summer|for winter|date night)\b", re.I),
 )
-
-
 class AIRegenerationError(ValueError):
     """A safe, user-facing regeneration error."""
 
@@ -102,6 +104,8 @@ def _facts(product: Product, intelligence: ProductIntelligence, image: ProductIm
     normalized = intelligence.normalized_data or {}
     facts: dict[str, Any] = {
         "title": product.title,
+        "brand": intelligence.brand or product.vendor,
+        "catalog_product_type": product.product_type,
         "product_url": product.product_url,
         "normalization_category": normalized.get("normalization_category", "other"),
         "normalization_status": intelligence.normalization_status or "UNKNOWN",
@@ -115,6 +119,16 @@ def _facts(product: Product, intelligence: ProductIntelligence, image: ProductIm
         if value:
             facts[field] = value
     return facts
+
+
+def _approved_provider_context(rationale: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "retailer": "Diamond Shelf",
+        "headline": _clean(rationale.get("headline")),
+        "content_angle": _clean(rationale.get("content_angle")),
+        "cta": _clean(rationale.get("cta")),
+        "keywords": [_clean(value) for value in rationale.get("keywords") or [] if _clean(value)],
+    }
 
 
 def _snapshot(
@@ -196,6 +210,7 @@ def _provider_prompt(
     rationale: dict[str, Any],
 ) -> str:
     facts = _facts(product, intelligence, type("_Image", (), {"source_url": (rationale.get("authentic_image") or {}).get("url")})())
+    approved_context = _approved_provider_context(rationale)
     return (
         "Create one alternate social copy edit for the catalog product below. "
         "This is TEXT ONLY: do not generate, redraw, describe invented, or alter product imagery. "
@@ -203,7 +218,7 @@ def _provider_prompt(
         "moods, exclusivity, or rankings. Return JSON with exactly headline, title, description, and alt_text. "
         "Keep headline/title/alt_text <= 500 characters and description <= 800 characters.\n"
         f"Persisted facts: {json.dumps(facts, sort_keys=True)}\n"
-        f"Existing content angle: {rationale.get('content_angle', '')}\n"
+        f"Approved proposal context: {json.dumps(approved_context, sort_keys=True)}\n"
     )
 
 
@@ -238,6 +253,30 @@ def _words(value: str) -> set[str]:
     return set(re.findall(r"[^\W\d_]+", value.lower(), flags=re.UNICODE))
 
 
+def _canonical_numbers(value: str) -> set[str]:
+    numbers = set()
+    pattern = r"(?<![\w.])[+-]?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)"
+    for raw in re.findall(pattern, value):
+        canonical = raw.replace(",", "")
+        if canonical.startswith("."):
+            canonical = f"0{canonical}"
+        elif canonical.startswith("+."):
+            canonical = f"+0{canonical[1:]}"
+        elif canonical.startswith("-."):
+            canonical = f"-0{canonical[1:]}"
+        if "." in canonical:
+            canonical = canonical.rstrip("0").rstrip(".")
+        numbers.add(canonical)
+    return numbers
+
+
+def _identity_words(value: str) -> set[str]:
+    return _words(value) - {
+        "a", "an", "and", "at", "by", "de", "for", "from", "in", "men", "of", "on",
+        "oz", "professional", "the", "unisex", "with", "women",
+    }
+
+
 def _validate_provider_copy(
     output: dict[str, str],
     product: Product,
@@ -247,31 +286,42 @@ def _validate_provider_copy(
     combined = " ".join(output.values())
     if _claims(combined, product):
         raise AIRegenerationError("Safe regeneration detected an unsupported claim and was not saved.")
-    known_anchor = _clean(product.title).lower()
-    if known_anchor not in combined.lower():
-        raise AIRegenerationError("Safe regeneration did not retain the persisted product title.")
-    # A provider may use connective language, but numeric and catalog-specific
-    # assertions must be traceable to persisted product/intelligence values.
-    persisted_text = " ".join(
+    brand = _clean(intelligence.brand or product.vendor)
+    title_output = output["title"]
+    title_output_words = _words(title_output)
+    brand_words = _identity_words(brand)
+    title_identity_words = _identity_words(product.title)
+    required_brand_words = brand_words.intersection(title_identity_words)
+    title_words = title_identity_words - required_brand_words
+    title_numbers = _canonical_numbers(product.title)
+    if required_brand_words - title_output_words:
+        raise AIRegenerationError("Safe regeneration did not retain the persisted product identity.")
+    if title_words - title_output_words:
+        raise AIRegenerationError("Safe regeneration did not retain the persisted product identity.")
+    if title_numbers - _canonical_numbers(title_output):
+        raise AIRegenerationError("Safe regeneration did not retain the persisted product identity.")
+    if not title_words and not required_brand_words and not title_numbers:
+        raise AIRegenerationError("Safe regeneration did not retain the persisted product identity.")
+
+    facts = _facts(
+        product,
+        intelligence,
+        type("_Image", (), {"source_url": (rationale.get("authentic_image") or {}).get("url")})(),
+    )
+    approved_context = _approved_provider_context(rationale)
+    supported_numeric_text = " ".join(
         _clean(value)
         for value in (
             product.title,
-            product.vendor,
-            product.product_type,
-            intelligence.brand,
-            intelligence.audience,
-            intelligence.designer,
-            intelligence.niche,
-            intelligence.fragrance_family,
-            intelligence.concentration,
             intelligence.size,
             intelligence.price_band,
         )
         if value
-    ).lower()
-    for number in re.findall(r"\b\d+(?:[.,]\d+)?\b", combined):
-        if number not in persisted_text:
-            raise AIRegenerationError("Safe regeneration introduced a numeric claim not present in persisted facts.")
+    )
+    unsupported_numbers = _canonical_numbers(combined) - _canonical_numbers(supported_numeric_text)
+    if unsupported_numbers:
+        raise AIRegenerationError("Safe regeneration introduced a numeric claim not present in persisted facts.")
+
     trusted_text = " ".join(
         _clean(value)
         for value in (
@@ -286,19 +336,20 @@ def _validate_provider_copy(
             intelligence.concentration,
             intelligence.size,
             intelligence.price_band,
-            rationale.get("headline"),
-            rationale.get("title"),
-            rationale.get("description"),
-            rationale.get("alt_text"),
-            rationale.get("cta"),
-            rationale.get("content_angle"),
+            facts.get("normalization_category"),
+            approved_context.get("retailer"),
+            approved_context.get("headline"),
+            approved_context.get("content_angle"),
+            approved_context.get("cta"),
+            *(approved_context.get("keywords") or []),
         )
         if value
     )
     safe_connective = _words(
-        "a an and as at authentic browse by catalog details discover edit explore for from "
-        "image in is it its of on or our product products see shop shopify shown social the "
-        "this to using verified view with"
+        "a add an and arrival as at authentic available browse by catalog choose collection "
+        "copy details discover edit editorial everyday explore find for from highlight image "
+        "in is it its look meet new of on online or our pick product products see select "
+        "shop shopify shown social spotlight style the this to using verified view with"
     )
     unsupported_words = sorted(_words(combined) - _words(trusted_text) - safe_connective)
     if unsupported_words:
