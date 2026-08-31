@@ -54,7 +54,7 @@ export function RevisionControls({
       const revision = await regenerateProposal(proposal.id, kind, kind === 'creative' ? template : undefined)
       setMessage({
         kind: 'success',
-        text: `Version ${revision.version} created in REVIEW. Select it explicitly to make it active.`,
+        text: `Version ${revision.version} created in REVIEW. Select it explicitly to make it active.${revision.actual_cost_usd != null ? ` Provider cost $${revision.actual_cost_usd.toFixed(6)}.` : revision.estimated_cost_usd != null ? ` Estimated provider cost $${revision.estimated_cost_usd.toFixed(6)}.` : ' No paid provider cost.'}`,
       })
       await onChanged()
       setCompareId(revision.id || 'original')
@@ -112,7 +112,7 @@ export function RevisionControls({
       {compared && <div className="version-snapshot">
         <div><span>Title</span><strong>{compared.title}</strong></div>
         {!compact && <div><span>Description</span><p>{compared.description}</p></div>}
-        <small>{compared.generation_mode.replaceAll('_', ' ')} · {compared.creative_template}</small>
+        <small>{compared.generation_mode.replaceAll('_', ' ')} · {compared.creative_template}{compared.actual_cost_usd != null ? ` · $${compared.actual_cost_usd.toFixed(6)}` : compared.estimated_cost_usd != null ? ` · estimated $${compared.estimated_cost_usd.toFixed(6)}` : ''}</small>
       </div>}
       <button className="select-version" onClick={() => void selectVersion()} disabled={working !== null || !compared || compared.active}>
         <Check size={14} />{compared?.active ? 'Active version' : 'Select this version'}

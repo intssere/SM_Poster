@@ -52,9 +52,15 @@ class CreativeRenderBatchRequest(BaseModel):
 
 
 class AISettingsUpdate(BaseModel):
-    enabled: bool = False
-    provider_mode: Literal["disabled", "local_free", "hosted_paid"] = "disabled"
-    decorative_backgrounds_enabled: bool = False
+    enabled: bool | None = None
+    provider_mode: Literal["disabled", "local_free", "hosted_paid"] | None = None
+    decorative_backgrounds_enabled: bool | None = None
+    local_base_url: str | None = Field(default=None, min_length=8, max_length=500)
+    local_model: str | None = Field(default=None, min_length=1, max_length=120)
+    hosted_model: str | None = Field(default=None, min_length=1, max_length=120)
+    request_timeout_seconds: int | None = Field(default=None, ge=1, le=120)
+    daily_budget_usd: float | None = Field(default=None, ge=0, le=10_000)
+    monthly_budget_usd: float | None = Field(default=None, ge=0, le=100_000)
 
 
 class RegenerationRequest(BaseModel):

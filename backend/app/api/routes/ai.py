@@ -14,9 +14,19 @@ def get_ai_settings():
     return AISettingsService().get()
 
 
+@router.get("/status")
+def get_ai_status():
+    return AISettingsService().status()
+
+
+@router.get("/usage")
+def get_ai_usage():
+    return AISettingsService().usage()
+
+
 @router.put("/settings")
 def update_ai_settings(body: AISettingsUpdate):
     try:
-        return AISettingsService().update(**body.model_dump())
+        return AISettingsService().update(**body.model_dump(exclude_none=True))
     except AIRegenerationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

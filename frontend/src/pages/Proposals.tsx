@@ -3,9 +3,13 @@ import { Check, Clipboard, ExternalLink, ImageOff, Images, RefreshCw, ShieldAler
 
 import {
   AISettings,
+  AIProviderStatus,
+  AIUsage,
   decideProposal,
   generateProposals,
   getAISettings,
+  getAIStatus,
+  getAIUsage,
   getCreativeQa,
   getProposalQa,
   getProposals,
@@ -88,6 +92,9 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
   const [qa, setQa] = useState<ProposalReport | null>(null)
   const [creativeQa, setCreativeQa] = useState<Record<string, unknown> | null>(null)
   const [aiSettings, setAISettings] = useState<AISettings | null>(null)
+  const [aiStatus, setAIStatus] = useState<AIProviderStatus | null>(null)
+  const [aiUsage, setAIUsage] = useState<AIUsage | null>(null)
+  const [savingAI, setSavingAI] = useState(false)
   const [status, setStatus] = useState('REVIEW')
   const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState(false)
@@ -98,11 +105,15 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [queue, report, creativeReport, settings] = await Promise.all([getProposals(status), getProposalQa(), getCreativeQa(), getAISettings()])
+      const [queue, report, creativeReport, settings, providerStatus, usage] = await Promise.all([
+        getProposals(status), getProposalQa(), getCreativeQa(), getAISettings(), getAIStatus(), getAIUsage(),
+      ])
       setProposals([...queue.items].sort((a, b) => Number(Boolean(b.creative)) - Number(Boolean(a.creative))))
       setQa(report)
       setCreativeQa(creativeReport)
       setAISettings(settings)
+      setAIStatus(providerStatus)
+      setAIUsage(usage)
       setMessage(null)
     } catch (error) {
       setMessage({ type: 'error', text: (error as Error).message })
@@ -141,11 +152,50 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
   async function changeProvider(provider: AISettings['provider_mode']) {
     setMessage(null)
     try {
-      setAISettings(await updateAISettings(provider))
-      setMessage({ type: 'success', text: provider === 'disabled' ? 'AI disabled. Regeneration uses the deterministic fact-safe fallback.' : 'Local/free provider mode enabled. No credentials are stored.' })
+      setAISettings(await updateAISettings({ provider_mode: provider, enabled: provider !== 'disabled' }))
+      setAIStatus(await getAIStatus())
+      setMessage({ type: 'success', text: provider === 'disabled' ? 'AI disabled. Regeneration uses the deterministic fact-safe fallback.' : `${provider === 'local_free' ? 'Local/free' : 'Hosted'} provider mode enabled. Copy remains review-only.` })
     } catch (error) {
       setMessage({ type: 'error', text: (error as Error).message })
     }
+  }
+
+  function editAI<K extends keyof AISettings>(key: K, value: AISettings[K]) {
+    setAISettings((current) => current ? { ...current, [key]: value } : current)
+  }
+
+  async function saveAISettings() {
+    if (!aiSettings) return
+    setSavingAI(true); setMessage(null)
+    try {
+      const updated = await updateAISettings({
+        enabled: aiSettings.provider_mode !== 'disabled',
+        provider_mode: aiSettings.provider_mode,
+        local_base_url: aiSettings.local_base_url,
+        local_model: aiSettings.local_model,
+        hosted_model: aiSettings.hosted_model,
+        request_timeout_seconds: aiSettings.request_timeout_seconds,
+        daily_budget_usd: aiSettings.daily_budget_usd,
+        monthly_budget_usd: aiSettings.monthly_budget_usd,
+      })
+      setAISettings(updated)
+      const [providerStatus, usage] = await Promise.all([getAIStatus(), getAIUsage()])
+      setAIStatus(providerStatus); setAIUsage(usage)
+      setMessage({ type: 'success', text: 'AI provider settings saved. Secrets remain server-side in Replit.' })
+    } catch (error) {
+      setMessage({ type: 'error', text: (error as Error).message })
+    } finally { setSavingAI(false) }
+  }
+
+  async function checkAIProvider() {
+    setSavingAI(true); setMessage(null)
+    try {
+      const [providerStatus, usage] = await Promise.all([getAIStatus(), getAIUsage()])
+      setAIStatus(providerStatus); setAIUsage(usage)
+      setMessage({ type: providerStatus.reachable || providerStatus.provider === 'disabled' ? 'success' : 'error', text: providerStatus.message })
+    } catch (error) {
+      setMessage({ type: 'error', text: (error as Error).message })
+    } finally { setSavingAI(false) }
   }
 
   return <div className="proposals-page">
@@ -158,14 +208,33 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
       </div>
     </header>
     <section className="proposal-toolbar"><div className="proposal-status-tabs">{['REVIEW', 'APPROVED', 'REJECTED'].map((value) => <button key={value} className={status === value ? 'active' : ''} onClick={() => setStatus(value)}>{value}</button>)}</div><span className="proposal-safety"><ShieldAlert size={15} /> Publishing disabled — approval never publishes</span></section>
-    <section className="ai-settings-strip">
-      <div><Sparkles size={16} /><span><strong>AI-assisted regeneration</strong><small>Disabled by default. Credentials are never stored here.</small></span></div>
-      <label>Provider mode<select value={aiSettings?.provider_mode || 'disabled'} onChange={(event) => void changeProvider(event.target.value as AISettings['provider_mode'])}>
-        <option value="disabled">Disabled · deterministic fallback</option>
-        <option value="local_free">Local / free provider</option>
-        <option value="hosted_paid" disabled>Paid hosted provider · not configured</option>
-      </select></label>
-      <span className="ai-capability">Decorative AI backgrounds: unavailable</span>
+    <section className="ai-provider-panel">
+      <div className="ai-provider-heading">
+        <div><Sparkles size={16} /><span><strong>AI-assisted copy regeneration</strong><small>Disabled by default · text only · every revision stays in REVIEW</small></span></div>
+        <span className={`provider-health ${aiStatus?.reachable ? 'reachable' : 'offline'}`}><span className="status-dot" />{aiStatus?.provider || 'disabled'} · {aiStatus?.reachable ? 'connected' : aiStatus?.provider === 'disabled' ? 'disabled' : 'unavailable'}</span>
+      </div>
+      <div className="ai-provider-grid">
+        <label>Provider mode<select value={aiSettings?.provider_mode || 'disabled'} onChange={(event) => void changeProvider(event.target.value as AISettings['provider_mode'])}>
+          <option value="disabled">Disabled · deterministic fallback</option>
+          <option value="local_free">Ollama-compatible · local/free</option>
+          <option value="hosted_paid" disabled={!aiSettings?.credentials_configured}>OpenAI hosted{aiSettings?.credentials_configured ? '' : ' · secret required'}</option>
+        </select></label>
+        {aiSettings?.provider_mode === 'local_free' && <>
+          <label className="wide">Ollama endpoint<input value={aiSettings.local_base_url} onChange={(event) => editAI('local_base_url', event.target.value)} /></label>
+          <label>Local model<input value={aiSettings.local_model} onChange={(event) => editAI('local_model', event.target.value)} /></label>
+        </>}
+        {aiSettings?.provider_mode === 'hosted_paid' && <label>OpenAI model<input value={aiSettings.hosted_model} onChange={(event) => editAI('hosted_model', event.target.value)} /></label>}
+        <label>Timeout (seconds)<input type="number" min="1" max="120" value={aiSettings?.request_timeout_seconds || 30} onChange={(event) => editAI('request_timeout_seconds', Number(event.target.value))} /></label>
+        <label>Daily paid cap ($)<input type="number" min="0" step="0.01" value={aiSettings?.daily_budget_usd || 0} onChange={(event) => editAI('daily_budget_usd', Number(event.target.value))} /></label>
+        <label>Monthly paid cap ($)<input type="number" min="0" step="0.01" value={aiSettings?.monthly_budget_usd || 0} onChange={(event) => editAI('monthly_budget_usd', Number(event.target.value))} /></label>
+      </div>
+      <div className="ai-provider-footer">
+        <span>{aiStatus?.message || 'Checking provider configuration…'}</span>
+        {aiUsage && <span className="ai-spend">Paid usage today ${aiUsage.daily.spent_usd.toFixed(4)} / ${aiUsage.daily.limit_usd.toFixed(2)} · month ${aiUsage.monthly.spent_usd.toFixed(4)} / ${aiUsage.monthly.limit_usd.toFixed(2)}</span>}
+        <button className="secondary-action" onClick={() => void checkAIProvider()} disabled={savingAI}>Check connection</button>
+        <button className="primary-action" onClick={() => void saveAISettings()} disabled={savingAI || !aiSettings}>{savingAI ? 'Saving…' : 'Save settings'}</button>
+      </div>
+      <small className="ai-provider-safety">OpenAI credentials are read only from the server’s OPENAI_API_KEY Replit secret and are never returned. Creative variants remain deterministic and use verified Shopify product imagery; generative imagery is disabled.</small>
     </section>
     {message && <p className={message.type === 'error' ? 'error-message' : 'catalog-message'} role="status">{message.text}</p>}
     {creativeQa && <div className="creative-qa-strip"><span className="eyebrow">RENDER QA</span>{Object.entries(creativeQa).slice(0, 4).map(([key, value]) => <span key={key}><b>{key.replaceAll('_', ' ')}</b> {pretty(value)}</span>)}</div>}

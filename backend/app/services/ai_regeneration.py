@@ -1,15 +1,20 @@
 """Provider-neutral, review-only regeneration with immutable revision lineage."""
 from __future__ import annotations
 
+import json
+import os
 import re
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text as sql_text
 
 from app.db.session import SessionLocal
 from app.models.domain import (
     AISettings,
+    AIRequestTelemetry,
     ContentRevision,
     ContentVersionSelection,
     CreativeTemplate,
@@ -24,9 +29,19 @@ from app.models.domain import (
 from app.services.creative_rendering import CreativeRenderError, CreativeRenderService, TEMPLATES
 from app.services.pin_proposals import CREATIVE_TEMPLATES
 from app.services.fingerprints import text_fingerprint
+from app.services.ai_providers import (
+    ProviderUnavailable,
+    TextGenerationResult,
+    provider_for_settings,
+    provider_status,
+    normalize_local_base_url,
+)
 
 
 PROVIDER_MODES = ("disabled", "local_free", "hosted_paid")
+DEFAULT_PRICING = {
+    "gpt-4o-mini": {"input_per_1m": 0.15, "output_per_1m": 0.60},
+}
 UNSUPPORTED_CLAIM_PATTERNS = (
     re.compile(r"\b(?:best|#1|number one|popular|trending|viral|bestseller)\b", re.I),
     re.compile(r"\b(?:sale|discount|deal|save|limited time|exclusive)\b", re.I),
@@ -129,7 +144,7 @@ def _snapshot(
 
 
 def _copy_variant(
-    draft: PinDraft,
+    draft: PinDraft | None,
     rationale: dict[str, Any],
     product: Product,
     intelligence: ProductIntelligence,
@@ -166,6 +181,149 @@ def _copy_variant(
     return output
 
 
+def _provider_prompt(
+    product: Product,
+    intelligence: ProductIntelligence,
+    rationale: dict[str, Any],
+) -> str:
+    facts = _facts(product, intelligence, type("_Image", (), {"source_url": (rationale.get("authentic_image") or {}).get("url")})())
+    return (
+        "Create one alternate social copy edit for the catalog product below. "
+        "This is TEXT ONLY: do not generate, redraw, describe invented, or alter product imagery. "
+        "Use only the supplied facts. Do not add claims about popularity, performance, discounts, seasons, "
+        "moods, exclusivity, or rankings. Return JSON with exactly headline, title, description, and alt_text. "
+        "Keep headline/title/alt_text <= 500 characters and description <= 800 characters.\n"
+        f"Persisted facts: {json.dumps(facts, sort_keys=True)}\n"
+        f"Existing content angle: {rationale.get('content_angle', '')}\n"
+    )
+
+
+def _parse_provider_copy(text: str) -> dict[str, str]:
+    candidate = text.strip()
+    if candidate.startswith("```"):
+        candidate = re.sub(r"^```(?:json)?\s*", "", candidate, flags=re.I)
+        candidate = re.sub(r"\s*```$", "", candidate)
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError as exc:
+        raise AIRegenerationError("The AI provider returned invalid structured copy.") from exc
+    if not isinstance(parsed, dict):
+        raise AIRegenerationError("The AI provider returned an invalid copy object.")
+    fields = ("headline", "title", "description", "alt_text")
+    output = {field: _clean(parsed.get(field)) for field in fields}
+    if any(not output[field] for field in fields):
+        raise AIRegenerationError("The AI provider returned incomplete copy.")
+    limits = {"headline": 500, "title": 500, "description": 800, "alt_text": 500}
+    if any(len(output[field]) > limits[field] for field in fields):
+        raise AIRegenerationError("The AI provider returned copy over the safe length limit.")
+    return output
+
+
+def _words(value: str) -> set[str]:
+    return set(re.findall(r"[^\W\d_]+", value.lower(), flags=re.UNICODE))
+
+
+def _validate_provider_copy(
+    output: dict[str, str],
+    product: Product,
+    intelligence: ProductIntelligence,
+    rationale: dict[str, Any],
+) -> None:
+    combined = " ".join(output.values())
+    if _claims(combined, product):
+        raise AIRegenerationError("Safe regeneration detected an unsupported claim and was not saved.")
+    known_anchor = _clean(product.title).lower()
+    if known_anchor not in combined.lower():
+        raise AIRegenerationError("Safe regeneration did not retain the persisted product title.")
+    # A provider may use connective language, but numeric and catalog-specific
+    # assertions must be traceable to persisted product/intelligence values.
+    persisted_text = " ".join(
+        _clean(value)
+        for value in (
+            product.title,
+            product.vendor,
+            product.product_type,
+            intelligence.brand,
+            intelligence.audience,
+            intelligence.designer,
+            intelligence.niche,
+            intelligence.fragrance_family,
+            intelligence.concentration,
+            intelligence.size,
+            intelligence.price_band,
+        )
+        if value
+    ).lower()
+    for number in re.findall(r"\b\d+(?:[.,]\d+)?\b", combined):
+        if number not in persisted_text:
+            raise AIRegenerationError("Safe regeneration introduced a numeric claim not present in persisted facts.")
+    trusted_text = " ".join(
+        _clean(value)
+        for value in (
+            product.title,
+            product.vendor,
+            product.product_type,
+            intelligence.brand,
+            intelligence.audience,
+            intelligence.designer,
+            intelligence.niche,
+            intelligence.fragrance_family,
+            intelligence.concentration,
+            intelligence.size,
+            intelligence.price_band,
+            rationale.get("headline"),
+            rationale.get("title"),
+            rationale.get("description"),
+            rationale.get("alt_text"),
+            rationale.get("cta"),
+            rationale.get("content_angle"),
+        )
+        if value
+    )
+    safe_connective = _words(
+        "a an and as at authentic browse by catalog details discover edit explore for from "
+        "image in is it its of on or our product products see shop shopify shown social the "
+        "this to using verified view with"
+    )
+    unsupported_words = sorted(_words(combined) - _words(trusted_text) - safe_connective)
+    if unsupported_words:
+        raise AIRegenerationError(
+            "Safe regeneration introduced unsupported catalog wording: "
+            + ", ".join(unsupported_words[:8])
+        )
+
+
+def _pricing(settings: AISettings, model: str) -> dict[str, float] | None:
+    configured = (settings.pricing_metadata or {}).get(model)
+    if configured is None:
+        configured = DEFAULT_PRICING.get(model)
+    if not isinstance(configured, dict):
+        return None
+    try:
+        return {
+            "input_per_1m": float(configured["input_per_1m"]),
+            "output_per_1m": float(configured["output_per_1m"]),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _cost(prompt_tokens: int | None, completion_tokens: int | None, pricing: dict[str, float] | None) -> float | None:
+    if not pricing:
+        return None
+    prompt = prompt_tokens or 0
+    completion = completion_tokens or 0
+    return round(
+        prompt / 1_000_000 * pricing["input_per_1m"]
+        + completion / 1_000_000 * pricing["output_per_1m"],
+        8,
+    )
+
+
+def _estimated_tokens(prompt: str) -> tuple[int, int]:
+    return max(1, len(prompt) // 4), 500
+
+
 class AISettingsService:
     def __init__(self, session_factory: Callable = SessionLocal):
         self.session_factory = session_factory
@@ -182,6 +340,7 @@ class AISettingsService:
     @staticmethod
     def serialize(row: AISettings) -> dict[str, Any]:
         effective = row.provider_mode if row.enabled else "disabled"
+        hosted_configured = bool(os.getenv("OPENAI_API_KEY"))
         return {
             "enabled": row.enabled,
             "provider_mode": row.provider_mode,
@@ -194,16 +353,23 @@ class AISettingsService:
             "available_provider_modes": [
                 {"id": "disabled", "label": "Disabled by default", "available": True},
                 {"id": "local_free", "label": "Local / free provider", "available": True},
-                {"id": "hosted_paid", "label": "Paid hosted provider", "available": False},
+                {"id": "hosted_paid", "label": "Paid hosted provider", "available": hosted_configured},
             ],
             "capabilities": {
                 "copy_regeneration": True,
                 "creative_template_variants": True,
                 "decorative_backgrounds": False,
-                "hosted_provider_configured": False,
+                "hosted_provider_configured": hosted_configured,
             },
             "decorative_backgrounds_enabled": False,
-            "credentials_configured": False,
+            "credentials_configured": hosted_configured,
+            "local_base_url": row.local_base_url,
+            "local_model": row.local_model,
+            "hosted_model": row.hosted_model,
+            "request_timeout_seconds": row.request_timeout_seconds,
+            "daily_budget_usd": row.daily_budget_usd,
+            "monthly_budget_usd": row.monthly_budget_usd,
+            "pricing_metadata": row.pricing_metadata or {},
         }
 
     def get(self) -> dict[str, Any]:
@@ -215,22 +381,127 @@ class AISettingsService:
         finally:
             db.close()
 
-    def update(self, *, enabled: bool, provider_mode: str, decorative_backgrounds_enabled: bool) -> dict[str, Any]:
-        if provider_mode not in PROVIDER_MODES:
+    def update(
+        self,
+        *,
+        enabled: bool | None = None,
+        provider_mode: str | None = None,
+        decorative_backgrounds_enabled: bool | None = None,
+        local_base_url: str | None = None,
+        local_model: str | None = None,
+        hosted_model: str | None = None,
+        request_timeout_seconds: int | None = None,
+        daily_budget_usd: float | None = None,
+        monthly_budget_usd: float | None = None,
+    ) -> dict[str, Any]:
+        requested_mode = provider_mode
+        if requested_mode is not None and requested_mode not in PROVIDER_MODES:
             raise AIRegenerationError("Unsupported AI provider mode.")
         if decorative_backgrounds_enabled:
             raise AIRegenerationError("Decorative AI backgrounds are reserved for a future safe provider.")
+        if request_timeout_seconds is not None and not 1 <= request_timeout_seconds <= 120:
+            raise AIRegenerationError("Request timeout must be between 1 and 120 seconds.")
+        if daily_budget_usd is not None and daily_budget_usd < 0:
+            raise AIRegenerationError("Daily budget cannot be negative.")
+        if monthly_budget_usd is not None and monthly_budget_usd < 0:
+            raise AIRegenerationError("Monthly budget cannot be negative.")
         db = self.session_factory()
         try:
             row = self._row(db)
-            row.enabled = bool(enabled and provider_mode != "disabled")
-            row.provider_mode = provider_mode
+            if enabled is not None:
+                row.enabled = bool(enabled and (requested_mode or row.provider_mode) != "disabled")
+            elif requested_mode is not None:
+                row.enabled = requested_mode != "disabled"
+            if requested_mode is not None:
+                row.provider_mode = requested_mode
             row.decorative_backgrounds_enabled = False
+            if local_base_url is not None:
+                try:
+                    row.local_base_url = normalize_local_base_url(local_base_url)
+                except ValueError as exc:
+                    raise AIRegenerationError(str(exc)) from exc
+            if local_model is not None:
+                row.local_model = local_model.strip() or row.local_model
+            if hosted_model is not None:
+                row.hosted_model = hosted_model.strip() or row.hosted_model
+            if request_timeout_seconds is not None:
+                row.request_timeout_seconds = request_timeout_seconds
+            if daily_budget_usd is not None:
+                row.daily_budget_usd = daily_budget_usd
+            if monthly_budget_usd is not None:
+                row.monthly_budget_usd = monthly_budget_usd
             db.commit()
             return self.serialize(row)
         except Exception:
             db.rollback()
             raise
+        finally:
+            db.close()
+
+    def status(self) -> dict[str, Any]:
+        db = self.session_factory()
+        try:
+            row = self._row(db)
+            status = provider_status(row)
+            db.commit()
+            return {
+                **status,
+                "effective_mode": row.provider_mode if row.enabled else "disabled",
+                "model": status.get("model"),
+                "timeout_seconds": row.request_timeout_seconds,
+            }
+        finally:
+            db.close()
+
+    def usage(self) -> dict[str, Any]:
+        db = self.session_factory()
+        try:
+            row = self._row(db)
+            now = datetime.now(timezone.utc)
+            day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+            def spend(since: datetime) -> float:
+                value = db.scalar(
+                    select(func.coalesce(func.sum(func.coalesce(
+                        AIRequestTelemetry.actual_cost_usd,
+                        AIRequestTelemetry.estimated_cost_usd,
+                        0.0,
+                    )), 0.0)).where(
+                        AIRequestTelemetry.provider == "openai",
+                        AIRequestTelemetry.created_at >= since,
+                    )
+                )
+                return round(float(value or 0.0), 8)
+
+            recent = db.scalars(
+                select(AIRequestTelemetry)
+                .order_by(AIRequestTelemetry.created_at.desc())
+                .limit(20)
+            ).all()
+            return {
+                "daily": {"spent_usd": spend(day_start), "limit_usd": row.daily_budget_usd},
+                "monthly": {"spent_usd": spend(month_start), "limit_usd": row.monthly_budget_usd},
+                "recent": [
+                    {
+                        "id": item.id,
+                        "provider": item.provider,
+                        "model": item.model,
+                        "operation": item.operation,
+                        "prompt_tokens": item.prompt_tokens,
+                        "completion_tokens": item.completion_tokens,
+                        "total_tokens": item.total_tokens,
+                        "latency_ms": item.latency_ms,
+                        "success": item.success,
+                        "failure_code": item.failure_code,
+                        "estimated_cost_usd": item.estimated_cost_usd,
+                        "actual_cost_usd": item.actual_cost_usd,
+                        "fallback_used": item.fallback_used,
+                        "created_at": item.created_at,
+                    }
+                    for item in recent
+                ],
+            }
         finally:
             db.close()
 
@@ -240,19 +511,141 @@ class AIRegenerationService:
         self,
         session_factory: Callable = SessionLocal,
         creative_renderer: CreativeRenderService | None = None,
+        provider_factory: Callable = provider_for_settings,
     ):
         self.session_factory = session_factory
         self.creative_renderer = creative_renderer or CreativeRenderService(session_factory)
+        self.provider_factory = provider_factory
 
     def _settings(self, db: Any) -> AISettings:
         return AISettingsService._row(db)
 
     @staticmethod
-    def _provider(row: AISettings) -> tuple[str, str]:
-        effective = row.provider_mode if row.enabled else "disabled"
-        if effective == "hosted_paid":
-            raise AIRegenerationError("Paid hosted AI is not configured; no credentials are stored by this foundation.")
-        return effective, "deterministic_fallback" if effective == "disabled" else "local_free_deterministic"
+    def _provider_mode(row: AISettings) -> str:
+        return row.provider_mode if row.enabled else "disabled"
+
+    @staticmethod
+    def _spend(db: Any, since: datetime) -> float:
+        value = db.scalar(
+            select(func.coalesce(func.sum(func.coalesce(
+                AIRequestTelemetry.actual_cost_usd,
+                AIRequestTelemetry.estimated_cost_usd,
+                0.0,
+            )), 0.0)).where(
+                AIRequestTelemetry.provider == "openai",
+                AIRequestTelemetry.created_at >= since,
+            )
+        )
+        return float(value or 0.0)
+
+    def _telemetry(
+        self,
+        db: Any,
+        *,
+        provider: str,
+        model: str,
+        started: float,
+        result: TextGenerationResult | None = None,
+        estimated_cost: float | None = None,
+        actual_cost: float | None = None,
+        failure_code: str | None = None,
+        fallback_used: bool = False,
+    ) -> AIRequestTelemetry:
+        telemetry = AIRequestTelemetry(
+            provider=provider,
+            model=model,
+            operation="copy_regeneration",
+            prompt_tokens=result.prompt_tokens if result else None,
+            completion_tokens=result.completion_tokens if result else None,
+            total_tokens=result.total_tokens if result else None,
+            latency_ms=max(0, round((time.perf_counter() - started) * 1000)),
+            success=failure_code is None,
+            failure_code=failure_code,
+            estimated_cost_usd=estimated_cost,
+            actual_cost_usd=actual_cost,
+            fallback_used=fallback_used,
+        )
+        db.add(telemetry)
+        db.flush()
+        return telemetry
+
+    def _copy_from_provider(
+        self,
+        db: Any,
+        settings: AISettings,
+        product: Product,
+        intelligence: ProductIntelligence,
+        rationale: dict[str, Any],
+        version: int,
+    ) -> tuple[dict[str, str], str, str, AIRequestTelemetry | None, float | None, float | None]:
+        mode = self._provider_mode(settings)
+        if mode == "disabled":
+            return _copy_variant(
+                None, rationale, product, intelligence, version
+            ), "disabled", "deterministic_fallback", None, None, None
+
+        provider = self.provider_factory(settings)
+        if provider is None:
+            return _copy_variant(None, rationale, product, intelligence, version), mode, "fallback_unavailable", None, None, None
+        prompt = _provider_prompt(product, intelligence, rationale)
+        estimated_prompt, estimated_completion = _estimated_tokens(prompt)
+        pricing = _pricing(settings, provider.model)
+        estimated_cost = _cost(estimated_prompt, estimated_completion, pricing)
+        if mode == "hosted_paid":
+            if db.get_bind().dialect.name == "postgresql":
+                db.execute(sql_text("SELECT pg_advisory_xact_lock(:key)"), {"key": 4_714_920_025})
+            now = datetime.now(timezone.utc)
+            daily = self._spend(db, now.replace(hour=0, minute=0, second=0, microsecond=0))
+            monthly = self._spend(db, now.replace(day=1, hour=0, minute=0, second=0, microsecond=0))
+            failure_code = None
+            if pricing is None or estimated_cost is None:
+                failure_code = "pricing_unavailable"
+            elif settings.daily_budget_usd <= 0 or settings.monthly_budget_usd <= 0:
+                failure_code = "budget_exceeded"
+            elif daily + estimated_cost > settings.daily_budget_usd or monthly + estimated_cost > settings.monthly_budget_usd:
+                failure_code = "budget_exceeded"
+            if failure_code:
+                telemetry = self._telemetry(
+                    db, provider="openai", model=provider.model, started=time.perf_counter(),
+                    estimated_cost=estimated_cost, failure_code=failure_code, fallback_used=True,
+                )
+                return _copy_variant(None, rationale, product, intelligence, version), mode, f"fallback_{failure_code}", telemetry, estimated_cost, None
+        started = time.perf_counter()
+        try:
+            result = provider.generate(prompt)
+        except ProviderUnavailable as exc:
+            telemetry = self._telemetry(
+                db, provider=provider.name, model=provider.model, started=started,
+                estimated_cost=estimated_cost, failure_code=exc.code, fallback_used=True,
+            )
+            return _copy_variant(None, rationale, product, intelligence, version), mode, f"fallback_{exc.code}"[:40], telemetry, estimated_cost, None
+        except Exception:
+            telemetry = self._telemetry(
+                db, provider=provider.name, model=provider.model, started=started,
+                estimated_cost=estimated_cost, failure_code="provider_error", fallback_used=True,
+            )
+            return _copy_variant(None, rationale, product, intelligence, version), mode, "fallback_provider_error", telemetry, estimated_cost, None
+        usage_estimated_cost = _cost(result.prompt_tokens, result.completion_tokens, pricing)
+        if usage_estimated_cost is not None:
+            estimated_cost = usage_estimated_cost
+        actual_cost = None  # Text APIs do not return a billed amount in generation responses.
+        try:
+            output = _parse_provider_copy(result.text)
+            _validate_provider_copy(output, product, intelligence, rationale)
+            output["cta"] = _clean(rationale.get("cta") or "Shop the authentic product")
+        except AIRegenerationError:
+            self._telemetry(
+                db, provider=provider.name, model=provider.model, started=started,
+                result=result, estimated_cost=estimated_cost, actual_cost=actual_cost,
+                failure_code="fact_safety_rejected",
+            )
+            db.commit()
+            raise
+        telemetry = self._telemetry(
+            db, provider=provider.name, model=provider.model, started=started,
+            result=result, estimated_cost=estimated_cost, actual_cost=actual_cost,
+        )
+        return output, mode, "provider_generated", telemetry, estimated_cost, actual_cost
 
     def _source(self, db: Any, draft_id: str) -> tuple[PinDraft, PinConcept, Product, ProductIntelligence, ProductImage, dict[str, Any], PinCreative | None]:
         row = db.execute(
@@ -292,9 +685,11 @@ class AIRegenerationService:
         db = self.session_factory()
         try:
             draft, concept, product, intelligence, image, rationale, original = self._source(db, draft_id)
-            provider_mode, generation_mode = self._provider(self._settings(db))
+            settings = self._settings(db)
             version = self._next_version(db, draft.id)
-            copy = _copy_variant(draft, rationale, product, intelligence, version)
+            copy, provider_mode, generation_mode, telemetry, estimated_cost, actual_cost = self._copy_from_provider(
+                db, settings, product, intelligence, rationale, version
+            )
             facts = _facts(product, intelligence, image)
             parent = self._parent(db, draft.id)
             revision = ContentRevision(
@@ -325,6 +720,9 @@ class AIRegenerationService:
                 provider_mode=provider_mode,
                 generation_mode=generation_mode,
                 reason="copy_regeneration",
+                ai_telemetry_id=telemetry.id if telemetry else None,
+                estimated_cost_usd=estimated_cost,
+                actual_cost_usd=actual_cost,
             )
             db.add(revision)
             db.commit()
@@ -341,7 +739,8 @@ class AIRegenerationService:
         db = self.session_factory()
         try:
             draft, concept, product, intelligence, image, rationale, original = self._source(db, draft_id)
-            provider_mode, generation_mode = self._provider(self._settings(db))
+            provider_mode = self._provider_mode(self._settings(db))
+            generation_mode = "deterministic_template"
             parent = self._parent(db, draft.id)
             if parent:
                 base = {
@@ -470,6 +869,9 @@ class AIRegenerationService:
             "provider_mode": revision.provider_mode,
             "generation_mode": revision.generation_mode,
             "reason": revision.reason,
+            "ai_telemetry_id": revision.ai_telemetry_id,
+            "estimated_cost_usd": revision.estimated_cost_usd,
+            "actual_cost_usd": revision.actual_cost_usd,
             "created_at": revision.created_at,
             "creative": cls.creative_payload(creative),
         }

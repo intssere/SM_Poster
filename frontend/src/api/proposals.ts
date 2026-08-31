@@ -77,6 +77,9 @@ export type ContentVersion = {
   provider_mode: string
   generation_mode: string
   reason: string
+  ai_telemetry_id?: string | null
+  estimated_cost_usd?: number | null
+  actual_cost_usd?: number | null
   created_at?: string | null
   creative: CreativePreview | null
 }
@@ -95,6 +98,46 @@ export type AISettings = {
   }
   decorative_backgrounds_enabled: boolean
   credentials_configured: boolean
+  local_base_url: string
+  local_model: string
+  hosted_model: string
+  request_timeout_seconds: number
+  daily_budget_usd: number
+  monthly_budget_usd: number
+  pricing_metadata: Record<string, { input_per_1m: number; output_per_1m: number }>
+}
+
+export type AIProviderStatus = {
+  provider: 'disabled' | 'ollama' | 'openai'
+  configured: boolean
+  reachable: boolean
+  model?: string | null
+  model_available: boolean
+  message: string
+  failure_code?: string
+  effective_mode: AISettings['effective_mode']
+  timeout_seconds: number
+}
+
+export type AIUsage = {
+  daily: { spent_usd: number; limit_usd: number }
+  monthly: { spent_usd: number; limit_usd: number }
+  recent: Array<{
+    id: string
+    provider: string
+    model: string
+    operation: string
+    prompt_tokens?: number | null
+    completion_tokens?: number | null
+    total_tokens?: number | null
+    latency_ms: number
+    success: boolean
+    failure_code?: string | null
+    estimated_cost_usd?: number | null
+    actual_cost_usd?: number | null
+    fallback_used: boolean
+    created_at?: string | null
+  }>
 }
 
 export type CreativeQa = Record<string, unknown>
@@ -226,15 +269,25 @@ export async function getAISettings(): Promise<AISettings> {
   return json(await fetch('/api/ai/settings'))
 }
 
+export async function getAIStatus(): Promise<AIProviderStatus> {
+  return json(await fetch('/api/ai/status'))
+}
+
+export async function getAIUsage(): Promise<AIUsage> {
+  return json(await fetch('/api/ai/usage'))
+}
+
 export async function updateAISettings(
-  providerMode: AISettings['provider_mode'],
+  settings: Partial<Pick<AISettings,
+    'enabled' | 'provider_mode' | 'local_base_url' | 'local_model' | 'hosted_model' |
+    'request_timeout_seconds' | 'daily_budget_usd' | 'monthly_budget_usd'
+  >>,
 ): Promise<AISettings> {
   return json(await fetch('/api/ai/settings', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      enabled: providerMode !== 'disabled',
-      provider_mode: providerMode,
+      ...settings,
       decorative_backgrounds_enabled: false,
     }),
   }))

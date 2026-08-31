@@ -6,7 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text,
+    Boolean, DateTime, Enum, Float, ForeignKey, Index, Integer, JSON, Numeric, String, Text,
     UniqueConstraint, func, text
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -268,6 +268,13 @@ class AISettings(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     provider_mode: Mapped[str] = mapped_column(String(30), default="disabled", nullable=False)
     decorative_backgrounds_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    local_base_url: Mapped[str] = mapped_column(String(500), default="http://127.0.0.1:11434", nullable=False)
+    local_model: Mapped[str] = mapped_column(String(120), default="llama3.2:3b", nullable=False)
+    hosted_model: Mapped[str] = mapped_column(String(120), default="gpt-4o-mini", nullable=False)
+    request_timeout_seconds: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    daily_budget_usd: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    monthly_budget_usd: Mapped[float] = mapped_column(Float, default=10.0, nullable=False)
+    pricing_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -307,6 +314,9 @@ class ContentRevision(Base):
     provider_mode: Mapped[str] = mapped_column(String(30), nullable=False)
     generation_mode: Mapped[str] = mapped_column(String(40), nullable=False)
     reason: Mapped[str] = mapped_column(String(255), nullable=False)
+    ai_telemetry_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    estimated_cost_usd: Mapped[float | None] = mapped_column(Float)
+    actual_cost_usd: Mapped[float | None] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     __table_args__ = (
         UniqueConstraint("draft_id", "version", name="uq_content_revision_version"),
@@ -324,6 +334,24 @@ class ContentVersionSelection(Base):
     )
     selected_by: Mapped[str] = mapped_column(String(255), nullable=False)
     selected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AIRequestTelemetry(Base):
+    __tablename__ = "ai_request_telemetry"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    provider: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    model: Mapped[str] = mapped_column(String(120), nullable=False)
+    operation: Mapped[str] = mapped_column(String(40), nullable=False)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer)
+    total_tokens: Mapped[int | None] = mapped_column(Integer)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    failure_code: Mapped[str | None] = mapped_column(String(80))
+    estimated_cost_usd: Mapped[float | None] = mapped_column(Float)
+    actual_cost_usd: Mapped[float | None] = mapped_column(Float)
+    fallback_used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
 class PinApproval(Base):
