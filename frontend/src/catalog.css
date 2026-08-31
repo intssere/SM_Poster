@@ -1952,7 +1952,7 @@
 
 .revision-control-heading,
 .revision-actions,
-.version-compare > label {
+.version-picker > label {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -2070,48 +2070,175 @@
   opacity: .48;
 }
 
-.version-compare {
+.version-picker {
   display: grid;
-  grid-template-columns: minmax(170px, auto) minmax(0, 1fr) auto;
-  align-items: end;
+  grid-template-columns: minmax(220px, auto) minmax(0, 1fr);
+  align-items: center;
   gap: 10px;
   border-top: 1px solid #2e2b25;
   padding-top: 12px;
 }
 
-.version-compare > label {
+.version-picker > label {
   flex-wrap: wrap;
   color: #aaa195;
   font-size: 11px;
 }
 
-.version-snapshot {
-  display: grid;
-  gap: 7px;
-  min-width: 0;
-  border-left: 1px solid #3d382e;
-  padding-left: 12px;
+.version-picker > span {
+  color: #817a70;
+  font-size: 10px;
+  line-height: 1.45;
 }
 
-.version-snapshot div {
+.revision-empty {
+  margin: 0;
+  border-top: 1px solid #2e2b25;
+  color: #817a70;
+  padding-top: 12px;
+  font-size: 10px;
+}
+
+.version-preview-panel {
+  display: grid;
+  gap: 12px;
+  border: 1px solid #39342b;
+  border-radius: 9px;
+  background: #0c0c0a;
+  padding: 13px;
+}
+
+.version-preview-heading,
+.version-column-heading,
+.version-activation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.version-preview-heading strong,
+.version-column-heading strong,
+.version-activation strong {
+  color: #e5dccb;
+  font-size: 12px;
+}
+
+.version-preview-heading > span,
+.version-column-heading > span,
+.version-activation span {
+  color: #817a70;
+  font-size: 10px;
+}
+
+.version-preview-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, .55fr) minmax(240px, 1fr);
+  gap: 12px;
+}
+
+.version-source-proof,
+.version-render-proof {
+  min-width: 0;
+}
+
+.version-source-proof img,
+.version-render-proof img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  border: 1px solid #363229;
+  border-radius: 8px;
+  background: #171611;
+  object-fit: contain;
+}
+
+.version-copy-comparison {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.version-copy-comparison > section {
+  min-width: 0;
+  border: 1px solid #39342b;
+  border-radius: 9px;
+  background: #0e0e0c;
+  padding: 13px;
+}
+
+.version-copy-comparison > section.same-version {
+  opacity: .72;
+}
+
+.version-column-heading {
+  margin-bottom: 11px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid #2e2b25;
+}
+
+.version-column-heading span {
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.version-copy-fields {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+}
+
+.version-copy-fields div {
   display: grid;
   gap: 3px;
 }
 
-.version-snapshot span,
-.version-snapshot small {
+.version-copy-fields dt,
+.version-metadata span {
   color: #817a70;
   font-size: 9px;
   letter-spacing: .07em;
   text-transform: uppercase;
 }
 
-.version-snapshot strong,
-.version-snapshot p {
+.version-copy-fields dd {
   margin: 0;
   color: #d8d0c2;
   font-size: 11px;
+  line-height: 1.45;
+}
+
+.version-metadata {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 13px;
+  padding-top: 11px;
+  border-top: 1px solid #2e2b25;
+}
+
+.version-metadata div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.version-metadata strong {
+  color: #bcb2a2;
+  font-size: 10px;
   font-weight: 500;
+  line-height: 1.35;
+}
+
+.version-activation {
+  align-items: flex-end;
+  border-top: 1px solid #2e2b25;
+  padding-top: 12px;
+}
+
+.version-activation > div {
+  display: grid;
+  gap: 4px;
 }
 
 .revision-message {
@@ -2155,15 +2282,17 @@
     grid-column: span 1;
   }
 
-  .version-compare {
+  .version-picker,
+  .version-preview-grid,
+  .version-copy-comparison {
     grid-template-columns: 1fr;
     align-items: stretch;
   }
 
-  .version-snapshot {
-    border-left: 0;
-    border-top: 1px solid #3d382e;
-    padding: 10px 0 0;
+  .version-preview-heading,
+  .version-activation {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 

@@ -327,3 +327,122 @@ def test_selected_copy_keeps_original_rendered_creative_in_proposal_gallery_payl
         if item["creative"] and item["creative"]["status"] == "RENDERED"
     }
     db.close()
+
+
+def test_copy_version_preview_uses_revision_copy_without_persisting(tmp_path):
+    db, store, proposal_service = setup_service()
+    add_product(db, store, suffix="copy-preview")
+    draft_id = proposal_service.generate_controlled_batch(
+        product_limit=1, max_proposals_per_product=1
+    )["representative_proposals"][0]["id"]
+    persisted_renderer = CreativeRenderService(
+        proposal_service.session_factory,
+        downloader=lambda _: png(),
+        storage=CreativeStorage(tmp_path),
+    )
+    assert persisted_renderer.render_review_batch(1)["rendered"] == 1
+    service = AIRegenerationService(
+        proposal_service.session_factory,
+        creative_renderer=persisted_renderer,
+    )
+    copy_revision = service.regenerate_copy(draft_id)
+    downloads = []
+    renderer = CreativeRenderService(
+        proposal_service.session_factory,
+        downloader=lambda url: downloads.append(url) or png(),
+    )
+    before = {
+        "creatives": db.scalar(select(func.count(PinCreative.id))),
+        "revisions": db.scalar(select(func.count(ContentRevision.id))),
+        "selections": db.scalar(select(func.count(ContentVersionSelection.id))),
+        "approvals": db.scalar(select(func.count(PinApproval.id))),
+        "publications": db.scalar(select(func.count(PinPublication.id))),
+        "telemetry": db.scalar(select(func.count(AIRequestTelemetry.id))),
+    }
+
+    original_png = renderer.preview_version_png(draft_id, "original")
+    revision_png = renderer.preview_version_png(draft_id, copy_revision["id"])
+    cached_revision_png = renderer.preview_version_png(draft_id, copy_revision["id"])
+
+    assert original_png.startswith(b"\x89PNG")
+    assert revision_png.startswith(b"\x89PNG")
+    assert revision_png != original_png
+    assert cached_revision_png == revision_png
+    assert len(downloads) == 2
+    assert renderer.storage is None
+    assert {
+        "creatives": db.scalar(select(func.count(PinCreative.id))),
+        "revisions": db.scalar(select(func.count(ContentRevision.id))),
+        "selections": db.scalar(select(func.count(ContentVersionSelection.id))),
+        "approvals": db.scalar(select(func.count(PinApproval.id))),
+        "publications": db.scalar(select(func.count(PinPublication.id))),
+        "telemetry": db.scalar(select(func.count(AIRequestTelemetry.id))),
+    } == before
+    db.close()
+
+
+def test_versions_include_sanitized_generation_telemetry():
+    db, store, proposal_service = setup_service()
+    add_product(db, store, suffix="copy-metadata")
+    draft_id = proposal_service.generate_controlled_batch(
+        product_limit=1, max_proposals_per_product=1
+    )["representative_proposals"][0]["id"]
+    service = AIRegenerationService(proposal_service.session_factory)
+    revision_payload = service.regenerate_copy(draft_id)
+    telemetry = AIRequestTelemetry(
+        draft_id=draft_id,
+        provider="openai",
+        model="gpt-5.6-luna",
+        operation="copy_regeneration",
+        request_type="generation",
+        generation_type="copy",
+        prompt_tokens=10,
+        completion_tokens=20,
+        total_tokens=30,
+        latency_ms=125,
+        success=True,
+        estimated_cost_usd=0.00012,
+        actual_cost_usd=None,
+        fallback_used=False,
+    )
+    db.add(telemetry)
+    db.flush()
+    revision = db.get(ContentRevision, revision_payload["id"])
+    revision.ai_telemetry_id = telemetry.id
+    db.commit()
+
+    versions = service.versions(draft_id)["versions"]
+    original = versions[0]
+    copy = next(item for item in versions if item["id"] == revision.id)
+
+    assert original["telemetry"] is None
+    assert copy["telemetry"] == {
+        "id": telemetry.id,
+        "provider": "openai",
+        "model": "gpt-5.6-luna",
+        "operation": "copy_regeneration",
+        "request_type": "generation",
+        "generation_type": "copy",
+        "prompt_tokens": 10,
+        "completion_tokens": 20,
+        "total_tokens": 30,
+        "latency_ms": 125,
+        "success": True,
+        "failure_code": None,
+        "fallback_used": False,
+        "fallback_reason": None,
+        "validation_failure_reason": None,
+        "estimated_cost_usd": 0.00012,
+        "actual_cost_usd": None,
+        "created_at": telemetry.created_at,
+    }
+    assert "prompt" not in copy["telemetry"]
+    proposal = next(
+        item for item in proposal_service.list_proposals(status="REVIEW", limit=100)
+        if item["id"] == draft_id
+    )
+    embedded_copy = next(item for item in proposal["versions"] if item["id"] == revision.id)
+    assert embedded_copy["telemetry"]["model"] == "gpt-5.6-luna"
+    assert embedded_copy["telemetry"]["total_tokens"] == 30
+    assert "prompt" not in embedded_copy["telemetry"]
+    db.close()

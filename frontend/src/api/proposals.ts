@@ -85,8 +85,32 @@ export type ContentVersion = {
   ai_telemetry_id?: string | null
   estimated_cost_usd?: number | null
   actual_cost_usd?: number | null
+  telemetry?: {
+    id: string
+    provider: string
+    model: string
+    operation: string
+    request_type: string
+    generation_type: string
+    prompt_tokens?: number | null
+    completion_tokens?: number | null
+    total_tokens?: number | null
+    latency_ms: number
+    success: boolean
+    failure_code?: string | null
+    fallback_used: boolean
+    fallback_reason?: string | null
+    validation_failure_reason?: string | null
+    estimated_cost_usd?: number | null
+    actual_cost_usd?: number | null
+    created_at?: string | null
+  } | null
   created_at?: string | null
   creative: CreativePreview | null
+}
+
+export function proposalVersionPreviewUrl(proposalId: string, versionId: string | null): string {
+  return `/api/pins/proposals/${encodeURIComponent(proposalId)}/versions/${encodeURIComponent(versionId || 'original')}/preview`
 }
 
 export type AISettings = {

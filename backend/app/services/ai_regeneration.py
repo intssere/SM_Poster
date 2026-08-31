@@ -1006,7 +1006,7 @@ class AIRegenerationService:
             )
             db.add(revision)
             db.commit()
-            return self.revision_payload(revision, None, None)
+            return self.revision_payload(revision, None, None, telemetry)
         except Exception:
             db.rollback()
             raise
@@ -1124,7 +1124,38 @@ class AIRegenerationService:
         }
 
     @classmethod
-    def revision_payload(cls, revision: ContentRevision, creative: PinCreative | None, active_id: str | None) -> dict[str, Any]:
+    def telemetry_payload(cls, telemetry: AIRequestTelemetry | None) -> dict[str, Any] | None:
+        if not telemetry:
+            return None
+        return {
+            "id": telemetry.id,
+            "provider": telemetry.provider,
+            "model": telemetry.model,
+            "operation": telemetry.operation,
+            "request_type": telemetry.request_type,
+            "generation_type": telemetry.generation_type,
+            "prompt_tokens": telemetry.prompt_tokens,
+            "completion_tokens": telemetry.completion_tokens,
+            "total_tokens": telemetry.total_tokens,
+            "latency_ms": telemetry.latency_ms,
+            "success": telemetry.success,
+            "failure_code": telemetry.failure_code,
+            "fallback_used": telemetry.fallback_used,
+            "fallback_reason": telemetry.fallback_reason,
+            "validation_failure_reason": telemetry.validation_failure_reason,
+            "estimated_cost_usd": _json_money(telemetry.estimated_cost_usd),
+            "actual_cost_usd": _json_money(telemetry.actual_cost_usd),
+            "created_at": telemetry.created_at,
+        }
+
+    @classmethod
+    def revision_payload(
+        cls,
+        revision: ContentRevision,
+        creative: PinCreative | None,
+        active_id: str | None,
+        telemetry: AIRequestTelemetry | None = None,
+    ) -> dict[str, Any]:
         return {
             "id": revision.id,
             "version": revision.version,
@@ -1155,6 +1186,7 @@ class AIRegenerationService:
             "video_spec": revision.video_spec,
             "background_asset_id": revision.background_asset_id,
             "ai_telemetry_id": revision.ai_telemetry_id,
+            "telemetry": cls.telemetry_payload(telemetry),
             "estimated_cost_usd": _json_money(revision.estimated_cost_usd),
             "actual_cost_usd": _json_money(revision.actual_cost_usd),
             "created_at": revision.created_at,
@@ -1179,6 +1211,8 @@ class AIRegenerationService:
                 "reason": "original_persisted", "generation_type": "original",
                 "intended_channel": "pinterest", "content_payload": None, "video_spec": None,
                 "background_asset_id": None, "created_at": draft.created_at,
+                "ai_telemetry_id": None, "telemetry": None,
+                "estimated_cost_usd": None, "actual_cost_usd": None,
                 "creative": self.creative_payload(original),
             }
             revisions = []
@@ -1186,7 +1220,10 @@ class AIRegenerationService:
                 select(ContentRevision).where(ContentRevision.draft_id == draft.id).order_by(ContentRevision.version)
             ):
                 revisions.append(self.revision_payload(
-                    revision, db.get(PinCreative, revision.creative_id) if revision.creative_id else None, active_id
+                    revision,
+                    db.get(PinCreative, revision.creative_id) if revision.creative_id else None,
+                    active_id,
+                    db.get(AIRequestTelemetry, revision.ai_telemetry_id) if revision.ai_telemetry_id else None,
                 ))
             return {"draft_id": draft.id, "active_version": selection.revision_id if selection else None, "active_version_number": selection and db.get(ContentRevision, selection.revision_id).version or 1, "versions": [originals, *revisions], "publishing_enabled": False}
         finally:
