@@ -24,7 +24,8 @@ from test_creative_rendering import png
 from test_pin_proposals import add_product, setup_service
 
 
-def test_ai_settings_are_disabled_by_default_and_background_generation_requires_opt_in():
+def test_ai_settings_are_disabled_by_default_and_background_generation_requires_opt_in(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     db, store, proposal_service = setup_service()
     settings = AISettingsService(proposal_service.session_factory)
 
@@ -35,6 +36,12 @@ def test_ai_settings_are_disabled_by_default_and_background_generation_requires_
     assert default["credentials_configured"] is False
     assert default["capabilities"]["decorative_backgrounds"] is True
     assert default["decorative_backgrounds_enabled"] is False
+    assert default["hosted_model"] == "gpt-5.6-luna"
+    assert default["image_model"] == "gpt-image-2"
+    assert default["hosted_model_options"] == [
+        {"id": "gpt-5.6-luna", "pricing_configured": True, "automatic_selection": True},
+        {"id": "gpt-5.6-terra", "pricing_configured": False, "automatic_selection": False},
+    ]
     local = settings.update(
         enabled=True,
         provider_mode="local_free",
@@ -46,14 +53,30 @@ def test_ai_settings_are_disabled_by_default_and_background_generation_requires_
         enabled=True,
         provider_mode="hosted_paid",
         decorative_backgrounds_enabled=True,
-        image_model="gpt-image-1",
+        image_model="gpt-image-2",
         video_model="gpt-4o-mini",
         per_request_cost_usd=0.25,
     )
     assert hosted["decorative_backgrounds_enabled"] is True
-    assert hosted["image_model"] == "gpt-image-1"
+    assert hosted["image_model"] == "gpt-image-2"
     assert hosted["per_request_cost_usd"] == 0.25
     assert db.scalar(select(func.count(AISettings.id))) == 1
+    db.close()
+
+
+def test_ai_settings_reject_unapproved_hosted_models():
+    db, store, proposal_service = setup_service()
+    settings = AISettingsService(proposal_service.session_factory)
+    for field, value in (
+        ("hosted_model", "arbitrary-compatible-model"),
+        ("image_model", "arbitrary-image-model"),
+    ):
+        try:
+            settings.update(**{field: value})
+        except AIRegenerationError as exc:
+            assert "Unsupported hosted" in str(exc)
+        else:
+            raise AssertionError(f"Unapproved {field} must be rejected")
     db.close()
 
 
