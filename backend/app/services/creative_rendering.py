@@ -6,7 +6,9 @@ import io
 import ipaddress
 import json
 import socket
+import threading
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -17,7 +19,16 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 from sqlalchemy import select
 
 from app.db.session import SessionLocal
-from app.models.domain import CreativeTemplate, DraftStatus, PinConcept, PinCreative, PinDraft, Product, ProductImage
+from app.models.domain import (
+    ContentRevision,
+    CreativeTemplate,
+    DraftStatus,
+    PinConcept,
+    PinCreative,
+    PinDraft,
+    Product,
+    ProductImage,
+)
 from app.services.fingerprints import creative_fingerprint
 
 CANVAS = (1000, 1500)
@@ -29,6 +40,10 @@ TEMPLATES = {
     "gift_guide_gift_set": {"background": "#FFF2E7", "ink": "#542E2E", "accent": "#B65D48"},
     "editorial_product_pick": {"background": "#F0F0F7", "ink": "#25223A", "accent": "#76689B"},
 }
+PREVIEW_CACHE_LIMIT = 16
+_PREVIEW_CACHE: OrderedDict[str, bytes] = OrderedDict()
+_PREVIEW_CACHE_LOCK = threading.Lock()
+_PREVIEW_RENDER_SLOTS = threading.BoundedSemaphore(2)
 
 
 class CreativeRenderError(ValueError):
@@ -181,7 +196,9 @@ def render_png(spec: dict[str, Any], source: Image.Image, background: Image.Imag
 
 class CreativeRenderService:
     def __init__(self, session_factory: Callable = SessionLocal, downloader: Callable[[str], bytes] | None = None, storage: CreativeStorage | None = None):
-        self.session_factory, self.downloader, self.storage = session_factory, downloader or SecureImageDownloader(), storage or CreativeStorage()
+        self.session_factory = session_factory
+        self.downloader = downloader or SecureImageDownloader()
+        self.storage = storage
 
     def render_review_batch(self, limit: int = 12) -> dict[str, Any]:
         if not 1 <= limit <= 12:
@@ -306,6 +323,131 @@ class CreativeRenderService:
             if owns_session:
                 db.close()
 
+    def preview_version_png(self, draft_id: str, version_id: str) -> bytes:
+        """Render a persisted copy version in memory without creating or updating records."""
+        db = self.session_factory()
+        try:
+            row = db.execute(
+                select(PinDraft, PinConcept, Product)
+                .join(PinConcept, PinConcept.id == PinDraft.concept_id)
+                .join(Product, Product.id == PinConcept.product_id)
+                .where(PinDraft.id == draft_id)
+            ).first()
+            if not row:
+                raise CreativeRenderError("Proposal was not found.")
+            draft, concept, product = row
+            if draft.status != DraftStatus.READY_FOR_REVIEW:
+                raise CreativeRenderError("Only proposals in REVIEW can be previewed.")
+
+            rationale = concept.rationale or {}
+            image_data = rationale.get("authentic_image") or {}
+            image = db.get(ProductImage, image_data.get("id"))
+            revision = None
+            if version_id != "original":
+                revision = db.get(ContentRevision, version_id)
+                if not revision or revision.draft_id != draft_id:
+                    raise CreativeRenderError("Revision was not found for this proposal.")
+                if revision.status != "REVIEW":
+                    raise CreativeRenderError("Only revisions in REVIEW can be previewed.")
+
+            template_key = revision.creative_template_key if revision else rationale.get("creative_template_key")
+            template_version = rationale.get("template_version", 1)
+            template = db.scalar(
+                select(CreativeTemplate).where(
+                    CreativeTemplate.key == template_key,
+                    CreativeTemplate.version == template_version,
+                )
+            )
+            parsed = urlparse(image.source_url) if image else None
+            if (
+                not image
+                or image.product_id != concept.product_id
+                or not image.shopify_media_id
+                or not image.editorial_eligible
+                or image.source_url != image_data.get("url")
+                or not parsed
+                or parsed.scheme != "https"
+                or parsed.hostname != "cdn.shopify.com"
+                or not template
+            ):
+                raise CreativeRenderError("Persisted authentic image or template validation failed.")
+
+            prior = db.scalar(
+                select(PinCreative)
+                .where(PinCreative.draft_id == draft.id, PinCreative.render_status == "RENDERED")
+                .order_by(PinCreative.rendered_at.desc())
+            )
+            prior_checksum = ((prior.render_spec or {}).get("image") or {}).get("checksum_sha256") if prior else None
+            expected_checksum = image_data.get("source_sha256") or image.source_sha256 or prior_checksum
+            headline = revision.headline if revision else rationale["headline"]
+            supporting_text = revision.title if revision else draft.title
+            text_fingerprint = revision.text_fingerprint if revision else draft.text_fingerprint
+            cache_key = hashlib.sha256(json.dumps({
+                "draft_id": draft.id,
+                "version_id": version_id,
+                "text_fingerprint": text_fingerprint,
+                "template_key": template_key,
+                "template_version": template.version,
+                "source_url": image.source_url,
+                "expected_checksum": expected_checksum,
+            }, sort_keys=True).encode()).hexdigest()
+            with _PREVIEW_CACHE_LOCK:
+                cached = _PREVIEW_CACHE.get(cache_key)
+                if cached is not None:
+                    _PREVIEW_CACHE.move_to_end(cache_key)
+                    return cached
+            if not _PREVIEW_RENDER_SLOTS.acquire(blocking=False):
+                raise CreativeRenderError("Preview renderer is busy; try again shortly.")
+            try:
+                with _PREVIEW_CACHE_LOCK:
+                    cached = _PREVIEW_CACHE.get(cache_key)
+                    if cached is not None:
+                        _PREVIEW_CACHE.move_to_end(cache_key)
+                        return cached
+                raw = self.downloader(image.source_url)
+                source = _decode_source(raw)
+                source_sha = hashlib.sha256(raw).hexdigest()
+                if expected_checksum and expected_checksum != source_sha:
+                    raise CreativeRenderError("Downloaded image does not match the persisted source checksum.")
+
+                spec = {
+                    "version": 1,
+                    "design_token_version": 1,
+                    "draft_id": draft.id,
+                    "proposal_id": draft.id,
+                    "concept_id": concept.id,
+                    "product_id": product.id,
+                    "brand": rationale.get("facts_used", {}).get("brand") or product.vendor,
+                    "image": {
+                        "id": image.id,
+                        "shopify_media_id": image.shopify_media_id,
+                        "provenance_url": image.source_url,
+                        "checksum_sha256": source_sha,
+                        "checksum_basis": "persisted_read_only_preview",
+                        "width": source.width,
+                        "height": source.height,
+                    },
+                    "canvas": {"width": 1000, "height": 1500},
+                    "template_key": template_key,
+                    "template_version": template.version,
+                    "headline": headline,
+                    "supporting_text": supporting_text,
+                    "content_angle": revision.content_angle if revision else rationale.get("content_angle"),
+                    "board": rationale.get("board_mapping"),
+                    "tokens": TEMPLATES.get(template_key),
+                }
+                png = render_png(spec, source)
+                with _PREVIEW_CACHE_LOCK:
+                    _PREVIEW_CACHE[cache_key] = png
+                    _PREVIEW_CACHE.move_to_end(cache_key)
+                    while len(_PREVIEW_CACHE) > PREVIEW_CACHE_LIMIT:
+                        _PREVIEW_CACHE.popitem(last=False)
+                return png
+            finally:
+                _PREVIEW_RENDER_SLOTS.release()
+        finally:
+            db.close()
+
     def qa_report(self) -> dict[str, Any]:
         db = self.session_factory()
         try:
@@ -402,6 +544,8 @@ class CreativeRenderService:
             if not existing: db.add(creative); db.flush()
             started = time.monotonic()
             png = render_png(spec, source, background=background)
+            if self.storage is None:
+                self.storage = CreativeStorage()
             creative.sha256, creative.rendered_url = hashlib.sha256(png).hexdigest(), self.storage.write_png(creative.id, png)
             creative.render_status, creative.render_error, creative.render_spec = "RENDERED", None, json.loads(json.dumps(spec, sort_keys=True))
             creative.rendered_at, creative.render_duration_ms, creative.size_bytes = datetime.now(timezone.utc), int((time.monotonic() - started) * 1000), len(png)

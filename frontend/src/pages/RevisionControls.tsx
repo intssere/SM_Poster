@@ -5,6 +5,7 @@ import {
   AISettings,
   ContentVersion,
   PinProposal,
+  proposalVersionPreviewUrl,
   regenerateProposal,
   selectProposalVersion,
 } from '../api/proposals'
@@ -31,6 +32,47 @@ const CHANNELS = [
   ['tiktok', 'TikTok'],
   ['youtube_shorts', 'YouTube Shorts'],
 ] as const
+
+function readable(value?: string | null) {
+  return value ? value.replaceAll('_', ' ') : 'Not available'
+}
+
+function money(value?: number | null) {
+  return value == null ? 'Not reported' : `$${value.toFixed(8)}`
+}
+
+function CopyFields({ version }: { version: ContentVersion }) {
+  return <dl className="version-copy-fields">
+    <div><dt>Headline</dt><dd>{version.headline}</dd></div>
+    <div><dt>Pin title</dt><dd>{version.title}</dd></div>
+    <div><dt>Description</dt><dd>{version.description}</dd></div>
+    <div><dt>Alt text</dt><dd>{version.alt_text}</dd></div>
+    <div><dt>CTA</dt><dd>{version.cta}</dd></div>
+  </dl>
+}
+
+function VersionMetadata({ version }: { version: ContentVersion }) {
+  const telemetry = version.telemetry
+  const validation = version.unsupported_claims.length === 0
+    ? 'Passed · no unsupported claims'
+    : `Review required · ${version.unsupported_claims.length} unsupported claim(s)`
+  return <div className="version-metadata">
+    <div><span>Generation source</span><strong>{telemetry?.provider || readable(version.provider_mode)}</strong></div>
+    <div><span>Model</span><strong>{telemetry?.model || 'No AI model'}</strong></div>
+    <div><span>Result</span><strong>{readable(version.generation_mode)}</strong></div>
+    <div><span>Validation</span><strong>{validation}</strong></div>
+    <div><span>Warnings</span><strong>{version.warnings.length || 'None'}</strong></div>
+    <div><span>Missing facts</span><strong>{version.missing_facts.length || 'None'}</strong></div>
+    <div><span>Text fingerprint</span><strong className="break-anywhere">{version.text_fingerprint}</strong></div>
+    <div><span>Created</span><strong>{version.created_at ? new Date(version.created_at).toLocaleString() : 'Original persisted copy'}</strong></div>
+    <div><span>Estimated cost</span><strong>{money(telemetry?.estimated_cost_usd ?? version.estimated_cost_usd)}</strong></div>
+    <div><span>Actual cost</span><strong>{money(telemetry?.actual_cost_usd ?? version.actual_cost_usd)}</strong></div>
+    <div><span>Telemetry</span><strong>{telemetry?.id || 'None'}</strong></div>
+    <div><span>Tokens</span><strong>{telemetry?.total_tokens == null ? 'Not reported' : `${telemetry.total_tokens} total (${telemetry.prompt_tokens || 0} prompt / ${telemetry.completion_tokens || 0} completion)`}</strong></div>
+    <div><span>Latency</span><strong>{telemetry ? `${telemetry.latency_ms} ms` : 'Not reported'}</strong></div>
+    <div><span>Provider outcome</span><strong>{telemetry ? `${telemetry.success ? 'Success' : `Failed · ${readable(telemetry.failure_code)}`}${telemetry.fallback_used ? ' · fallback used' : ''}` : 'Not applicable'}</strong></div>
+  </div>
+}
 
 
 export function RevisionControls({
@@ -64,6 +106,7 @@ export function RevisionControls({
   }, [active?.id, alternativeTemplate, proposal.id])
 
   const compared = versions.find((version) => (version.id || 'original') === compareId) || active
+  const original = versions.find((version) => version.kind === 'ORIGINAL') || versions[0]
 
   async function regenerate(kind: 'copy' | 'creative' | 'content_variant' | 'image_background' | 'video_script' | 'storyboard') {
     setWorking(kind)
@@ -157,7 +200,8 @@ export function RevisionControls({
         {working === 'storyboard' ? 'Planning scenes' : 'Storyboard'}
       </button>
     </div>
-    <div className="version-compare">
+    {versions.length > 1 ? <>
+    <div className="version-picker">
       <label><GitCompare size={14} />Compare version
         <select value={compareId} onChange={(event) => setCompareId(event.target.value)}>
           {versions.map((version) => <option key={version.id || 'original'} value={version.id || 'original'}>
@@ -165,19 +209,48 @@ export function RevisionControls({
           </option>)}
         </select>
       </label>
-      {compared && <div className="version-snapshot">
-        <div><span>Title</span><strong>{compared.title}</strong></div>
-        {!compact && <div><span>Description</span><p>{compared.description}</p></div>}
-        <small>{compared.generation_mode.replaceAll('_', ' ')} · {compared.creative_template}{compared.actual_cost_usd != null ? ` · $${compared.actual_cost_usd.toFixed(6)}` : compared.estimated_cost_usd != null ? ` · estimated $${compared.estimated_cost_usd.toFixed(6)}` : ''}</small>
-        {compared.intended_channel && <small>{compared.generation_type?.replaceAll('_', ' ')} · intended for {compared.intended_channel.replaceAll('_', ' ')}</small>}
-        {compared.creative?.image_url && compared.generation_type === 'image_background' && <img className="version-creative-preview" src={compared.creative.image_url} alt="Generated background variant with authentic Shopify product image" />}
-        {compared.video_spec && <pre className="video-spec-preview">{JSON.stringify(compared.video_spec, null, 2)}</pre>}
-        {compared.content_payload && <pre className="video-spec-preview">{JSON.stringify(compared.content_payload, null, 2)}</pre>}
-      </div>}
-      <button className="select-version" onClick={() => void selectVersion()} disabled={working !== null || !compared || compared.active}>
-        <Check size={14} />{compared?.active ? 'Active version' : 'Select this version'}
-      </button>
+      <span>Choose a persisted version to inspect. Comparing does not select, approve, or publish it.</span>
     </div>
+    {compared && original && <>
+      <div className="version-preview-panel">
+        <div className="version-preview-heading">
+          <div><p className="eyebrow">SELECTED VERSION PREVIEW</p><strong>v{compared.version} · {compared.kind.toLowerCase()}</strong></div>
+          <span>Read-only · deterministic renderer · authentic Shopify image</span>
+        </div>
+        <div className="version-preview-grid">
+          <div className="version-source-proof">
+            <div className="creative-label">Authentic source <span>Shopify catalog</span></div>
+            <img src={proposal.image_url} alt={`Authentic Shopify source for ${proposal.product_title}`} />
+          </div>
+          <div className="version-render-proof">
+            <div className="creative-label">Selected copy preview <span>not persisted</span></div>
+            <img loading="lazy" key={compareId} src={proposalVersionPreviewUrl(proposal.id, compared.id)} alt={`Deterministic Pinterest preview for version ${compared.version}`} />
+          </div>
+        </div>
+        <p className="revision-safety"><ShieldAlert size={13} />This preview changes with the comparison control. It creates no AI image, creative asset, selection, approval, or publication.</p>
+      </div>
+      <div className="version-copy-comparison">
+        <section>
+          <div className="version-column-heading"><span>Baseline</span><strong>v{original.version} · original{original.active ? ' · active' : ''}</strong></div>
+          <CopyFields version={original} />
+          <VersionMetadata version={original} />
+        </section>
+        <section className={compared.id === original.id ? 'same-version' : ''}>
+          <div className="version-column-heading"><span>Selected for comparison</span><strong>v{compared.version} · {compared.kind.toLowerCase()}{compared.active ? ' · active' : ''}</strong></div>
+          <CopyFields version={compared} />
+          <VersionMetadata version={compared} />
+          {compared.video_spec && <pre className="video-spec-preview">{JSON.stringify(compared.video_spec, null, 2)}</pre>}
+          {compared.content_payload && <pre className="video-spec-preview">{JSON.stringify(compared.content_payload, null, 2)}</pre>}
+        </section>
+      </div>
+      <div className="version-activation">
+        <div><strong>Version activation is a separate review action</strong><span>Activating copy does not approve it and publishing remains disabled.</span></div>
+        <button className="select-version" onClick={() => void selectVersion()} disabled={working !== null || compared.active}>
+          <Check size={14} />{compared.active ? 'Active version' : 'Select this version'}
+        </button>
+      </div>
+    </>} </>
+    : <p className="revision-empty">No copy revisions yet. The persisted original remains active.</p>}
     {message && <p className={`revision-message ${message.kind}`} role="status">{message.text}</p>}
   </section>
 }

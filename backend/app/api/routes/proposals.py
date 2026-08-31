@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from app.schemas.pins import (
     CreativeRenderBatchRequest,
@@ -83,6 +83,25 @@ def proposal_versions(draft_id: str):
         return AIRegenerationService().versions(draft_id)
     except AIRegenerationError as exc:
         status_code = 404 if "not found" in str(exc).lower() else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@router.get("/proposals/{draft_id}/versions/{version_id}/preview")
+def proposal_version_preview(draft_id: str, version_id: str):
+    """Return a non-persisted deterministic preview using the authentic Shopify image."""
+    try:
+        png = CreativeRenderService().preview_version_png(draft_id, version_id)
+        return Response(
+            content=png,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Preview-Persistence": "none",
+                "X-Publishing-Enabled": "false",
+            },
+        )
+    except CreativeRenderError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 429 if "busy" in str(exc).lower() else 422
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 

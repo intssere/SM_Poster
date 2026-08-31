@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from app.db.session import SessionLocal
 from app.models.domain import (
+    AIRequestTelemetry,
     Board,
     Campaign,
     ContentAngle,
@@ -731,7 +732,37 @@ def _creative_payload(creative: Any) -> dict[str, Any] | None:
     }
 
 
-def _version_payload(revision: ContentRevision, creative: Any, active_id: str | None) -> dict[str, Any]:
+def _telemetry_payload(telemetry: AIRequestTelemetry | None) -> dict[str, Any] | None:
+    if not telemetry:
+        return None
+    return {
+        "id": telemetry.id,
+        "provider": telemetry.provider,
+        "model": telemetry.model,
+        "operation": telemetry.operation,
+        "request_type": telemetry.request_type,
+        "generation_type": telemetry.generation_type,
+        "prompt_tokens": telemetry.prompt_tokens,
+        "completion_tokens": telemetry.completion_tokens,
+        "total_tokens": telemetry.total_tokens,
+        "latency_ms": telemetry.latency_ms,
+        "success": telemetry.success,
+        "failure_code": telemetry.failure_code,
+        "fallback_used": telemetry.fallback_used,
+        "fallback_reason": telemetry.fallback_reason,
+        "validation_failure_reason": telemetry.validation_failure_reason,
+        "estimated_cost_usd": telemetry.estimated_cost_usd,
+        "actual_cost_usd": telemetry.actual_cost_usd,
+        "created_at": telemetry.created_at,
+    }
+
+
+def _version_payload(
+    revision: ContentRevision,
+    creative: Any,
+    active_id: str | None,
+    telemetry: AIRequestTelemetry | None = None,
+) -> dict[str, Any]:
     return {
         "id": revision.id,
         "version": revision.version,
@@ -762,6 +793,7 @@ def _version_payload(revision: ContentRevision, creative: Any, active_id: str | 
         "video_spec": revision.video_spec,
         "background_asset_id": revision.background_asset_id,
         "ai_telemetry_id": revision.ai_telemetry_id,
+        "telemetry": _telemetry_payload(telemetry),
         "estimated_cost_usd": revision.estimated_cost_usd,
         "actual_cost_usd": revision.actual_cost_usd,
         "created_at": revision.created_at,
@@ -808,6 +840,10 @@ def _version_context(
         "content_payload": None,
         "video_spec": None,
         "background_asset_id": None,
+        "ai_telemetry_id": None,
+        "telemetry": None,
+        "estimated_cost_usd": None,
+        "actual_cost_usd": None,
         "created_at": draft.created_at,
         "creative": _creative_payload(original_creative),
     }
@@ -816,6 +852,7 @@ def _version_context(
             revision,
             db.get(PinCreative, revision.creative_id) if revision.creative_id else None,
             active_id,
+            db.get(AIRequestTelemetry, revision.ai_telemetry_id) if revision.ai_telemetry_id else None,
         )
         for revision in db.scalars(
             select(ContentRevision)
