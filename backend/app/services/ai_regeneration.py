@@ -208,6 +208,8 @@ def _provider_prompt(
 
 
 def _parse_provider_copy(text: str) -> dict[str, str]:
+    if not isinstance(text, str):
+        raise AIRegenerationError("The AI provider returned invalid structured copy.")
     candidate = text.strip()
     if candidate.startswith("```"):
         candidate = re.sub(r"^```(?:json)?\s*", "", candidate, flags=re.I)
@@ -219,6 +221,10 @@ def _parse_provider_copy(text: str) -> dict[str, str]:
     if not isinstance(parsed, dict):
         raise AIRegenerationError("The AI provider returned an invalid copy object.")
     fields = ("headline", "title", "description", "alt_text")
+    if set(parsed) != set(fields):
+        raise AIRegenerationError("The AI provider returned an invalid copy object.")
+    if any(not isinstance(parsed[field], str) for field in fields):
+        raise AIRegenerationError("The AI provider returned invalid structured copy.")
     output = {field: _clean(parsed.get(field)) for field in fields}
     if any(not output[field] for field in fields):
         raise AIRegenerationError("The AI provider returned incomplete copy.")
@@ -651,6 +657,36 @@ class AIRegenerationService:
         db.flush()
         return telemetry
 
+    def _fail_hosted(
+        self,
+        db: Any,
+        *,
+        provider: str,
+        model: str,
+        started: float,
+        failure_code: str,
+        message: str,
+        draft_id: str,
+        result: TextGenerationResult | None = None,
+        estimated_cost: Decimal | None = None,
+        actual_cost: Decimal | None = None,
+    ) -> None:
+        """Persist safe failure telemetry without allowing a paid fallback revision."""
+        self._telemetry(
+            db,
+            provider=provider,
+            model=model,
+            started=started,
+            result=result,
+            estimated_cost=estimated_cost,
+            actual_cost=actual_cost,
+            failure_code=failure_code,
+            fallback_used=False,
+            draft_id=draft_id,
+        )
+        db.commit()
+        raise AIRegenerationError(message)
+
     def _copy_from_provider(
         self,
         db: Any,
@@ -659,6 +695,7 @@ class AIRegenerationService:
         intelligence: ProductIntelligence,
         rationale: dict[str, Any],
         version: int,
+        draft_id: str,
     ) -> tuple[dict[str, str], str, str, AIRequestTelemetry | None, float | None, float | None]:
         mode = self._provider_mode(settings)
         if mode == "disabled":
@@ -668,6 +705,16 @@ class AIRegenerationService:
 
         provider = self.provider_factory(settings)
         if provider is None:
+            if mode == "hosted_paid":
+                self._fail_hosted(
+                    db,
+                    provider="openai",
+                    model=settings.hosted_model,
+                    started=time.perf_counter(),
+                    failure_code="provider_unavailable",
+                    message="The hosted AI provider is unavailable.",
+                    draft_id=draft_id,
+                )
             return _copy_variant(None, rationale, product, intelligence, version), mode, "fallback_unavailable", None, None, None
         prompt = _provider_prompt(product, intelligence, rationale)
         estimated_prompt, estimated_completion = _estimated_tokens(prompt)
@@ -689,45 +736,125 @@ class AIRegenerationService:
             elif daily + estimated_cost > settings.daily_budget_usd or monthly + estimated_cost > settings.monthly_budget_usd:
                 failure_code = "budget_exceeded"
             if failure_code:
-                telemetry = self._telemetry(
-                    db, provider="openai", model=provider.model, started=time.perf_counter(),
-                    estimated_cost=estimated_cost, failure_code=failure_code, fallback_used=True,
+                self._fail_hosted(
+                    db,
+                    provider="openai",
+                    model=provider.model,
+                    started=time.perf_counter(),
+                    estimated_cost=estimated_cost,
+                    failure_code=failure_code,
+                    message="Paid AI regeneration was blocked by budget controls.",
+                    draft_id=draft_id,
                 )
-                return _copy_variant(None, rationale, product, intelligence, version), mode, f"fallback_{failure_code}", telemetry, estimated_cost, None
         started = time.perf_counter()
         try:
             result = provider.generate(prompt)
         except ProviderUnavailable as exc:
+            if mode == "hosted_paid":
+                self._fail_hosted(
+                    db,
+                    provider=provider.name,
+                    model=provider.model,
+                    started=started,
+                    estimated_cost=estimated_cost,
+                    failure_code=exc.code,
+                    message=str(exc),
+                    draft_id=draft_id,
+                )
             telemetry = self._telemetry(
                 db, provider=provider.name, model=provider.model, started=started,
                 estimated_cost=estimated_cost, failure_code=exc.code, fallback_used=True,
+                draft_id=draft_id,
             )
             return _copy_variant(None, rationale, product, intelligence, version), mode, f"fallback_{exc.code}"[:40], telemetry, estimated_cost, None
         except Exception:
+            if mode == "hosted_paid":
+                self._fail_hosted(
+                    db,
+                    provider=provider.name,
+                    model=provider.model,
+                    started=started,
+                    estimated_cost=estimated_cost,
+                    failure_code="provider_error",
+                    message="The hosted AI provider failed.",
+                    draft_id=draft_id,
+                )
             telemetry = self._telemetry(
                 db, provider=provider.name, model=provider.model, started=started,
                 estimated_cost=estimated_cost, failure_code="provider_error", fallback_used=True,
+                draft_id=draft_id,
             )
             return _copy_variant(None, rationale, product, intelligence, version), mode, "fallback_provider_error", telemetry, estimated_cost, None
+        if not isinstance(result, TextGenerationResult):
+            message = "The AI provider returned invalid structured copy."
+            if mode == "hosted_paid":
+                self._fail_hosted(
+                    db,
+                    provider=provider.name,
+                    model=provider.model,
+                    started=started,
+                    estimated_cost=estimated_cost,
+                    failure_code="invalid_response",
+                    message=message,
+                    draft_id=draft_id,
+                )
+            raise AIRegenerationError(message)
         usage_estimated_cost = _cost(result.prompt_tokens, result.completion_tokens, pricing)
         if usage_estimated_cost is not None:
             estimated_cost = usage_estimated_cost
         actual_cost = None  # Text APIs do not return a billed amount in generation responses.
         try:
             output = _parse_provider_copy(result.text)
-            _validate_provider_copy(output, product, intelligence, rationale)
-            output["cta"] = _clean(rationale.get("cta") or "Shop the authentic product")
-        except AIRegenerationError:
+        except AIRegenerationError as exc:
+            failure_code = "invalid_response"
+            if mode == "hosted_paid":
+                self._fail_hosted(
+                    db,
+                    provider=provider.name,
+                    model=provider.model,
+                    started=started,
+                    result=result,
+                    estimated_cost=estimated_cost,
+                    actual_cost=actual_cost,
+                    failure_code=failure_code,
+                    message=str(exc),
+                    draft_id=draft_id,
+                )
             self._telemetry(
                 db, provider=provider.name, model=provider.model, started=started,
                 result=result, estimated_cost=estimated_cost, actual_cost=actual_cost,
-                failure_code="fact_safety_rejected",
+                failure_code=failure_code, draft_id=draft_id,
+            )
+            db.commit()
+            raise
+        try:
+            _validate_provider_copy(output, product, intelligence, rationale)
+            output["cta"] = _clean(rationale.get("cta") or "Shop the authentic product")
+        except AIRegenerationError as exc:
+            if mode == "hosted_paid":
+                self._fail_hosted(
+                    db,
+                    provider=provider.name,
+                    model=provider.model,
+                    started=started,
+                    result=result,
+                    estimated_cost=estimated_cost,
+                    actual_cost=actual_cost,
+                    failure_code="fact_safety_rejected",
+                    message=str(exc),
+                    draft_id=draft_id,
+                )
+            self._telemetry(
+                db, provider=provider.name, model=provider.model, started=started,
+                result=result, estimated_cost=estimated_cost, actual_cost=actual_cost,
+                failure_code="fact_safety_rejected", draft_id=draft_id,
             )
             db.commit()
             raise
         telemetry = self._telemetry(
             db, provider=provider.name, model=provider.model, started=started,
             result=result, estimated_cost=estimated_cost, actual_cost=actual_cost,
+            draft_id=draft_id,
         )
         return output, mode, "provider_generated", telemetry, estimated_cost, actual_cost
 
@@ -772,7 +899,7 @@ class AIRegenerationService:
             settings = self._settings(db)
             version = self._next_version(db, draft.id)
             copy, provider_mode, generation_mode, telemetry, estimated_cost, actual_cost = self._copy_from_provider(
-                db, settings, product, intelligence, rationale, version
+                db, settings, product, intelligence, rationale, version, draft.id
             )
             facts = _facts(product, intelligence, image)
             parent = self._parent(db, draft.id)

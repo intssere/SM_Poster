@@ -2,17 +2,23 @@ import json
 from decimal import Decimal
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from app.models.domain import (
+    AIGeneratedAsset,
     AIRequestTelemetry,
     AISettings,
     ContentRevision,
+    ContentVersionSelection,
     PinApproval,
     PinCreative,
     PinDraft,
     PinPublication,
 )
+from app.api.routes import proposals as proposal_routes
+from app.schemas.pins import RegenerationRequest
 from app.services.ai_providers import (
     OllamaTextProvider,
     OpenAIImageProvider,
@@ -351,6 +357,227 @@ def test_hosted_provider_records_tokens_cost_and_never_persists_secret(monkeypat
     db.close()
 
 
+@pytest.mark.parametrize("failure_code", ["authentication_error", "provider_error"])
+def test_hosted_provider_failure_is_surfaced_once_without_revision_or_escalation(
+    monkeypatch, failure_code
+):
+    db, product, proposal_service, draft_id = prepared(f"hosted-{failure_code}")
+    secret = "sk-hosted-failure-secret"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+    AISettingsService(proposal_service.session_factory).update(
+        enabled=True,
+        provider_mode="hosted_paid",
+        hosted_model="gpt-5.6-luna",
+        daily_budget_usd=5,
+        monthly_budget_usd=20,
+    )
+    draft = db.get(PinDraft, draft_id)
+    original = (draft.title, draft.description, draft.status, draft.version)
+    provider = FakeProvider(
+        safe_copy(product.title),
+        name="openai",
+        model="gpt-5.6-luna",
+        error=ProviderUnavailable(failure_code, "The hosted AI provider failed safely."),
+    )
+    selected_models = []
+
+    def provider_factory(settings):
+        selected_models.append(settings.hosted_model)
+        return provider
+
+    with pytest.raises(AIRegenerationError, match="failed safely"):
+        AIRegenerationService(
+            proposal_service.session_factory,
+            provider_factory=provider_factory,
+        ).regenerate_copy(draft_id)
+
+    db.expire_all()
+    telemetry = db.scalar(select(AIRequestTelemetry))
+    assert provider.calls == 1
+    assert selected_models == ["gpt-5.6-luna"]
+    assert (draft.title, draft.description, draft.status, draft.version) == original
+    assert db.scalar(select(func.count(ContentRevision.id))) == 0
+    assert db.scalar(select(func.count(ContentVersionSelection.id))) == 0
+    assert db.scalar(select(func.count(AIGeneratedAsset.id))) == 0
+    assert db.scalar(select(func.count(PinApproval.id))) == 0
+    assert db.scalar(select(func.count(PinPublication.id))) == 0
+    assert telemetry.provider == "openai"
+    assert telemetry.model == "gpt-5.6-luna"
+    assert telemetry.draft_id == draft_id
+    assert telemetry.success is False
+    assert telemetry.failure_code == failure_code
+    assert telemetry.fallback_used is False
+    assert telemetry.fallback_reason is None
+    persisted = json.dumps(
+        [dict(row) for row in db.execute(select(AIRequestTelemetry.__table__)).mappings()],
+        default=str,
+    )
+    assert secret not in persisted
+    assert "Authorization" not in persisted
+    assert "gpt-5.6-terra" not in persisted
+    db.close()
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_code"),
+    [
+        (
+            FakeProvider(
+                "not-json",
+                name="openai",
+                model="gpt-5.6-luna",
+            ),
+            "invalid_response",
+        ),
+        (
+            FakeProvider(
+                safe_copy("unused"),
+                name="openai",
+                model="gpt-5.6-luna",
+                error=ProviderUnavailable(
+                    "invalid_response",
+                    "The hosted AI provider returned no usable text.",
+                ),
+            ),
+            "invalid_response",
+        ),
+        (
+            FakeProvider(
+                json.dumps({
+                    "headline": "extra",
+                    "title": "extra",
+                    "description": "extra",
+                    "alt_text": "extra",
+                    "unexpected": "must fail",
+                }),
+                name="openai",
+                model="gpt-5.6-luna",
+            ),
+            "invalid_response",
+        ),
+        (
+            FakeProvider(
+                json.dumps({
+                    "headline": 123,
+                    "title": "wrong type",
+                    "description": "wrong type",
+                    "alt_text": "wrong type",
+                }),
+                name="openai",
+                model="gpt-5.6-luna",
+            ),
+            "invalid_response",
+        ),
+    ],
+)
+def test_hosted_malformed_or_refused_output_creates_no_revision(provider, expected_code):
+    db, product, proposal_service, draft_id = prepared(f"hosted-{id(provider)}")
+    AISettingsService(proposal_service.session_factory).update(
+        enabled=True,
+        provider_mode="hosted_paid",
+        hosted_model="gpt-5.6-luna",
+        daily_budget_usd=5,
+        monthly_budget_usd=20,
+    )
+
+    with pytest.raises(AIRegenerationError):
+        AIRegenerationService(
+            proposal_service.session_factory,
+            provider_factory=lambda _: provider,
+        ).regenerate_copy(draft_id)
+
+    telemetry = db.scalar(select(AIRequestTelemetry))
+    assert provider.calls == 1
+    assert telemetry.failure_code == expected_code
+    assert telemetry.fallback_used is False
+    assert db.scalar(select(func.count(ContentRevision.id))) == 0
+    assert db.scalar(select(func.count(ContentVersionSelection.id))) == 0
+    assert db.scalar(select(func.count(AIGeneratedAsset.id))) == 0
+    assert db.scalar(select(func.count(PinApproval.id))) == 0
+    assert db.scalar(select(func.count(PinPublication.id))) == 0
+    db.close()
+
+
+def test_hosted_fact_safety_rejection_preserves_telemetry_without_revision():
+    db, product, proposal_service, draft_id = prepared("hosted-fact-safety")
+    AISettingsService(proposal_service.session_factory).update(
+        enabled=True,
+        provider_mode="hosted_paid",
+        hosted_model="gpt-5.6-luna",
+        daily_budget_usd=5,
+        monthly_budget_usd=20,
+    )
+    provider = FakeProvider(
+        json.dumps({
+            "headline": f"Number one {product.title}",
+            "title": product.title,
+            "description": f"{product.title} is the bestseller deal of the season.",
+            "alt_text": f"{product.title} product image",
+        }),
+        name="openai",
+        model="gpt-5.6-luna",
+    )
+
+    with pytest.raises(AIRegenerationError, match="unsupported claim"):
+        AIRegenerationService(
+            proposal_service.session_factory,
+            provider_factory=lambda _: provider,
+        ).regenerate_copy(draft_id)
+
+    telemetry = db.scalar(select(AIRequestTelemetry))
+    assert provider.calls == 1
+    assert telemetry.failure_code == "fact_safety_rejected"
+    assert telemetry.validation_failure_reason == "fact_safety_rejected"
+    assert telemetry.fallback_used is False
+    assert db.scalar(select(func.count(ContentRevision.id))) == 0
+    db.close()
+
+
+def test_hosted_authentication_error_message_and_telemetry_do_not_leak_secret():
+    db, product, proposal_service, draft_id = prepared("hosted-auth-secret")
+    secret = "sk-never-persist-or-return"
+    AISettingsService(proposal_service.session_factory).update(
+        enabled=True,
+        provider_mode="hosted_paid",
+        hosted_model="gpt-5.6-luna",
+        daily_budget_usd=5,
+        monthly_budget_usd=20,
+    )
+    calls = []
+
+    def rejected(method, url, headers, payload, timeout):
+        calls.append((method, url, headers, payload, timeout))
+        return 401, {"error": {"message": secret}}
+
+    provider = OpenAITextProvider(
+        "gpt-5.6-luna",
+        api_key=secret,
+        requester=rejected,
+    )
+    with pytest.raises(AIRegenerationError) as exc:
+        AIRegenerationService(
+            proposal_service.session_factory,
+            provider_factory=lambda _: provider,
+        ).regenerate_copy(draft_id)
+
+    assert len(calls) == 1
+    assert calls[0][1] == "https://api.openai.com/v1/responses"
+    assert secret not in str(exc.value)
+    telemetry = db.scalar(select(AIRequestTelemetry))
+    persisted = json.dumps(dict(db.execute(
+        select(AIRequestTelemetry.__table__)
+    ).mappings().one()), default=str)
+    assert telemetry.failure_code == "authentication_error"
+    assert telemetry.prompt_tokens is None
+    assert telemetry.completion_tokens is None
+    assert telemetry.total_tokens is None
+    assert telemetry.actual_cost_usd is None
+    assert secret not in persisted
+    assert "Authorization" not in persisted
+    assert db.scalar(select(func.count(ContentRevision.id))) == 0
+    db.close()
+
+
 def test_unsafe_provider_copy_is_rejected_before_revision_but_telemetry_remains():
     db, product, proposal_service, draft_id = prepared("unsafe-provider")
     AISettingsService(proposal_service.session_factory).update(enabled=True, provider_mode="local_free")
@@ -415,13 +642,15 @@ def test_paid_budget_blocks_provider_call_and_leaves_local_mode_available():
         proposal_service.session_factory,
         provider_factory=lambda _: hosted,
     )
-    revision = service.regenerate_copy(draft_id)
+    with pytest.raises(AIRegenerationError, match="budget controls"):
+        service.regenerate_copy(draft_id)
 
     usage = db.scalar(select(AIRequestTelemetry))
     assert hosted.calls == 0
-    assert revision["generation_mode"] == "fallback_budget_exceeded"
+    assert db.scalar(select(func.count(ContentRevision.id))) == 0
     assert usage.failure_code == "budget_exceeded"
-    assert usage.fallback_used is True
+    assert usage.fallback_used is False
+    assert usage.fallback_reason is None
 
     AISettingsService(proposal_service.session_factory).update(
         enabled=True, provider_mode="local_free"
@@ -451,12 +680,16 @@ def test_paid_zero_budget_and_invalid_pricing_fail_closed_without_provider_calls
         "gpt-5.6-terra": {"input_per_1m": "not-a-price", "output_per_1m": 12.00},
     }
     db.commit()
-    revision = AIRegenerationService(
-        proposal_service.session_factory,
-        provider_factory=lambda _: provider,
-    ).regenerate_copy(draft_id)
+    with pytest.raises(AIRegenerationError, match="budget controls"):
+        AIRegenerationService(
+            proposal_service.session_factory,
+            provider_factory=lambda _: provider,
+        ).regenerate_copy(draft_id)
     assert provider.calls == 0
-    assert revision["generation_mode"] == "fallback_pricing_unavailable"
+    assert db.scalar(select(func.count(ContentRevision.id))) == 0
+    first_usage = db.scalar(select(AIRequestTelemetry))
+    assert first_usage.failure_code == "pricing_unavailable"
+    assert first_usage.fallback_used is False
 
     AISettingsService(proposal_service.session_factory).update(
         daily_budget_usd=0,
@@ -464,13 +697,38 @@ def test_paid_zero_budget_and_invalid_pricing_fail_closed_without_provider_calls
     )
     AISettingsService(proposal_service.session_factory).update(hosted_model="gpt-5.6-luna")
     priced = FakeProvider(safe_copy(product.title), name="openai", model="gpt-5.6-luna")
-    zero_revision = AIRegenerationService(
-        proposal_service.session_factory,
-        provider_factory=lambda _: priced,
-    ).regenerate_copy(draft_id)
+    with pytest.raises(AIRegenerationError, match="budget controls"):
+        AIRegenerationService(
+            proposal_service.session_factory,
+            provider_factory=lambda _: priced,
+        ).regenerate_copy(draft_id)
     assert priced.calls == 0
-    assert zero_revision["generation_mode"] == "fallback_budget_exceeded"
+    assert db.scalar(select(func.count(ContentRevision.id))) == 0
+    failures = db.scalars(select(AIRequestTelemetry).order_by(AIRequestTelemetry.created_at)).all()
+    assert [failure.failure_code for failure in failures] == [
+        "pricing_unavailable",
+        "budget_exceeded",
+    ]
     db.close()
+
+
+def test_paid_failure_is_returned_to_api_caller_as_conflict(monkeypatch):
+    class FailedRegeneration:
+        def regenerate_copy(self, draft_id):
+            raise AIRegenerationError("The hosted AI provider credentials were rejected.")
+
+    monkeypatch.setattr(
+        proposal_routes,
+        "AIRegenerationService",
+        lambda: FailedRegeneration(),
+    )
+    with pytest.raises(HTTPException) as exc:
+        proposal_routes.regenerate_proposal(
+            "proposal-id",
+            RegenerationRequest(kind="copy", count=1),
+        )
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "The hosted AI provider credentials were rejected."
 
 
 def test_terra_pricing_is_explicitly_selectable_and_costed():

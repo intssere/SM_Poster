@@ -2,6 +2,7 @@
 from sqlalchemy import func, select
 
 from app.models.domain import (
+    AIRequestTelemetry,
     AISettings,
     ContentRevision,
     ContentVersionSelection,
@@ -156,7 +157,7 @@ def test_revision_lineage_and_active_selection_are_explicit_and_reversible():
     db.close()
 
 
-def test_hosted_mode_without_credentials_falls_back_without_original_proposal_mutation(monkeypatch):
+def test_hosted_mode_without_credentials_fails_without_original_proposal_mutation(monkeypatch):
     db, store, proposal_service = setup_service()
     add_product(db, store, suffix="hosted")
     draft_id = proposal_service.generate_controlled_batch(
@@ -171,13 +172,19 @@ def test_hosted_mode_without_credentials_falls_back_without_original_proposal_mu
     before = (draft.title, draft.status, db.scalar(select(func.count(ContentRevision.id))))
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    revision = AIRegenerationService(proposal_service.session_factory).regenerate_copy(draft_id)
+    try:
+        AIRegenerationService(proposal_service.session_factory).regenerate_copy(draft_id)
+    except AIRegenerationError as exc:
+        assert "not configured" in str(exc)
+    else:
+        raise AssertionError("Missing hosted credentials must fail without a revision")
 
     db.expire_all()
     assert (draft.title, draft.status) == before[:2]
-    assert db.scalar(select(func.count(ContentRevision.id))) == before[2] + 1
-    assert revision["generation_mode"] == "fallback_missing_credentials"
-    assert revision["provider_mode"] == "hosted_paid"
+    assert db.scalar(select(func.count(ContentRevision.id))) == before[2]
+    telemetry = db.scalar(select(AIRequestTelemetry))
+    assert telemetry.failure_code == "missing_credentials"
+    assert telemetry.fallback_used is False
     assert db.scalar(select(func.count(PinApproval.id))) == 0
     assert db.scalar(select(func.count(PinPublication.id))) == 0
     db.close()
