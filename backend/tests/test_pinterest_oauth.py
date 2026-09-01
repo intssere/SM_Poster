@@ -3,11 +3,16 @@ import base64
 import hashlib
 import httpx
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
+from sqlalchemy.orm import sessionmaker
 
 from app.core.config import get_settings
 from app.services import pinterest_oauth as oauth
 from app.main import app
 from app.db.session import SessionLocal
+from app.db.session import get_db
+from app.db.base import Base
 from app.models.domain import PinterestOAuthState
 from fastapi.testclient import TestClient
 
@@ -17,6 +22,23 @@ def configure(monkeypatch, **values):
     defaults.update(values)
     for key, value in defaults.items(): monkeypatch.setenv(key, value)
     get_settings.cache_clear()
+
+@pytest.fixture
+def isolated_app_db():
+    engine = create_engine("sqlite+pysqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    PinterestOAuthState.__table__.create(engine, checkfirst=True)
+    testing_session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    def override_get_db():
+        db = testing_session()
+        try: yield db
+        finally: db.close()
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_db] = override_get_db
+    try: yield testing_session
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
 
 
 def test_authorization_url_and_hashed_unpredictable_state(monkeypatch):
@@ -114,17 +136,23 @@ def test_callback_result_contract_is_frontend_readable(result):
     assert parse_qs(parts.query)["result"] == [result] and parts.fragment == "channels"
     assert all(secret not in url for secret in ("code=", "state=", "access_token=", "refresh_token=", "client_secret="))
 
-def test_oauth_start_route_requires_admin_and_persists_hashed_state(monkeypatch):
+def test_oauth_start_route_requires_admin_and_persists_hashed_state(monkeypatch, isolated_app_db):
     configure(monkeypatch)
     monkeypatch.setenv("AUTH_DISABLED", "true"); monkeypatch.setenv("APP_ENV", "development")
     get_settings.cache_clear()
-    with SessionLocal() as db:
+    with isolated_app_db() as db:
         db.query(PinterestOAuthState).delete(); db.commit()
     response = TestClient(app).post("/api/channels/pinterest/oauth/start", headers={"Origin": "http://localhost:5000"})
     assert response.status_code == 200
     url = response.json()["authorization_url"]
     raw = url.split("state=", 1)[1]
-    with SessionLocal() as db:
+    with isolated_app_db() as db:
         rows = db.query(PinterestOAuthState).all()
         assert rows and rows[-1].state_hash == hashlib.sha256(raw.encode()).hexdigest()
         assert raw not in {row.state_hash for row in rows}
+
+def test_oauth_start_route_denies_anonymous(monkeypatch):
+    configure(monkeypatch)
+    monkeypatch.setenv("AUTH_DISABLED", "false"); monkeypatch.setenv("APP_ENV", "development")
+    get_settings.cache_clear()
+    assert TestClient(app).post("/api/channels/pinterest/oauth/start", headers={"Origin": "http://localhost:5000"}).status_code == 401
