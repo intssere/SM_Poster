@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from app.db.session import get_db
+from app.core.config import get_settings
 from app.models.domain import PinterestOAuthState, PinterestConnection
 from app.services.pinterest_oauth import authorization_url, new_state, PinterestClient, encrypt_token, SCOPES
 
@@ -36,11 +38,12 @@ def pinterest_oauth_start(db: Session = Depends(get_db)):
 
 @router.get("/pinterest/callback")
 async def pinterest_callback(code: str | None = Query(default=None), state: str | None = Query(default=None), db: Session = Depends(get_db)):
-    if not code or not state: raise HTTPException(400, "OAuth callback is missing required parameters")
+    safe = get_settings().frontend_return_url
+    if not code or not state: return RedirectResponse(f"{safe}?provider=pinterest&result=oauth_error")
     digest = __import__("hashlib").sha256(state.encode()).hexdigest()
     now = datetime.now(timezone.utc)
     claimed = db.execute(update(PinterestOAuthState).where(PinterestOAuthState.state_hash == digest, PinterestOAuthState.consumed_at.is_(None), PinterestOAuthState.expires_at >= now).values(consumed_at=now))
-    if claimed.rowcount != 1: db.rollback(); raise HTTPException(400, "Invalid or expired OAuth state")
+    if claimed.rowcount != 1: db.rollback(); return RedirectResponse(f"{safe}?provider=pinterest&result=invalid_state")
     db.commit()
     try:
         tokens = await PinterestClient().exchange_code(code)
@@ -49,11 +52,11 @@ async def pinterest_callback(code: str | None = Query(default=None), state: str 
         if not tokens.get("access_token") or not tokens.get("refresh_token") or not set(SCOPES).issubset(scopes): raise RuntimeError("Pinterest authorization did not grant required access")
         account = await PinterestClient().user_account(tokens["access_token"])
     except Exception as exc:
-        raise HTTPException(400, "Pinterest OAuth could not be completed safely") from exc
+        return RedirectResponse(f"{safe}?provider=pinterest&result=oauth_error")
     connection = PinterestConnection(external_user_id=str(account.get("id") or account.get("username")), username=account.get("username"), granted_scopes=scopes, access_token_ciphertext=encrypt_token(tokens["access_token"]), refresh_token_ciphertext=encrypt_token(tokens["refresh_token"]), access_token_expires_at=now + timedelta(seconds=int(tokens.get("expires_in", 0))) if tokens.get("expires_in") else None, token_type=tokens.get("token_type"))
     db.query(PinterestConnection).filter(PinterestConnection.status == "CONNECTED").update({"status":"DISCONNECTED", "disconnected_at":now})
     db.add(connection); db.commit()
-    return {"connected": True, "account": {"id": connection.external_user_id, "username": connection.username}}
+    return RedirectResponse(f"{safe}?provider=pinterest&result=connected")
 
 @router.post("/pinterest/disconnect")
 def pinterest_disconnect(db: Session = Depends(get_db)):

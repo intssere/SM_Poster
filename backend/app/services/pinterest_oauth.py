@@ -1,10 +1,12 @@
 from __future__ import annotations
 import base64, hashlib, secrets
 from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 import httpx
 from cryptography.fernet import Fernet
 from app.core.config import get_settings
+from app.models.domain import PinterestConnection
 
 SCOPES = ("user_accounts:read", "boards:read", "pins:read")
 
@@ -51,6 +53,24 @@ class PinterestClient:
         payload = r.json()
         if not payload.get("access_token"): raise RuntimeError("Pinterest token refresh response was invalid")
         return payload
+
+async def refresh_connection(db, connection: PinterestConnection, client: PinterestClient | None = None) -> PinterestConnection:
+    old_access, old_refresh = connection.access_token_ciphertext, connection.refresh_token_ciphertext
+    try:
+        payload = await (client or PinterestClient()).refresh_token(decrypt_token(old_refresh))
+        scopes = payload.get("scope", connection.granted_scopes)
+        scopes = scopes.split() if isinstance(scopes, str) else list(scopes or [])
+        if not payload.get("access_token") or not set(SCOPES).issubset(scopes): raise RuntimeError("Pinterest token refresh did not grant required access")
+        connection.access_token_ciphertext = encrypt_token(payload["access_token"])
+        if payload.get("refresh_token"): connection.refresh_token_ciphertext = encrypt_token(payload["refresh_token"])
+        now = datetime.now(timezone.utc)
+        connection.access_token_expires_at = now + timedelta(seconds=int(payload.get("expires_in", 0))) if payload.get("expires_in") else connection.access_token_expires_at
+        if payload.get("refresh_token_expires_in"): connection.refresh_token_expires_at = now + timedelta(seconds=int(payload["refresh_token_expires_in"]))
+        connection.granted_scopes, connection.refreshed_at, connection.last_error_code = scopes, now, None
+        db.commit(); return connection
+    except Exception as exc:
+        connection.access_token_ciphertext, connection.refresh_token_ciphertext = old_access, old_refresh
+        connection.last_error_code = "TOKEN_REFRESH_FAILED"; db.commit(); raise RuntimeError("Pinterest token refresh failed safely") from exc
     async def user_account(self, access_token: str) -> dict:
         s = get_settings()
         owned = self.client is None; c = self.client or httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0))
