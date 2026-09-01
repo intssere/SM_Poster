@@ -57,7 +57,11 @@ def _creative_for_approval(db: Any, draft: PinDraft, revision: ContentRevision |
     return creative
 
 
-def resolve_active_identity(db: Any, draft: PinDraft) -> tuple[ContentRevision | None, PinCreative, str]:
+def resolve_active_identity(
+    db: Any,
+    draft: PinDraft,
+    reviewed_creative_id: str | None = None,
+) -> tuple[ContentRevision | None, PinCreative, str]:
     from app.models.domain import ContentVersionSelection
 
     selection = db.scalar(
@@ -70,7 +74,14 @@ def resolve_active_identity(db: Any, draft: PinDraft) -> tuple[ContentRevision |
         if not revision or revision.draft_id != draft.id or revision.status != "REVIEW":
             raise PublicationIdentityError("The active revision is invalid for this proposal.")
         version_id = revision.id
-    return revision, _creative_for_approval(db, draft, revision), version_id
+    if not reviewed_creative_id:
+        raise PublicationIdentityError("Approval requires the explicitly reviewed creative identity.")
+    creative = db.get(PinCreative, reviewed_creative_id)
+    if not creative or creative.draft_id != draft.id:
+        raise PublicationIdentityError("Reviewed creative identity is invalid for this proposal.")
+    if revision and revision.creative_id and revision.creative_id != creative.id:
+        raise PublicationIdentityError("Revision and creative identities do not match.")
+    return revision, creative, version_id
 
 
 class PublicationIdentityService:
@@ -80,7 +91,7 @@ class PublicationIdentityService:
     def create_snapshot(
         self,
         *,
-        
+        approval_id: str,
         board_id: str,
         integration_account_id: str | None = None,
         scheduled_for: datetime | None = None,
@@ -89,7 +100,7 @@ class PublicationIdentityService:
         _publishing_must_be_disabled()
         db = self.session_factory()
         try:
-            approval = db.get(PinApproval, 
+            approval = db.get(PinApproval, approval_id)
             if not approval or approval.decision != "APPROVED":
                 raise PublicationIdentityError("An APPROVED decision is required.")
             draft = db.get(PinDraft, approval.draft_id)
@@ -127,7 +138,6 @@ class PublicationIdentityService:
                 draft_id=draft.id,
                 revision_id=revision.id if revision else None,
                 creative_id=creative.id,
-                d,
                 source_image_id=creative.source_image_id,
                 board_id=board.id,
                 integration_account_id=account.id if account else None,
@@ -145,7 +155,7 @@ class PublicationIdentityService:
                 draft_id=draft.id,
                 revision_id=revision.id if revision else None,
                 creative_id=creative.id,
-                d,
+                approval_id=approval.id,
                 source_image_id=creative.source_image_id,
                 template_id=template.id,
                 template_key=template.key,

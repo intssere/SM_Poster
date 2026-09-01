@@ -1317,7 +1317,9 @@ class PinProposalService:
             if decision == "APPROVED":
                 from app.services.publication_identity import resolve_active_identity
 
-                revision, creative, version_id = resolve_active_identity(db, draft)
+                revision, creative, version_id = resolve_active_identity(
+                    db, draft, reviewed_creative_id
+                )
                 if not reviewed_creative_id:
                     raise ValueError("Approval requires the explicitly reviewed creative identity.")
                 if reviewed_creative_id != creative.id:

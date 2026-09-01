@@ -1,171 +1,26 @@
-"""Immutable approval and publication identity snapshots.
+# Project State
 
-This module deliberately contains no provider or publishing integration.  It only
-binds reviewed database identities and copies their publish-relevant values into
-an audit snapshot while publishing remains disabled.
-"""
+Diamond Shelf Social Studio is an internal Shopify-catalog-to-editorial-content review system. The GitHub `main` baseline for Task #34 is merge commit `d2674c98eec5da08f6e5c1843aa3526fce0f857c` (PR #8).
 
-from __future__ import annotations
+Current capabilities include catalog normalization, controlled proposal generation, deterministic authentic-product creative rendering, immutable AI-assisted copy revisions, review-only generated backgrounds and video specifications, explicit version selection, approval auditing, and read-only revision previews.
 
-from datetime import datetime
-from typing import Any
+Database head is Alembic `0010`. This migration adds nullable identity fields for historical compatibility; it does not invent revision identities for existing rows.
 
-from sqlalchemy import select
+## Repository and test state
 
-from app.core.config import get_settings
-from app.db.session import SessionLocal
-from app.models.domain import (
-    Board,
-    ContentRevision,
-    CreativeTemplate,
-    DraftStatus,
-    IntegrationAccount,
-    PinApproval,
-    PinConcept,
-    PinCreative,
-    PinDraft,
-    PinPublication,
-    PublicationStatus,
-)
-from app.services.fingerprints import publication_identity_fingerprint
+Task #34 adds models, migration logic, services, and isolated regression fixtures. Test-created approval/publication rows are ephemeral and do not represent deployed business data. No production database was connected or queried during this repository-only verification.
 
+## Latest verified runtime state
 
-class PublicationIdentityError(ValueError):
-    pass
+The latest previously verified runtime snapshot was recorded during the controlled Adagio v3 verification, before Task #34:
 
+- Content revisions: 4
+- Version selections: 1 (Adagio v3 selected)
+- AI telemetry: 5
+- Generated assets: 0
+- Approvals: 0
+- Publications: 0
 
-def _publishing_must_be_disabled() -> None:
-    if get_settings().publishing_enabled:
-        raise PublicationIdentityError(
-            "Publication identity snapshots are review-only while publishing is enabled."
-        )
+These are carried-forward runtime values, not fresh Task #34 measurements. Task #34 used isolated test databases and did not query the production PostgreSQL database. Re-verify against the deployed database before operational use.
 
-
-def _creative_for_approval(db: Any, draft: PinDraft, revision: ContentRevision | None) -> PinCreative:
-    if revision and revision.creative_id:
-        creative = db.get(PinCreative, revision.creative_id)
-    else:
-        creative = db.scalar(
-            select(PinCreative)
-            .where(PinCreative.draft_id == draft.id)
-            .order_by(PinCreative.created_at.asc(), PinCreative.id)
-        )
-    if not creative or creative.draft_id != draft.id:
-        raise PublicationIdentityError("The selected version has no valid creative for this proposal.")
-    if revision and revision.creative_id and revision.creative_id != creative.id:
-        raise PublicationIdentityError("Revision and creative identities do not match.")
-    return creative
-
-
-def resolve_active_identity(db: Any, draft: PinDraft) -> tuple[ContentRevision | None, PinCreative, str]:
-    from app.models.domain import ContentVersionSelection
-
-    selection = db.scalar(
-        select(ContentVersionSelection).where(ContentVersionSelection.draft_id == draft.id)
-    )
-    revision = None
-    version_id = "original"
-    if selection:
-        revision = db.get(ContentRevision, selection.revision_id)
-        if not revision or revision.draft_id != draft.id or revision.status != "REVIEW":
-            raise PublicationIdentityError("The active revision is invalid for this proposal.")
-        version_id = revision.id
-    return revision, _creative_for_approval(db, draft, revision), version_id
-
-
-class PublicationIdentityService:
-    def __init__(self, session_factory=SessionLocal):
-        self.session_factory = session_factory
-
-    def create_snapshot(
-        self,
-        *,
-        approval_id: str,
-        board_id: str,
-        integration_account_id: str | None = None,
-        scheduled_for: datetime | None = None,
-    ) -> PinPublication:
-        """Create an immutable, non-publishing snapshot for an exact approval."""
-        _publishing_must_be_disabled()
-        db = self.session_factory()
-        try:
-            approval = db.get(PinApproval, approval_id)
-            if not approval or approval.decision != "APPROVED":
-                raise PublicationIdentityError("An APPROVED decision is required.")
-            draft = db.get(PinDraft, approval.draft_id)
-            creative = db.get(PinCreative, approval.creative_id) if approval.creative_id else None
-            revision = db.get(ContentRevision, approval.revision_id) if approval.revision_id else None
-            if not draft or not creative or creative.draft_id != draft.id:
-                raise PublicationIdentityError("Approval identities are incomplete or mismatched.")
-            if approval.revision_id and (
-                not revision
-                or revision.draft_id != draft.id
-                or (revision.creative_id and revision.creative_id != creative.id)
-            ):
-                raise PublicationIdentityError("Approval revision and creative do not match.")
-            expected_version = revision.id if revision else "original"
-            if approval.approved_version_id != expected_version:
-                raise PublicationIdentityError("Approval version identity is inconsistent.")
-
-            board = db.get(Board, board_id)
-            concept = db.get(PinConcept, draft.concept_id)
-            template = db.get(CreativeTemplate, creative.template_id)
-            if not board or not concept or board.store_id != concept.store_id:
-                raise PublicationIdentityError("Board does not belong to the proposal store.")
-            account = None
-            if integration_account_id:
-                account = db.get(IntegrationAccount, integration_account_id)
-                if not account or account.store_id != concept.store_id:
-                    raise PublicationIdentityError("Integration account does not belong to the proposal store.")
-            if not template or not creative.source_image_id:
-                raise PublicationIdentityError("Creative provenance is incomplete.")
-
-            text_hash = revision.text_fingerprint if revision else draft.text_fingerprint
-            destination = revision.destination_url if revision else draft.destination_url
-            utm_url = revision.utm_url if revision else draft.utm_url
-            fingerprint = publication_identity_fingerprint(
-                draft_id=draft.id,
-                revision_id=revision.id if revision else None,
-                creative_id=creative.id,
-                source_image_id=creative.source_image_id,
-                board_id=board.id,
-                integration_account_id=account.id if account else None,
-                destination_url=destination,
-                utm_url=utm_url,
-            )
-            if db.scalar(
-                select(PinPublication).where(
-                    PinPublication.publication_fingerprint == fingerprint
-                )
-            ):
-                raise PublicationIdentityError("An identical publication snapshot already exists.")
-
-            publication = PinPublication(
-                draft_id=draft.id,
-                revision_id=revision.id if revision else None,
-                creative_id=creative.id,
-                approval_id=approval.id,
-                source_image_id=creative.source_image_id,
-                template_id=template.id,
-                template_key=template.key,
-                template_version=template.version,
-                text_fingerprint=text_hash,
-                creative_fingerprint=creative.creative_fingerprint,
-                board_id=board.id,
-                pinterest_board_id=board.pinterest_board_id,
-                integration_account_id=account.id if account else None,
-                destination_url=destination,
-                utm_url=utm_url,
-                publication_fingerprint=fingerprint,
-                status=PublicationStatus.SCHEDULED if scheduled_for else PublicationStatus.APPROVED,
-                scheduled_for=scheduled_for,
-            )
-            db.add(publication)
-            db.commit()
-            db.refresh(publication)
-            return publication
-        except Exception:
-            db.rollback()
-            raise
-        finally:
-            db.close()
+`AISettings.enabled=false` and `PUBLISHING_ENABLED=false`. No provider or Pinterest publishing call is part of publication identity operations.

@@ -35,7 +35,7 @@ Models and adapter boundaries exist, but OAuth, production Pin creation, board c
 
 Task #34 verification uses isolated test databases. Those fixtures create and delete approvals and publication snapshots and are not evidence of live runtime counts. This repository session had no production database connection, so it did not re-query or mutate runtime business data.
 
-The latest previously verified runtime baseline, carried forward from the PR #7/#8 handoff, is 2 content revisions, 0 selections, 5 telemetry records, 0 generated assets, 0 approvals, and 0 publications. Treat those values as the latest verified runtime snapshot, not as counts measured by Task #34. Re-query the deployed PostgreSQL database before relying on them operationally.
+The latest previously verified runtime snapshot, carried forward from controlled Adagio v3 verification, is 4 content revisions, 1 selection (Adagio v3), 5 telemetry records, 0 generated assets, 0 approvals, and 0 publications. Treat these values as a prior verified snapshot, not as counts measured by Task #34. Re-query the deployed PostgreSQL database before relying on them operationally.
 
 ## Known issues and next work
 
