@@ -1,7 +1,6 @@
 from __future__ import annotations
 import base64, hashlib, secrets
 from datetime import datetime, timedelta, timezone
-from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 import httpx
 from cryptography.fernet import Fernet
@@ -54,6 +53,15 @@ class PinterestClient:
         if not payload.get("access_token"): raise RuntimeError("Pinterest token refresh response was invalid")
         return payload
 
+    async def user_account(self, access_token: str) -> dict:
+        s = get_settings()
+        owned = self.client is None; c = self.client or httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0))
+        try: r = await c.get(f"{s.pinterest_api_base.rstrip('/')}/user_account", headers={"Authorization": f"Bearer {access_token}"})
+        finally:
+            if owned: await c.aclose()
+        if r.status_code >= 400: raise RuntimeError("Pinterest account verification failed")
+        return r.json()
+
 async def refresh_connection(db, connection: PinterestConnection, client: PinterestClient | None = None) -> PinterestConnection:
     old_access, old_refresh = connection.access_token_ciphertext, connection.refresh_token_ciphertext
     try:
@@ -71,11 +79,3 @@ async def refresh_connection(db, connection: PinterestConnection, client: Pinter
     except Exception as exc:
         connection.access_token_ciphertext, connection.refresh_token_ciphertext = old_access, old_refresh
         connection.last_error_code = "TOKEN_REFRESH_FAILED"; db.commit(); raise RuntimeError("Pinterest token refresh failed safely") from exc
-    async def user_account(self, access_token: str) -> dict:
-        s = get_settings()
-        owned = self.client is None; c = self.client or httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0))
-        try: r = await c.get(f"{s.pinterest_api_base.rstrip('/')}/user_account", headers={"Authorization": f"Bearer {access_token}"})
-        finally:
-            if owned: await c.aclose()
-        if r.status_code >= 400: raise RuntimeError("Pinterest account verification failed")
-        return r.json()
