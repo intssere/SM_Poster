@@ -15,6 +15,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("APP_SECRET_KEY", "SESSION_SECRET"),
     )
     publishing_enabled: bool = False
+    auth_disabled: bool = False
+    admin_username: str | None = Field(default=None, validation_alias=AliasChoices("ADMIN_USERNAME", "AUTH_ADMIN_USERNAME"))
+    admin_password_hash: str | None = Field(default=None, validation_alias=AliasChoices("ADMIN_PASSWORD_HASH", "AUTH_ADMIN_PASSWORD_HASH"))
+    auth_session_ttl_seconds: int = 3600
+    auth_allowed_origins: str = ""
 
     shopify_shop: str | None = Field(
         default=None,
@@ -37,6 +42,22 @@ class Settings(BaseSettings):
 
     ai_provider: str = "none"
     openai_api_key: str | None = None
+
+    @property
+    def is_exposed(self) -> bool:
+        import os
+        return self.app_env.lower() in {"production", "prod", "replit"} or bool(os.getenv("REPLIT_DEPLOYMENT")) or bool(os.getenv("REPLIT_DEV_DOMAIN"))
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        import os
+        configured = [item.strip().rstrip("/") for item in self.auth_allowed_origins.split(",") if item.strip()]
+        if configured:
+            return configured
+        domain = os.getenv("REPLIT_DEV_DOMAIN")
+        if domain:
+            return [f"https://{domain.rstrip('/')}" ]
+        return ["http://localhost:5000", "http://127.0.0.1:5000"]
 
 
 @lru_cache

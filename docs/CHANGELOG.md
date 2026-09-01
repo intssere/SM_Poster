@@ -9,3 +9,9 @@
 - Preserved readability of historical rows with null v2 identity fields.
 - Added authoritative architecture, project state, roadmap, decisions, handoff, changelog, and security documentation.
 - Kept AI and publishing disabled; no provider or Pinterest integration was added.
+
+## Task #35
+
+- Added single-admin login/logout/session endpoints, centralized API authorization, restrictive CORS, and Origin/CSRF protection.
+- Added a minimal frontend login gate without browser storage tokens.
+- No AI, Pinterest, scheduler, publishing, or database migration changes.

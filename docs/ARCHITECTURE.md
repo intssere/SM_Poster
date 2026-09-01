@@ -16,3 +16,5 @@ Approval v2 binds a decision to the proposal, selected revision (or explicit `or
 Publication Identity v2 copies the approved revision, creative, authentic source image, template key/version, text and creative fingerprints, board/account identifiers, destination and UTM URLs, and schedule/provider identifiers into `pin_publications`. Snapshot fields are independent of later proposal, board, URL, selection, or creative changes.
 
 `PublicationIdentityService` is a database-only review boundary. It refuses mismatched identities and duplicate fingerprints and contains no provider/Pinterest client. `PUBLISHING_ENABLED` must remain false.
+
+Task #35 adds a centralized single-admin authentication boundary: operational API routes require a short-lived signed HttpOnly session, unsafe requests require an allowed Origin, and exposed deployments fail closed without server-side auth configuration.
