@@ -6,6 +6,10 @@ import pytest
 
 from app.core.config import get_settings
 from app.services import pinterest_oauth as oauth
+from app.main import app
+from app.db.session import SessionLocal
+from app.models.domain import PinterestOAuthState
+from fastapi.testclient import TestClient
 
 
 def configure(monkeypatch, **values):
@@ -109,3 +113,16 @@ def test_callback_result_contract_is_frontend_readable(result):
     parts = urlsplit(url)
     assert parse_qs(parts.query)["result"] == [result] and parts.fragment == "channels"
     assert all(secret not in url for secret in ("code=", "state=", "access_token=", "refresh_token=", "client_secret="))
+
+def test_oauth_start_route_requires_admin_and_persists_hashed_state(monkeypatch):
+    configure(monkeypatch)
+    monkeypatch.setenv("AUTH_DISABLED", "true"); monkeypatch.setenv("APP_ENV", "development")
+    get_settings.cache_clear()
+    response = TestClient(app).post("/api/channels/pinterest/oauth/start", headers={"Origin": "http://localhost:5000"})
+    assert response.status_code == 200
+    url = response.json()["authorization_url"]
+    raw = url.split("state=", 1)[1]
+    with SessionLocal() as db:
+        rows = db.query(PinterestOAuthState).all()
+        assert rows and rows[-1].state_hash == hashlib.sha256(raw.encode()).hexdigest()
+        assert raw not in {row.state_hash for row in rows}
