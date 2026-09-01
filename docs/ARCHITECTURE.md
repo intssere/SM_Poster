@@ -18,3 +18,6 @@ Publication Identity v2 copies the approved revision, creative, authentic source
 `PublicationIdentityService` is a database-only review boundary. It refuses mismatched identities and duplicate fingerprints and contains no provider/Pinterest client. `PUBLISHING_ENABLED` must remain false.
 
 Task #35 adds a centralized single-admin authentication boundary: operational API routes require a short-lived signed HttpOnly session, unsafe requests require an allowed Origin, and exposed deployments fail closed without server-side auth configuration.
+### Pinterest account connection
+
+Task #36 adds a server-side OAuth boundary for account connection only. Tokens are encrypted at rest and never returned to the frontend; no board or Pin write path exists.

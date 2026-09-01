@@ -29,7 +29,7 @@ def test_registry_has_one_internal_channel_and_future_channels():
     assert pinterest["adapter_key"] == "pinterest-internal-preview"
     assert pinterest["capabilities"] == {
         "content_preview": True,
-        "account_connection": False,
+        "account_connection": True,
         "publishing": False,
         "scheduling": False,
         "analytics": False,
@@ -42,6 +42,11 @@ def test_registry_has_one_internal_channel_and_future_channels():
 
 def test_capabilities_endpoint_never_exposes_publishing(monkeypatch):
     monkeypatch.setenv("PUBLISHING_ENABLED", "true")
+    monkeypatch.setenv("AUTH_DISABLED", "true")
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    from app.core.config import get_settings
+    get_settings.cache_clear()
     response = TestClient(app).get("/api/channels/capabilities")
 
     assert response.status_code == 200

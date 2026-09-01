@@ -23,3 +23,5 @@ Internal proposal APIs do not yet have dedicated authentication/authorization. A
 ## Task #35 status
 
 Operational API authorization is now centralized behind a single-admin signed session. `APP_SECRET_KEY` must be at least 32 characters and `ADMIN_USERNAME` plus a PBKDF2 `ADMIN_PASSWORD_HASH` are required in exposed mode. `AUTH_DISABLED=true` is rejected by policy in exposed mode. Cookies are HttpOnly, SameSite strict, Secure when exposed, and expire automatically; credentials never enter frontend storage or logs.
+
+Task #36 OAuth uses one-time hashed state records, server-side code exchange, and Fernet-encrypted tokens. Only read scopes are requested; publishing scopes and calls remain disabled.

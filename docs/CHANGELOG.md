@@ -15,3 +15,7 @@
 - Added single-admin login/logout/session endpoints, centralized API authorization, restrictive CORS, and Origin/CSRF protection.
 - Added a minimal frontend login gate without browser storage tokens.
 - No AI, Pinterest, scheduler, publishing, or database migration changes.
+
+## Task #36
+
+- Added read-only Pinterest OAuth account connection with hashed one-time state and encrypted credentials.

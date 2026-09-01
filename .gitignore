@@ -12,3 +12,8 @@ dist/
 screenshots/
 storage/
 backend/generated-creatives/
+/.pytest-tmp*/
+/backend/.pytest-tmp*/
+/backend/test.db
+/backend/DejaVuSans*.ttf
+/.venv/

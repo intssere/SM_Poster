@@ -255,7 +255,7 @@ class PinterestInternalPreviewAdapter:
             ),
             capabilities=ChannelFeatureSet(
                 content_preview=True,
-                account_connection=False,
+                account_connection=True,
                 publishing=False,
                 scheduling=False,
                 analytics=False,

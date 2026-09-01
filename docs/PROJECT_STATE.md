@@ -28,3 +28,6 @@ The latest previously verified runtime snapshot was recorded during the controll
 These are carried-forward runtime values, not fresh Task #34 measurements. Task #34 used isolated test databases and did not query the production PostgreSQL database. Re-verify against the deployed database before operational use.
 
 `AISettings.enabled=false` and `PUBLISHING_ENABLED=false`. No provider or Pinterest publishing call is part of publication identity operations.
+## Task #36 status
+
+Pinterest Account Connection/OAuth v1 is implemented as account connection only. Alembic head is 0011; publishing and AI/provider modes remain disabled.

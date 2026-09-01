@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     pinterest_client_secret: str | None = None
     pinterest_redirect_uri: str | None = None
     pinterest_api_base: str = "https://api.pinterest.com/v5"
+    pinterest_token_encryption_key: str | None = None
+    frontend_return_url: str = "http://localhost:5000/#channels"
 
     object_storage_endpoint: str | None = None
     object_storage_bucket: str = "diamond-shelf-pinterest"

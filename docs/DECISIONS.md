@@ -23,3 +23,6 @@ Hosted text defaults to `gpt-5.6-luna`; `gpt-5.6-terra` is explicit-only escalat
 ## Authentication v1
 
 Use a stateless HMAC-signed, short-lived HttpOnly cookie for the single admin. Keep credentials and secrets in server configuration, enforce Origin checks for unsafe API requests, and fail closed in exposed environments. Do not add a database migration.
+## Task #36
+
+Use Authorization Code OAuth with one-time hashed state and Fernet-encrypted credentials. Restrict scopes to account/board/Pin reads; retain publishing disabled.
