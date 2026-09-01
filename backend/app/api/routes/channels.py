@@ -53,7 +53,9 @@ async def pinterest_callback(code: str | None = Query(default=None), state: str 
         account = await PinterestClient().user_account(tokens["access_token"])
     except Exception as exc:
         return RedirectResponse(f"{safe}?provider=pinterest&result=oauth_error")
-    connection = PinterestConnection(external_user_id=str(account.get("id") or account.get("username")), username=account.get("username"), granted_scopes=scopes, access_token_ciphertext=encrypt_token(tokens["access_token"]), refresh_token_ciphertext=encrypt_token(tokens["refresh_token"]), access_token_expires_at=now + timedelta(seconds=int(tokens.get("expires_in", 0))) if tokens.get("expires_in") else None, token_type=tokens.get("token_type"))
+    external_id = account.get("id")
+    if not isinstance(external_id, (str, int)) or not str(external_id): return RedirectResponse(f"{safe}?provider=pinterest&result=oauth_error")
+    connection = PinterestConnection(external_user_id=str(external_id), username=account.get("username"), account_type=account.get("account_type"), profile_image_url=account.get("profile_image_url"), granted_scopes=scopes, access_token_ciphertext=encrypt_token(tokens["access_token"]), refresh_token_ciphertext=encrypt_token(tokens["refresh_token"]), access_token_expires_at=now + timedelta(seconds=int(tokens.get("expires_in", 0))) if tokens.get("expires_in") else None, refresh_token_expires_at=now + timedelta(seconds=int(tokens.get("refresh_token_expires_in", 0))) if tokens.get("refresh_token_expires_in") else None, last_verified_at=now, token_type=tokens.get("token_type"))
     db.query(PinterestConnection).filter(PinterestConnection.status == "CONNECTED").update({"status":"DISCONNECTED", "disconnected_at":now})
     db.add(connection); db.commit()
     return RedirectResponse(f"{safe}?provider=pinterest&result=connected")

@@ -10,7 +10,7 @@ function readableMediaKind(kind: string) {
   return kind.replaceAll('_', ' ')
 }
 
-function ChannelCard({ channel }: { channel: ChannelDescriptor }) {
+function ChannelCard({ channel, pinterest, onConnect, onDisconnect }: { channel: ChannelDescriptor; pinterest?: any; onConnect?: () => void; onDisconnect?: () => void }) {
   const internal = channel.status === 'INTERNAL_PREVIEW'
   return <article className={`channel-card ${internal ? 'channel-card-internal' : 'channel-card-future'}`}>
     <header className="channel-card-heading">
@@ -18,7 +18,8 @@ function ChannelCard({ channel }: { channel: ChannelDescriptor }) {
       <span className={`channel-status ${internal ? 'internal' : 'future'}`}>{internal ? <CheckCircle2 size={13} /> : <Clock3 size={13} />}{readableStatus(channel)}</span>
     </header>
     <p className="channel-summary">{channel.capability_summary}</p>
-    <div className="channel-account"><span>Account status</span><strong>{channel.account.status === 'INTERNAL' ? 'Internal only' : 'Not connected'}</strong></div>
+    <div className="channel-account"><span>Account status</span><strong>{pinterest ? (pinterest.connected ? 'Connected' : 'Not connected') : (channel.account.status === 'INTERNAL' ? 'Internal only' : 'Not connected')}</strong></div>
+    {pinterest?.connected ? <div><p>{pinterest.account?.username || 'Pinterest account'} · {pinterest.account?.id}</p><p>Scopes: {(pinterest.account?.granted_scopes || []).join(', ')}</p><p>Access expires: {pinterest.account?.access_token_expires_at || 'Unknown'}<br/>Refresh expires: {pinterest.account?.refresh_token_expires_at || 'Unknown'}</p><button className="secondary-action" onClick={onDisconnect}>Disconnect</button></div> : pinterest && <button className="secondary-action" onClick={onConnect}>Connect Pinterest</button>}
     <div className="channel-capabilities" aria-label={`${channel.label} capabilities`}>
       <span className={channel.capabilities.content_preview ? 'enabled' : ''}>Preview</span>
       <span className={channel.capabilities.account_connection ? 'enabled' : ''}>Connect</span>
@@ -49,14 +50,14 @@ export function ChannelsPage() {
   }, [])
 
   useEffect(() => { void load() }, [load])
-  useEffect(() => { fetch('/api/channels/pinterest/status', { credentials: 'include' }).then(r => r.json()).then(setPinterest).catch(() => null) }, [])
+  useEffect(() => { fetch('/api/channels/pinterest/status', { credentials: 'include' }).then(r => r.json()).then(setPinterest).catch(() => null); const params = new URLSearchParams(window.location.search); const result = params.get('result'); if (result) { setError(result === 'connected' ? null : `Pinterest connection: ${result}`); window.history.replaceState({}, '', `${window.location.pathname}#channels`) } }, [])
   async function connectPinterest() {
     const response = await fetch('/api/channels/pinterest/oauth/start', { method: 'POST', credentials: 'include' })
     if (!response.ok) { setError('Pinterest connection is unavailable.'); return }
     const payload = await response.json(); window.location.assign(payload.authorization_url)
   }
   async function disconnectPinterest() {
-    const response = await fetch('/api/channels/pinterest/disconnect', { method: 'POST', credentials: 'include', headers: { Origin: window.location.origin } })
+    const response = await fetch('/api/channels/pinterest/disconnect', { method: 'POST', credentials: 'include' })
     if (response.ok) setPinterest({ status: 'NOT_CONNECTED', connected: false })
   }
 
@@ -68,6 +69,6 @@ export function ChannelsPage() {
     <section className="channel-intro"><div><p className="eyebrow">ADAPTER STATUS</p><h3>Build once. Adapt by channel.</h3><p>Channel requirements are modeled separately from the existing Pinterest proposal and creative records. No future platform is connected or contacted.</p></div><div className="channel-legend"><span><i className="legend-dot internal" /> Pinterest internal preview</span><span><i className="legend-dot future" /> Future / not connected</span></div></section>
     {error ? <div className="channel-error" role="alert"><ShieldAlert size={20} /><div><strong>Channel status unavailable</strong><p>{error}</p><button className="secondary-action" onClick={() => void load()}>Try again</button></div></div>
       : !capabilities ? <div className="channel-loading"><span /><span /><span /></div>
-        : <section className="channel-grid">{capabilities.channels.map((channel) => <ChannelCard channel={channel} key={channel.key} />)}<article className="channel-card"><header className="channel-card-heading"><h3>Pinterest account</h3><span className="channel-status">{pinterest?.connected ? 'Connected' : 'Not connected'}</span></header>{pinterest?.connected ? <><p>{pinterest.account?.username || pinterest.account?.id}</p><p>Scopes: {(pinterest.account?.granted_scopes || []).join(', ')}</p><button className="secondary-action" onClick={() => void disconnectPinterest()}>Disconnect</button></> : <button className="secondary-action" onClick={() => void connectPinterest()}>Connect Pinterest</button>}</article></section>}
+        : <section className="channel-grid">{capabilities.channels.map((channel) => <ChannelCard channel={channel} pinterest={channel.key === 'pinterest' ? pinterest : undefined} onConnect={() => void connectPinterest()} onDisconnect={() => void disconnectPinterest()} key={channel.key} />)}</section>}
   </div>
 }
