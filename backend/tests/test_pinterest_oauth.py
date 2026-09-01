@@ -9,7 +9,7 @@ from app.services import pinterest_oauth as oauth
 
 
 def configure(monkeypatch, **values):
-    defaults = {"PINTEREST_CLIENT_ID": "client", "PINTEREST_CLIENT_SECRET": "secret", "PINTEREST_REDIRECT_URI": "https://studio.example/callback", "PINTEREST_TOKEN_ENCRYPTION_KEY": oauth.Fernet.generate_key().decode()}
+    defaults = {"DATABASE_URL": "sqlite+pysqlite:///:memory:", "PINTEREST_CLIENT_ID": "client", "PINTEREST_CLIENT_SECRET": "secret", "PINTEREST_REDIRECT_URI": "https://studio.example/callback", "PINTEREST_TOKEN_ENCRYPTION_KEY": oauth.Fernet.generate_key().decode()}
     defaults.update(values)
     for key, value in defaults.items(): monkeypatch.setenv(key, value)
     get_settings.cache_clear()
@@ -81,7 +81,7 @@ def test_refresh_failure_is_sanitized(monkeypatch):
 
 @pytest.mark.parametrize("value", ["", "not-a-fernet-key"])
 def test_missing_or_invalid_encryption_configuration_fails_closed(monkeypatch, value):
-    monkeypatch.setenv("PINTEREST_TOKEN_ENCRYPTION_KEY", value); get_settings.cache_clear()
+    configure(monkeypatch, PINTEREST_TOKEN_ENCRYPTION_KEY=value); get_settings.cache_clear()
     with pytest.raises(RuntimeError): oauth.encrypt_token("token")
 
 def test_redirect_safe_values_exclude_oauth_secrets():
