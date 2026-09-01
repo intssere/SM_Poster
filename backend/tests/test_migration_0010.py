@@ -35,6 +35,9 @@ def test_0010_is_additive_nullable_and_does_not_backfill_unprovable_identity(mon
     assert ("pin_publications", "source_image_id", True) in added
     assert ("pin_publications", "destination_url", True) in added
     assert all(kind != "execute" for kind, *_ in calls)
+    foreign_keys = [entry for entry in calls if entry[0] == "fk"]
+    assert foreign_keys
+    assert all(entry[2]["ondelete"] == "RESTRICT" for entry in foreign_keys)
 
 
 def test_phase0_schema_excludes_later_identity_columns():

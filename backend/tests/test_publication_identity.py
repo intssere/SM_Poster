@@ -80,7 +80,12 @@ def test_approval_binds_exact_revision_and_creative_and_is_immutable_after_selec
     revision2 = _revision(db, draft, creative, 2)
     selection = _activate(db, draft, revision2)
 
-    proposals.decide(draft.id, "APPROVED", "Reviewed exact revision.")
+    proposals.decide(
+        draft.id,
+        "APPROVED",
+        "Reviewed exact revision.",
+        reviewed_creative_id=creative.id,
+    )
     approval = db.scalar(select(PinApproval).where(PinApproval.draft_id == draft.id))
     assert approval.revision_id == revision2.id
     assert approval.creative_id == creative.id
@@ -99,7 +104,7 @@ def test_publication_snapshot_keeps_exact_identity_when_proposal_state_changes()
     db, proposals, draft, creative = _prepared("snapshot")
     revision = _revision(db, draft, creative, 2)
     _activate(db, draft, revision)
-    proposals.decide(draft.id, "APPROVED")
+    proposals.decide(draft.id, "APPROVED", reviewed_creative_id=creative.id)
     approval = db.scalar(select(PinApproval).where(PinApproval.draft_id == draft.id))
     board = db.scalar(select(Board).where(Board.id.is_not(None)))
 
@@ -136,7 +141,7 @@ def test_duplicate_snapshot_and_mismatched_revision_creative_fail_closed():
     db, proposals, draft, creative = _prepared("duplicate")
     revision = _revision(db, draft, creative, 2)
     _activate(db, draft, revision)
-    proposals.decide(draft.id, "APPROVED")
+    proposals.decide(draft.id, "APPROVED", reviewed_creative_id=creative.id)
     approval = db.scalar(select(PinApproval).where(PinApproval.draft_id == draft.id))
     board = db.scalar(select(Board).where(Board.id.is_not(None)))
     identities = PublicationIdentityService(proposals.session_factory)
@@ -147,6 +152,23 @@ def test_duplicate_snapshot_and_mismatched_revision_creative_fail_closed():
         assert "identical publication snapshot" in str(exc)
     else:
         raise AssertionError("Duplicate publication identity must fail closed")
+
+    second_approval = PinApproval(
+        draft_id=draft.id,
+        revision_id=revision.id,
+        creative_id=creative.id,
+        approved_version_id=revision.id,
+        decision="APPROVED",
+        decided_by="second_review_event",
+    )
+    db.add(second_approval)
+    db.commit()
+    try:
+        identities.create_snapshot(approval_id=second_approval.id, board_id=board.id)
+    except PublicationIdentityError as exc:
+        assert "identical publication snapshot" in str(exc)
+    else:
+        raise AssertionError("A new approval event must not bypass publication deduplication")
 
     db2, proposals2, other_draft, other_creative = _prepared("mismatch-other")
     other_revision = _revision(db2, other_draft, other_creative, 2)
@@ -171,6 +193,30 @@ def test_duplicate_snapshot_and_mismatched_revision_creative_fail_closed():
         raise AssertionError("Mismatched revision/creative must fail closed")
     db.close()
     db2.close()
+
+
+def test_approval_requires_explicit_matching_reviewed_creative_identity():
+    db, proposals, draft, creative = _prepared("explicit-creative")
+
+    for reviewed_creative_id in (None, "not-the-reviewed-creative"):
+        try:
+            proposals.decide(
+                draft.id,
+                "APPROVED",
+                reviewed_creative_id=reviewed_creative_id,
+            )
+        except ValueError as exc:
+            assert "creative identity" in str(exc)
+        else:
+            raise AssertionError("Approval must fail without the exact reviewed creative ID")
+        db.refresh(draft)
+        assert draft.status.value == "READY_FOR_REVIEW"
+        assert db.scalar(select(PinApproval).where(PinApproval.draft_id == draft.id)) is None
+
+    proposals.decide(draft.id, "APPROVED", reviewed_creative_id=creative.id)
+    approval = db.scalar(select(PinApproval).where(PinApproval.draft_id == draft.id))
+    assert approval.creative_id == creative.id
+    db.close()
 
 
 def test_historical_nullable_identity_records_remain_readable():

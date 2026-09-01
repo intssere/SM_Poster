@@ -31,9 +31,11 @@ PRs #1–#8 established review-only AI foundations, production model configurati
 
 Models and adapter boundaries exist, but OAuth, production Pin creation, board creation, scheduling, and analytics polling are not implemented. Publication Identity v2 prepares audit-safe snapshots only.
 
-## Protected state
+## Repository/test state versus runtime state
 
-Task #34 began with 2 content revisions, 0 selections, 5 telemetry records, 0 generated assets, 0 approvals, and 0 publications. Verification must leave these production counts unchanged; test fixtures use isolated databases.
+Task #34 verification uses isolated test databases. Those fixtures create and delete approvals and publication snapshots and are not evidence of live runtime counts. This repository session had no production database connection, so it did not re-query or mutate runtime business data.
+
+The latest previously verified runtime baseline, carried forward from the PR #7/#8 handoff, is 2 content revisions, 0 selections, 5 telemetry records, 0 generated assets, 0 approvals, and 0 publications. Treat those values as the latest verified runtime snapshot, not as counts measured by Task #34. Re-query the deployed PostgreSQL database before relying on them operationally.
 
 ## Known issues and next work
 

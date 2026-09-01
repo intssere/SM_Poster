@@ -142,9 +142,9 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
     finally { setRendering(false) }
   }
 
-  async function decide(id: string, decision: 'approve' | 'reject') {
+  async function decide(id: string, decision: 'approve' | 'reject', creativeId?: string) {
     setWorkingId(id); setMessage(null)
-    try { await decideProposal(id, decision); await load() }
+    try { await decideProposal(id, decision, creativeId); await load() }
     catch (error) { setMessage({ type: 'error', text: (error as Error).message }) }
     finally { setWorkingId(null) }
   }
@@ -259,7 +259,7 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
         {(proposal.warnings.length > 0 || proposal.missing_facts.length > 0 || proposal.unsupported_claims.length > 0) && <div className="proposal-warning"><ShieldAlert size={15} /><span>{proposal.warnings.join(' ')}{proposal.missing_facts.length > 0 && ` Missing/unknown: ${proposal.missing_facts.join(', ')}.`}{proposal.unsupported_claims.length > 0 && ` Unsupported claims detected: ${proposal.unsupported_claims.join(', ')}.`}</span></div>}
         <div className="proposal-fingerprint"><Clipboard size={14} /><span>Text SHA-256 {proposal.text_fingerprint}</span></div>
         {proposal.approval_status === 'REVIEW' && <RevisionControls proposal={proposal} settings={aiSettings} compact onChanged={load} />}
-        {proposal.approval_status === 'REVIEW' && <div className="proposal-actions"><button className="approve-action" onClick={() => decide(proposal.id, 'approve')} disabled={workingId === proposal.id}><Check size={15} /> Approve</button><button className="reject-action" onClick={() => decide(proposal.id, 'reject')} disabled={workingId === proposal.id}><X size={15} /> Reject</button></div>}
+        {proposal.approval_status === 'REVIEW' && <div className="proposal-actions"><button className="approve-action" onClick={() => decide(proposal.id, 'approve', proposal.creative?.id)} disabled={workingId === proposal.id || !proposal.creative?.id}><Check size={15} /> Approve</button><button className="reject-action" onClick={() => decide(proposal.id, 'reject')} disabled={workingId === proposal.id}><X size={15} /> Reject</button></div>}
       </div>
     </article>)}</section>}
   </div>

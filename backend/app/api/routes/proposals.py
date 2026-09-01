@@ -177,6 +177,7 @@ def approve_proposal(draft_id: str, body: ProposalDecision | None = None):
             draft_id,
             "APPROVED",
             body.note if body else None,
+            body.creative_id if body else None,
         )
     except ValueError as exc:
         message = str(exc)

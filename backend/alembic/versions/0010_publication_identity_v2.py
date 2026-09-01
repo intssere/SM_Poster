@@ -27,11 +27,11 @@ def upgrade():
     op.create_index("ix_pin_approvals_approved_version_id", "pin_approvals", ["approved_version_id"])
     op.create_foreign_key(
         "fk_pin_approvals_revision_id", "pin_approvals", "content_revisions",
-        ["revision_id"], ["id"], ondelete="SET NULL",
+        ["revision_id"], ["id"], ondelete="RESTRICT",
     )
     op.create_foreign_key(
         "fk_pin_approvals_creative_id", "pin_approvals", "pin_creatives",
-        ["creative_id"], ["id"], ondelete="SET NULL",
+        ["creative_id"], ["id"], ondelete="RESTRICT",
     )
 
     publication_columns = (
@@ -67,7 +67,7 @@ def upgrade():
     ):
         op.create_foreign_key(
             f"fk_pin_publications_{name}", "pin_publications", target,
-            [name], ["id"], ondelete="SET NULL",
+            [name], ["id"], ondelete="RESTRICT",
         )
 
 

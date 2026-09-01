@@ -45,6 +45,7 @@ class ProposalGenerateRequest(BaseModel):
 
 class ProposalDecision(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
+    creative_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 
 class CreativeRenderBatchRequest(BaseModel):

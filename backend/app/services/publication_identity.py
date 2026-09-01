@@ -80,7 +80,7 @@ class PublicationIdentityService:
     def create_snapshot(
         self,
         *,
-        approval_id: str,
+        
         board_id: str,
         integration_account_id: str | None = None,
         scheduled_for: datetime | None = None,
@@ -89,7 +89,7 @@ class PublicationIdentityService:
         _publishing_must_be_disabled()
         db = self.session_factory()
         try:
-            approval = db.get(PinApproval, approval_id)
+            approval = db.get(PinApproval, 
             if not approval or approval.decision != "APPROVED":
                 raise PublicationIdentityError("An APPROVED decision is required.")
             draft = db.get(PinDraft, approval.draft_id)
@@ -127,7 +127,7 @@ class PublicationIdentityService:
                 draft_id=draft.id,
                 revision_id=revision.id if revision else None,
                 creative_id=creative.id,
-                approval_id=approval.id,
+                d,
                 source_image_id=creative.source_image_id,
                 board_id=board.id,
                 integration_account_id=account.id if account else None,
@@ -145,7 +145,7 @@ class PublicationIdentityService:
                 draft_id=draft.id,
                 revision_id=revision.id if revision else None,
                 creative_id=creative.id,
-                approval_id=approval.id,
+                d,
                 source_image_id=creative.source_image_id,
                 template_id=template.id,
                 template_key=template.key,

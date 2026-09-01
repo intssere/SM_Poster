@@ -275,12 +275,12 @@ export async function generateProposals(filters: ProposalFilters = {}): Promise<
   }))
 }
 
-export async function decideProposal(id: string, decision: 'approve' | 'reject', note?: string) {
+export async function decideProposal(id: string, decision: 'approve' | 'reject', creativeId?: string, note?: string) {
   return json<{ id: string; approval_status: string; publishing_enabled: boolean }>(
     await fetch(`/api/pins/proposals/${id}/${decision}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(note ? { note } : {}),
+      body: JSON.stringify({ ...(note ? { note } : {}), ...(creativeId ? { creative_id: creativeId } : {}) }),
     }),
   )
 }

@@ -267,7 +267,12 @@ def test_approval_requires_review_and_creates_audit_decision():
     draft_id = report["representative_proposals"][0]["id"]
     creative = add_review_creative(db, draft_id)
 
-    result = service.decide(draft_id, "APPROVED", "Fact-safe and ready.")
+    result = service.decide(
+        draft_id,
+        "APPROVED",
+        "Fact-safe and ready.",
+        reviewed_creative_id=creative.id,
+    )
 
     assert result == {
         "id": draft_id,
