@@ -37,11 +37,11 @@ Task #34 verification uses isolated test databases. Those fixtures create and de
 
 The latest previously verified runtime snapshot, carried forward from controlled Adagio v3 verification, is 4 content revisions, 1 selection (Adagio v3), 5 telemetry records, 0 generated assets, 0 approvals, and 0 publications. Treat these values as a prior verified snapshot, not as counts measured by Task #34. Re-query the deployed PostgreSQL database before relying on them operationally.
 
-PR #10 is merged into `main` at `6bff2e6cf36bbbac0c3f7831fe6680868d07a1be`, tree `22bae2de2346e408552eeeba57786959d38c2f2c`. Task #35 is the next branch and remains pre-merge. Authentication is the only new operational capability; Pinterest OAuth, publishing, scheduling, analytics, and provider calls remain out of scope.
+PR #10 is merged into `main` at `6bff2e6cf36bbbac0c3f7831fe6680868d07a1be`, tree `22bae2de2346e408552eeeba57786959d38c2f2c`. PR #11 is the active pre-merge Task #35 authentication hardening change. Once Task #35 is merged, the next implementation stage is Pinterest Account Connection/OAuth design; publishing remains disabled. Authentication is the only new operational capability; Pinterest OAuth, publishing, scheduling, analytics, and provider calls remain out of scope.
 
 ## Known issues and next work
 
-Internal proposal APIs still need a dedicated authentication/authorization hardening task. After that, design Pinterest OAuth and sandbox publishing as separate reviewed tasks. Do not enable publishing as part of either analysis or migration work.
+After PR #11, design Pinterest Account Connection/OAuth as a separate reviewed task. Do not enable publishing as part of either analysis or migration work.
 
 ## Verification commands
 
