@@ -63,19 +63,25 @@ class PinterestClient:
         return r.json()
 
 async def refresh_connection(db, connection: PinterestConnection, client: PinterestClient | None = None) -> PinterestConnection:
-    old_access, old_refresh = connection.access_token_ciphertext, connection.refresh_token_ciphertext
+    old = {name: getattr(connection, name) for name in ("access_token_ciphertext", "refresh_token_ciphertext", "access_token_expires_at", "refresh_token_expires_at", "granted_scopes", "refreshed_at")}
     try:
-        payload = await (client or PinterestClient()).refresh_token(decrypt_token(old_refresh))
+        current_refresh = decrypt_token(old["refresh_token_ciphertext"])
+        payload = await (client or PinterestClient()).refresh_token(current_refresh)
         scopes = payload.get("scope", connection.granted_scopes)
         scopes = scopes.split() if isinstance(scopes, str) else list(scopes or [])
         if not payload.get("access_token") or not set(SCOPES).issubset(scopes): raise RuntimeError("Pinterest token refresh did not grant required access")
-        connection.access_token_ciphertext = encrypt_token(payload["access_token"])
-        if payload.get("refresh_token"): connection.refresh_token_ciphertext = encrypt_token(payload["refresh_token"])
         now = datetime.now(timezone.utc)
-        connection.access_token_expires_at = now + timedelta(seconds=int(payload.get("expires_in", 0))) if payload.get("expires_in") else connection.access_token_expires_at
-        if payload.get("refresh_token_expires_in"): connection.refresh_token_expires_at = now + timedelta(seconds=int(payload["refresh_token_expires_in"]))
+        new_access = encrypt_token(payload["access_token"])
+        new_refresh = encrypt_token(payload["refresh_token"]) if payload.get("refresh_token") else old["refresh_token_ciphertext"]
+        new_access_expiry = now + timedelta(seconds=int(payload["expires_in"])) if payload.get("expires_in") else old["access_token_expires_at"]
+        new_refresh_expiry = now + timedelta(seconds=int(payload["refresh_token_expires_in"])) if payload.get("refresh_token_expires_in") else old["refresh_token_expires_at"]
+        connection.access_token_ciphertext, connection.refresh_token_ciphertext = new_access, new_refresh
+        connection.access_token_expires_at, connection.refresh_token_expires_at = new_access_expiry, new_refresh_expiry
         connection.granted_scopes, connection.refreshed_at, connection.last_error_code = scopes, now, None
         db.commit(); return connection
     except Exception as exc:
-        connection.access_token_ciphertext, connection.refresh_token_ciphertext = old_access, old_refresh
-        connection.last_error_code = "TOKEN_REFRESH_FAILED"; db.commit(); raise RuntimeError("Pinterest token refresh failed safely") from exc
+        for name, value in old.items(): setattr(connection, name, value)
+        try:
+            db.rollback(); connection.last_error_code = "TOKEN_REFRESH_FAILED"; db.commit()
+        except Exception: db.rollback()
+        raise RuntimeError("Pinterest token refresh failed safely") from exc

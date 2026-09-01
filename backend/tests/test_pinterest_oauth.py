@@ -101,3 +101,11 @@ def test_provider_timeout_is_explicit(monkeypatch):
     configure(monkeypatch)
     client = oauth.PinterestClient()
     assert client.client is None
+
+@pytest.mark.parametrize("result", ["connected", "denied", "invalid_state", "oauth_error"])
+def test_callback_result_contract_is_frontend_readable(result):
+    from urllib.parse import urlsplit, parse_qs
+    url = f"http://localhost:5000/?provider=pinterest&result={result}#channels"
+    parts = urlsplit(url)
+    assert parse_qs(parts.query)["result"] == [result] and parts.fragment == "channels"
+    assert all(secret not in url for secret in ("code=", "state=", "access_token=", "refresh_token=", "client_secret="))
