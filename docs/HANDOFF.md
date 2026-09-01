@@ -41,7 +41,7 @@ PR #10 is merged into `main` at `6bff2e6cf36bbbac0c3f7831fe6680868d07a1be`, tree
 
 ## Known issues and next work
 
-Task #36 implements Pinterest Account Connection/OAuth v1 only. Next expected task is Pinterest Board Sync & Board Manager v1. Publishing remains disabled; runtime counts remain carried-forward historical values, not freshly queried.
+Task #35 is COMPLETE. Task #36 is PRE-MERGE / PR #13 on verified main `e998ec3fbcda0d91cad2ffaa57fa5be8e77d20d1`, Alembic 0011. Next expected task is Pinterest Board Sync & Board Manager v1. Publishing remains disabled; runtime counts remain carried-forward historical values, not freshly queried.
 
 ## Verification commands
 

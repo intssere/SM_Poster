@@ -6,7 +6,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.domain import PinterestOAuthState, PinterestConnection
-from app.services.pinterest_oauth import authorization_url, new_state, PinterestClient, encrypt_token
+from app.services.pinterest_oauth import authorization_url, new_state, PinterestClient, encrypt_token, SCOPES
 
 from app.services.social_channels import channel_capability_payload
 
@@ -42,9 +42,15 @@ async def pinterest_callback(code: str | None = Query(default=None), state: str 
     claimed = db.execute(update(PinterestOAuthState).where(PinterestOAuthState.state_hash == digest, PinterestOAuthState.consumed_at.is_(None), PinterestOAuthState.expires_at >= now).values(consumed_at=now))
     if claimed.rowcount != 1: db.rollback(); raise HTTPException(400, "Invalid or expired OAuth state")
     db.commit()
-    tokens = await PinterestClient().exchange_code(code)
-    account = await PinterestClient().user_account(tokens["access_token"])
-    connection = PinterestConnection(external_user_id=str(account.get("id") or account.get("username")), username=account.get("username"), granted_scopes=tokens.get("scope", "").split(), access_token_ciphertext=encrypt_token(tokens["access_token"]), refresh_token_ciphertext=encrypt_token(tokens.get("refresh_token", "")), token_type=tokens.get("token_type"))
+    try:
+        tokens = await PinterestClient().exchange_code(code)
+        scopes = tokens.get("scope", "")
+        scopes = scopes.split() if isinstance(scopes, str) else list(scopes or [])
+        if not tokens.get("access_token") or not tokens.get("refresh_token") or not set(SCOPES).issubset(scopes): raise RuntimeError("Pinterest authorization did not grant required access")
+        account = await PinterestClient().user_account(tokens["access_token"])
+    except Exception as exc:
+        raise HTTPException(400, "Pinterest OAuth could not be completed safely") from exc
+    connection = PinterestConnection(external_user_id=str(account.get("id") or account.get("username")), username=account.get("username"), granted_scopes=scopes, access_token_ciphertext=encrypt_token(tokens["access_token"]), refresh_token_ciphertext=encrypt_token(tokens["refresh_token"]), access_token_expires_at=now + timedelta(seconds=int(tokens.get("expires_in", 0))) if tokens.get("expires_in") else None, token_type=tokens.get("token_type"))
     db.query(PinterestConnection).filter(PinterestConnection.status == "CONNECTED").update({"status":"DISCONNECTED", "disconnected_at":now})
     db.add(connection); db.commit()
     return {"connected": True, "account": {"id": connection.external_user_id, "username": connection.username}}

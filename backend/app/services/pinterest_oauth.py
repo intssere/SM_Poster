@@ -31,13 +31,26 @@ class PinterestClient:
         s = get_settings()
         if not s.pinterest_client_id or not s.pinterest_client_secret or not s.pinterest_redirect_uri: raise RuntimeError("Pinterest OAuth is not configured")
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        data = {"grant_type":"authorization_code", "code":code, "redirect_uri":s.pinterest_redirect_uri, "client_id":s.pinterest_client_id, "client_secret":s.pinterest_client_secret}
+        data = {"grant_type":"authorization_code", "code":code, "redirect_uri":s.pinterest_redirect_uri}
         owned = self.client is None; c = self.client or httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0))
-        try: r = await c.post(f"{s.pinterest_api_base.rstrip('/')}/oauth/token", data=data, headers=headers)
+        try: r = await c.post(f"{s.pinterest_api_base.rstrip('/')}/oauth/token", data=data, headers=headers, auth=httpx.BasicAuth(s.pinterest_client_id, s.pinterest_client_secret))
         finally:
             if owned: await c.aclose()
         if r.status_code >= 400: raise RuntimeError("Pinterest token exchange failed")
         return r.json()
+
+    async def refresh_token(self, refresh_token: str) -> dict:
+        s = get_settings()
+        if not s.pinterest_client_id or not s.pinterest_client_secret: raise RuntimeError("Pinterest OAuth is not configured")
+        data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
+        owned = self.client is None; c = self.client or httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0))
+        try: r = await c.post(f"{s.pinterest_api_base.rstrip('/')}/oauth/token", data=data, auth=httpx.BasicAuth(s.pinterest_client_id, s.pinterest_client_secret))
+        finally:
+            if owned: await c.aclose()
+        if r.status_code >= 400: raise RuntimeError("Pinterest token refresh failed")
+        payload = r.json()
+        if not payload.get("access_token"): raise RuntimeError("Pinterest token refresh response was invalid")
+        return payload
     async def user_account(self, access_token: str) -> dict:
         s = get_settings()
         owned = self.client is None; c = self.client or httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0))
