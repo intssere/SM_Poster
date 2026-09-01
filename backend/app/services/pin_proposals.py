@@ -1295,7 +1295,13 @@ class PinProposalService:
         finally:
             db.close()
 
-    def decide(self, draft_id: str, decision: str, note: str | None = None) -> dict[str, Any]:
+    def decide(
+        self,
+        draft_id: str,
+        decision: str,
+        note: str | None = None,
+        reviewed_creative_id: str | None = None,
+    ) -> dict[str, Any]:
         if decision not in {"APPROVED", "REJECTED"}:
             raise ValueError("Decision must be APPROVED or REJECTED.")
         db = self.session_factory()
@@ -1305,9 +1311,25 @@ class PinProposalService:
                 raise ValueError("Proposal was not found.")
             if draft.status != DraftStatus.READY_FOR_REVIEW:
                 raise ValueError("Only proposals in REVIEW can be approved or rejected.")
+            revision = None
+            creative = None
+            version_id = "original"
+            if decision == "APPROVED":
+                from app.services.publication_identity import resolve_active_identity
+
+                revision, creative, version_id = resolve_active_identity(
+                    db, draft, reviewed_creative_id
+                )
+                if not reviewed_creative_id:
+                    raise ValueError("Approval requires the explicitly reviewed creative identity.")
+                if reviewed_creative_id != creative.id:
+                    raise ValueError("Reviewed creative identity does not match the active version.")
             draft.status = DraftStatus.APPROVED if decision == "APPROVED" else DraftStatus.REJECTED
             db.add(PinApproval(
                 draft_id=draft.id,
+                revision_id=revision.id if revision else None,
+                creative_id=creative.id if creative else None,
+                approved_version_id=version_id,
                 decision=decision,
                 decided_by="manual_dashboard_action",
                 note=note,

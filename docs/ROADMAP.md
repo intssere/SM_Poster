@@ -1,0 +1,22 @@
+# Roadmap
+
+## Completed
+
+- Shopify catalog sync and deterministic product intelligence
+- Controlled proposal generation and authentic-product creative rendering
+- Review-only OpenAI text/background foundation with fail-closed hosted behavior
+- Immutable revisions, explicit version selection, and read-only comparison previews
+- Exact approval binding and immutable publication identity snapshots
+
+## Next recommended task
+
+Add authentication and authorization to internal proposal/review APIs before expanding operational access.
+
+## Later phases
+
+- Pinterest OAuth/account onboarding and reviewed board mapping
+- Explicit scheduler design with idempotency and `PUBLISH_UNKNOWN` recovery
+- Production publishing only after access review, sandbox validation, and a separate enablement decision
+- Analytics ingestion and attribution after publication identity is proven end to end
+
+None of these later phases is enabled by Task #34.

@@ -393,6 +393,13 @@ class PinApproval(Base):
     __tablename__ = "pin_approvals"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     draft_id: Mapped[str] = mapped_column(ForeignKey("pin_drafts.id", ondelete="CASCADE"), index=True)
+    revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey("content_revisions.id", ondelete="RESTRICT"), index=True
+    )
+    creative_id: Mapped[str | None] = mapped_column(
+        ForeignKey("pin_creatives.id", ondelete="RESTRICT"), index=True
+    )
+    approved_version_id: Mapped[str | None] = mapped_column(String(36), index=True)
     decision: Mapped[str] = mapped_column(String(20), nullable=False)
     decided_by: Mapped[str] = mapped_column(String(255), nullable=False)
     note: Mapped[str | None] = mapped_column(Text)
@@ -403,8 +410,30 @@ class PinPublication(Base):
     __tablename__ = "pin_publications"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     draft_id: Mapped[str] = mapped_column(ForeignKey("pin_drafts.id", ondelete="CASCADE"), index=True)
+    revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey("content_revisions.id", ondelete="RESTRICT"), index=True
+    )
     creative_id: Mapped[str] = mapped_column(ForeignKey("pin_creatives.id"), index=True)
+    approval_id: Mapped[str | None] = mapped_column(
+        ForeignKey("pin_approvals.id", ondelete="RESTRICT"), index=True
+    )
+    source_image_id: Mapped[str | None] = mapped_column(
+        ForeignKey("product_images.id", ondelete="RESTRICT"), index=True
+    )
+    template_id: Mapped[str | None] = mapped_column(
+        ForeignKey("creative_templates.id", ondelete="RESTRICT"), index=True
+    )
+    template_key: Mapped[str | None] = mapped_column(String(120))
+    template_version: Mapped[int | None] = mapped_column(Integer)
+    text_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
+    creative_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), index=True)
+    pinterest_board_id: Mapped[str | None] = mapped_column(String(80), index=True)
+    integration_account_id: Mapped[str | None] = mapped_column(
+        ForeignKey("integration_accounts.id", ondelete="RESTRICT"), index=True
+    )
+    destination_url: Mapped[str | None] = mapped_column(Text)
+    utm_url: Mapped[str | None] = mapped_column(Text)
     publication_fingerprint: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     status: Mapped[PublicationStatus] = mapped_column(Enum(PublicationStatus), default=PublicationStatus.APPROVED)
     scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
