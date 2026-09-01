@@ -3,6 +3,7 @@ import base64
 import hashlib
 import httpx
 import pytest
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker
@@ -13,7 +14,7 @@ from app.main import app
 from app.db.session import SessionLocal
 from app.db.session import get_db
 from app.db.base import Base
-from app.models.domain import PinterestOAuthState
+from app.models.domain import PinterestOAuthState, PinterestConnection
 from fastapi.testclient import TestClient
 
 
@@ -156,3 +157,41 @@ def test_oauth_start_route_denies_anonymous(monkeypatch):
     monkeypatch.setenv("AUTH_DISABLED", "false"); monkeypatch.setenv("APP_ENV", "development")
     get_settings.cache_clear()
     assert TestClient(app).post("/api/channels/pinterest/oauth/start", headers={"Origin": "http://localhost:5000"}).status_code == 401
+
+def test_callback_success_actual_route_persists_safe_connection(monkeypatch, isolated_app_db):
+    configure(monkeypatch, FRONTEND_RETURN_URL="http://localhost:5000/#channels")
+    monkeypatch.setenv("AUTH_DISABLED", "true"); monkeypatch.setenv("APP_ENV", "development"); get_settings.cache_clear()
+    raw, digest = oauth.new_state()
+    now = datetime.now(timezone.utc)
+    with isolated_app_db() as db:
+        db.add(PinterestOAuthState(state_hash=digest, initiated_by="admin", expires_at=now + timedelta(minutes=10))); db.commit()
+    async def exchange(self, code): return {"access_token":"access-secret", "refresh_token":"refresh-secret", "scope":"user_accounts:read boards:read pins:read", "expires_in":3600, "refresh_token_expires_in":7200, "token_type":"bearer"}
+    async def account(self, token): return {"id":"acct-1", "username":"shelf", "account_type":"BUSINESS", "profile_image_url":"https://example/avatar"}
+    monkeypatch.setattr(oauth.PinterestClient, "exchange_code", exchange); monkeypatch.setattr(oauth.PinterestClient, "user_account", account)
+    response = TestClient(app).get(f"/api/channels/pinterest/callback?code=oauth-code&state={raw}", follow_redirects=False)
+    assert response.status_code == 307
+    location = response.headers["location"]
+    assert "?provider=pinterest&result=connected#channels" in location and all(value not in location for value in (raw, "oauth-code", "access-secret", "refresh-secret"))
+    with isolated_app_db() as db:
+        state = db.query(PinterestOAuthState).one(); connection = db.query(PinterestConnection).one()
+        assert state.consumed_at is not None and connection.external_user_id == "acct-1" and connection.username == "shelf"
+        assert connection.access_token_ciphertext != "access-secret" and connection.refresh_token_ciphertext != "refresh-secret"
+        assert connection.access_token_expires_at and connection.refresh_token_expires_at and connection.last_verified_at
+
+def test_callback_replay_and_unknown_state_are_safe(monkeypatch, isolated_app_db):
+    configure(monkeypatch); monkeypatch.setenv("AUTH_DISABLED", "true"); monkeypatch.setenv("APP_ENV", "development"); get_settings.cache_clear()
+    client = TestClient(app)
+    replay = client.get("/api/channels/pinterest/callback?code=x&state=unknown", follow_redirects=False)
+    assert replay.status_code == 307 and "result=invalid_state" in replay.headers["location"]
+    missing = client.get("/api/channels/pinterest/callback", follow_redirects=False)
+    assert missing.status_code == 307 and "result=oauth_error" in missing.headers["location"]
+
+def test_status_route_never_exposes_credentials(monkeypatch, isolated_app_db):
+    configure(monkeypatch); monkeypatch.setenv("AUTH_DISABLED", "true"); monkeypatch.setenv("APP_ENV", "development"); get_settings.cache_clear()
+    with isolated_app_db() as db:
+        db.add(PinterestConnection(external_user_id="acct", username="safe", granted_scopes=list(oauth.SCOPES), access_token_ciphertext="cipher-a", refresh_token_ciphertext="cipher-r")); db.commit()
+    payload = TestClient(app).get("/api/channels/pinterest/status").json()
+    rendered = str(payload)
+    assert payload["status"] == "CONNECTED"
+    assert "cipher-a" not in rendered and "cipher-r" not in rendered
+    assert "access_token_ciphertext" not in rendered and "refresh_token_ciphertext" not in rendered
