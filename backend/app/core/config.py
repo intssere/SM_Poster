@@ -45,12 +45,19 @@ class Settings(BaseSettings):
 
     @property
     def is_exposed(self) -> bool:
-        return self.app_env.lower() in {"production", "prod", "replit"} or bool(__import__("os").getenv("REPLIT_DEPLOYMENT"))
+        import os
+        return self.app_env.lower() in {"production", "prod", "replit"} or bool(os.getenv("REPLIT_DEPLOYMENT")) or bool(os.getenv("REPLIT_DEV_DOMAIN"))
 
     @property
     def allowed_origins(self) -> list[str]:
+        import os
         configured = [item.strip().rstrip("/") for item in self.auth_allowed_origins.split(",") if item.strip()]
-        return configured or ["http://localhost:5000", "http://127.0.0.1:5000"]
+        if configured:
+            return configured
+        domain = os.getenv("REPLIT_DEV_DOMAIN")
+        if domain:
+            return [f"https://{domain.rstrip('/')}" ]
+        return ["http://localhost:5000", "http://127.0.0.1:5000"]
 
 
 @lru_cache

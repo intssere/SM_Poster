@@ -1,5 +1,3 @@
-import os
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
@@ -15,8 +13,6 @@ from app.api.routes.ai import router as ai_router
 from app.api.routes.auth import router as auth_router
 
 cors_origins = get_settings().allowed_origins
-if replit_domain := os.getenv("REPLIT_DEV_DOMAIN"):
-    cors_origins.append(f"https://{replit_domain}")
 
 app = FastAPI(title="Diamond Shelf Social Studio", version="0.1.0-phase0")
 app.add_middleware(
