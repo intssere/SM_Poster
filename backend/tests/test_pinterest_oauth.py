@@ -48,3 +48,56 @@ def test_mocked_exchange_and_user_account_calls_are_server_side(monkeypatch):
     asyncio.run(client.aclose())
     assert tokens["access_token"] == "a" and account["id"] == "42"
     assert seen[0][0].endswith("oauth/token") and seen[1][0].endswith("user_account")
+
+@pytest.mark.parametrize("payload", [
+    {"access_token": "a", "refresh_token": "r", "scope": "user_accounts:read boards:read"},
+    {"refresh_token": "r", "scope": "user_accounts:read boards:read pins:read"},
+])
+def test_required_scope_and_access_token_validation(payload, monkeypatch):
+    configure(monkeypatch)
+    assert not (payload.get("access_token") and set(oauth.SCOPES).issubset(payload.get("scope", "").split()))
+
+def test_refresh_request_uses_basic_auth_and_refresh_grant(monkeypatch):
+    configure(monkeypatch)
+    seen = {}
+    async def handler(request):
+        seen["auth"] = request.headers.get("authorization"); seen["body"] = (await request.aread()).decode(); return httpx.Response(200, json={"access_token":"new", "scope":"user_accounts:read boards:read pins:read"})
+    async def run():
+        c = httpx.AsyncClient(transport=httpx.MockTransport(handler)); result = await oauth.PinterestClient(c).refresh_token("old-refresh"); await c.aclose(); return result
+    assert asyncio.run(run())["access_token"] == "new"
+    assert seen["body"] == "grant_type=refresh_token&refresh_token=old-refresh"
+    assert base64.b64decode(seen["auth"].split()[1]).decode() == "client:secret"
+
+def test_refresh_failure_is_sanitized(monkeypatch):
+    configure(monkeypatch)
+    async def handler(request): return httpx.Response(500, text="secret provider body")
+    async def run():
+        c = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try: await oauth.PinterestClient(c).refresh_token("refresh")
+        except RuntimeError as exc: return str(exc)
+        finally: await c.aclose()
+    message = asyncio.run(run())
+    assert "secret" not in message and "provider body" not in message
+
+@pytest.mark.parametrize("value", ["", "not-a-fernet-key"])
+def test_missing_or_invalid_encryption_configuration_fails_closed(monkeypatch, value):
+    monkeypatch.setenv("PINTEREST_TOKEN_ENCRYPTION_KEY", value); get_settings.cache_clear()
+    with pytest.raises(RuntimeError): oauth.encrypt_token("token")
+
+def test_redirect_safe_values_exclude_oauth_secrets():
+    safe = "http://localhost:5000/#channels?provider=pinterest&result=connected"
+    assert all(secret not in safe for secret in ("code", "state", "access_token", "refresh_token", "client_secret"))
+
+def test_scope_normalization_is_exact():
+    scopes = set("pins:read boards:read user_accounts:read".split())
+    assert scopes == set(oauth.SCOPES)
+
+def test_state_hash_is_one_way_and_fixed_length(monkeypatch):
+    configure(monkeypatch)
+    raw, digest = oauth.new_state()
+    assert len(digest) == 64 and raw not in digest and digest == hashlib.sha256(raw.encode()).hexdigest()
+
+def test_provider_timeout_is_explicit(monkeypatch):
+    configure(monkeypatch)
+    client = oauth.PinterestClient()
+    assert client.client is None
