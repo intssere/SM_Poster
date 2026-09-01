@@ -237,3 +237,24 @@ def test_disconnect_route_clears_credentials_preserves_history(monkeypatch, isol
     with isolated_app_db() as db:
         fresh = db.query(PinterestConnection).one(); assert fresh.status == "DISCONNECTED" and fresh.access_token_ciphertext == "" and fresh.refresh_token_ciphertext == ""
         assert db.query(PinDraft).count() == db.query(PinCreative).count() == db.query(PinApproval).count() == db.query(PinPublication).count() == 1
+
+def test_callback_provider_denial_consumes_state_and_replay_is_invalid(monkeypatch, isolated_app_db):
+    configure(monkeypatch, FRONTEND_RETURN_URL="http://localhost:5000/#channels"); monkeypatch.setenv("AUTH_DISABLED", "true"); monkeypatch.setenv("APP_ENV", "development"); get_settings.cache_clear()
+    raw, digest = oauth.new_state()
+    with isolated_app_db() as db: db.add(PinterestOAuthState(state_hash=digest, initiated_by="admin", expires_at=datetime.now(timezone.utc)+timedelta(minutes=10))); db.commit()
+    client = TestClient(app); response = client.get(f"/api/channels/pinterest/callback?state={raw}&error=access_denied&error_description=secret", follow_redirects=False)
+    assert "result=denied#channels" in response.headers["location"] and "secret" not in response.headers["location"]
+    replay = client.get(f"/api/channels/pinterest/callback?state={raw}&error=access_denied", follow_redirects=False)
+    assert "result=invalid_state" in replay.headers["location"]
+
+@pytest.mark.parametrize("account,expiry", [({}, 3600), ({"id": True}, 3600), ({"id": "   "}, 3600), ({"id": "acct"}, "bad")])
+def test_callback_malformed_provider_data_is_safe(monkeypatch, isolated_app_db, account, expiry):
+    configure(monkeypatch); monkeypatch.setenv("AUTH_DISABLED", "true"); monkeypatch.setenv("APP_ENV", "development"); get_settings.cache_clear()
+    raw, digest = oauth.new_state()
+    with isolated_app_db() as db: db.add(PinterestOAuthState(state_hash=digest, initiated_by="admin", expires_at=datetime.now(timezone.utc)+timedelta(minutes=10))); db.commit()
+    async def exchange(self, code): return {"access_token":"a", "refresh_token":"r", "scope":"user_accounts:read boards:read pins:read", "expires_in":expiry}
+    async def user(self, token): return account
+    monkeypatch.setattr(oauth.PinterestClient, "exchange_code", exchange); monkeypatch.setattr(oauth.PinterestClient, "user_account", user)
+    response = TestClient(app).get(f"/api/channels/pinterest/callback?code=x&state={raw}", follow_redirects=False)
+    assert "result=oauth_error" in response.headers["location"]
+    with isolated_app_db() as db: assert db.query(PinterestConnection).count() == 0
