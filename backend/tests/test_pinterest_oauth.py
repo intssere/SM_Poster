@@ -118,6 +118,8 @@ def test_oauth_start_route_requires_admin_and_persists_hashed_state(monkeypatch)
     configure(monkeypatch)
     monkeypatch.setenv("AUTH_DISABLED", "true"); monkeypatch.setenv("APP_ENV", "development")
     get_settings.cache_clear()
+    with SessionLocal() as db:
+        db.query(PinterestOAuthState).delete(); db.commit()
     response = TestClient(app).post("/api/channels/pinterest/oauth/start", headers={"Origin": "http://localhost:5000"})
     assert response.status_code == 200
     url = response.json()["authorization_url"]
