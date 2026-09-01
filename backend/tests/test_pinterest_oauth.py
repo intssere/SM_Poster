@@ -14,7 +14,7 @@ from app.main import app
 from app.db.session import SessionLocal
 from app.db.session import get_db
 from app.db.base import Base
-from app.models.domain import PinterestOAuthState, PinterestConnection
+from app.models.domain import PinterestOAuthState, PinterestConnection, PinDraft, PinCreative, PinApproval, PinPublication
 from fastapi.testclient import TestClient
 
 
@@ -195,3 +195,45 @@ def test_status_route_never_exposes_credentials(monkeypatch, isolated_app_db):
     assert payload["status"] == "CONNECTED"
     assert "cipher-a" not in rendered and "cipher-r" not in rendered
     assert "access_token_ciphertext" not in rendered and "refresh_token_ciphertext" not in rendered
+
+def test_callback_expired_state_is_rejected(monkeypatch, isolated_app_db):
+    configure(monkeypatch); monkeypatch.setenv("AUTH_DISABLED", "true"); monkeypatch.setenv("APP_ENV", "development"); get_settings.cache_clear()
+    raw, digest = oauth.new_state()
+    with isolated_app_db() as db:
+        db.add(PinterestOAuthState(state_hash=digest, initiated_by="admin", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))); db.commit()
+    called = []
+    async def exchange(self, code): called.append(code); return {}
+    monkeypatch.setattr(oauth.PinterestClient, "exchange_code", exchange)
+    response = TestClient(app).get(f"/api/channels/pinterest/callback?code=x&state={raw}", follow_redirects=False)
+    assert response.status_code == 307 and "result=invalid_state" in response.headers["location"] and not called
+    with isolated_app_db() as db: assert db.query(PinterestConnection).count() == 0
+
+def test_refresh_failure_preserves_persisted_metadata(monkeypatch, isolated_app_db):
+    configure(monkeypatch); get_settings.cache_clear()
+    old = {"access_token_ciphertext": oauth.encrypt_token("access"), "refresh_token_ciphertext": oauth.encrypt_token("refresh"), "access_token_expires_at": datetime.now(timezone.utc)+timedelta(hours=1), "refresh_token_expires_at": datetime.now(timezone.utc)+timedelta(days=1), "granted_scopes": list(oauth.SCOPES), "refreshed_at": datetime.now(timezone.utc)-timedelta(days=1)}
+    with isolated_app_db() as db:
+        row = PinterestConnection(external_user_id="acct", **old); db.add(row); db.commit(); db.refresh(row)
+        class Failing:
+            async def refresh_token(self, token): raise RuntimeError("provider unavailable")
+        with pytest.raises(RuntimeError): asyncio.run(oauth.refresh_connection(db, row, Failing()))
+        db.expire_all(); fresh = db.query(PinterestConnection).one()
+        for key, value in old.items():
+            actual = getattr(fresh, key)
+            if isinstance(value, datetime):
+                actual = actual.replace(tzinfo=timezone.utc) if actual.tzinfo is None else actual
+            assert actual == value
+        assert fresh.last_error_code == "TOKEN_REFRESH_FAILED"
+
+def test_disconnect_route_clears_credentials_preserves_history(monkeypatch, isolated_app_db):
+    configure(monkeypatch); monkeypatch.setenv("AUTH_DISABLED", "true"); monkeypatch.setenv("APP_ENV", "development"); get_settings.cache_clear()
+    with isolated_app_db() as db:
+        conn = PinterestConnection(external_user_id="acct", access_token_ciphertext="a", refresh_token_ciphertext="r"); db.add(conn)
+        draft = PinDraft(concept_id="concept", title="t", description="d", alt_text="a", destination_url="https://x", utm_url="https://x", text_fingerprint="d"*64); db.add(draft); db.flush()
+        creative = PinCreative(draft_id=draft.id, template_id="template", source_image_id="image", creative_fingerprint="c"*64); db.add(creative); db.flush()
+        approval = PinApproval(draft_id=draft.id, decision="APPROVED", decided_by="admin", creative_id=creative.id); db.add(approval); db.flush()
+        publication = PinPublication(draft_id=draft.id, creative_id=creative.id, approval_id=approval.id, board_id="board", publication_fingerprint="p"*64); db.add(publication); db.commit()
+    response = TestClient(app).post("/api/channels/pinterest/disconnect", headers={"Origin":"http://localhost:5000"})
+    assert response.status_code == 200
+    with isolated_app_db() as db:
+        fresh = db.query(PinterestConnection).one(); assert fresh.status == "DISCONNECTED" and fresh.access_token_ciphertext == "" and fresh.refresh_token_ciphertext == ""
+        assert db.query(PinDraft).count() == db.query(PinCreative).count() == db.query(PinApproval).count() == db.query(PinPublication).count() == 1
