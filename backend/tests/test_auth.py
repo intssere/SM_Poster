@@ -24,8 +24,12 @@ def auth_client(monkeypatch):
 
 def test_api_auth_integration_and_cookie_security(auth_client):
     client = auth_client
-    assert client.get("/api/utilities/product-score").status_code == 401
-    assert client.post("/api/auth/login", json={"username": "nope", "password": "wrong"}).status_code == 401
+    anonymous = client.get("/api/utilities/product-score", headers={"Origin": "http://localhost:5000"})
+    assert anonymous.status_code == 401
+    assert anonymous.headers["access-control-allow-origin"] == "http://localhost:5000"
+    invalid = client.post("/api/auth/login", json={"username": "nope", "password": "wrong"}, headers={"Origin": "http://localhost:5000"})
+    assert invalid.status_code == 401
+    assert invalid.headers["access-control-allow-origin"] == "http://localhost:5000"
     response = client.post("/api/auth/login", json={"username": "admin", "password": "secret"})
     assert response.status_code == 200
     cookie = response.headers["set-cookie"].lower()
@@ -55,14 +59,14 @@ def test_session_tamper_expiry_logout_and_origin_controls(auth_client, monkeypat
     client = auth_client
     login = client.post("/api/auth/login", json={"username": "admin", "password": "secret"})
     token = login.cookies.get(auth.SESSION_COOKIE)
-    client.cookies.set(auth.SESSION_COOKIE, token + "x")
-    assert client.get("/api/utilities/product-score").status_code == 401
-    client.cookies.set(auth.SESSION_COOKIE, token)
+    assert client.get("/api/utilities/product-score", cookies={auth.SESSION_COOKIE: token + "x"}).status_code == 401
     assert client.post("/api/utilities/product-score", json={"inventory_available": True}).status_code == 403
     assert client.post("/api/utilities/product-score", json={"inventory_available": True}, headers={"Origin": "https://evil.example"}).status_code == 403
     assert client.post("/api/utilities/product-score", json={"inventory_available": True}, headers={"Origin": "http://localhost:5000"}).status_code != 403
-    assert client.post("/api/auth/logout", headers={"Origin": "http://localhost:5000"}).status_code == 200
-    client.cookies.clear()
+    logout = client.post("/api/auth/logout", headers={"Origin": "http://localhost:5000"})
+    assert logout.status_code == 200
+    deleted_cookie = logout.headers["set-cookie"].lower()
+    assert auth.SESSION_COOKIE in deleted_cookie and ("expires=" in deleted_cookie or "max-age=0" in deleted_cookie)
     assert client.get("/api/utilities/product-score").status_code == 401
     monkeypatch.setenv("AUTH_SESSION_TTL_SECONDS", "-1")
     from app.core.config import get_settings
@@ -89,6 +93,17 @@ def test_health_and_auth_status_are_public(auth_client):
     client = auth_client
     assert client.get("/api/health").status_code == 200
     assert client.get("/api/auth/status").status_code == 200
+
+
+def test_cors_preflight_and_disallowed_origin(auth_client):
+    client = auth_client
+    preflight = client.options("/api/utilities/product-score", headers={"Origin": "http://localhost:5000", "Access-Control-Request-Method": "POST"})
+    assert preflight.status_code == 200
+    assert preflight.headers["access-control-allow-origin"] == "http://localhost:5000"
+    assert "POST" in preflight.headers["access-control-allow-methods"]
+    denied = client.get("/api/utilities/product-score", headers={"Origin": "https://evil.example"})
+    assert denied.status_code == 403
+    assert "access-control-allow-origin" not in denied.headers
 
 
 def test_signed_session_round_trip_and_tamper_rejection(monkeypatch):

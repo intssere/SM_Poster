@@ -37,5 +37,6 @@ def login(body: LoginRequest, response: Response):
 def logout(request: Request, response: Response):
     if not current_user(request):
         raise HTTPException(status_code=401, detail="Authentication required")
-    response.delete_cookie(SESSION_COOKIE, path="/")
+    settings = get_settings()
+    response.set_cookie(SESSION_COOKIE, "", max_age=0, expires=0, httponly=True, secure=settings.is_exposed, samesite="strict", path="/")
     return {"authenticated": False}

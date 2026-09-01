@@ -15,6 +15,7 @@ from app.api.routes.auth import router as auth_router
 cors_origins = get_settings().allowed_origins
 
 app = FastAPI(title="Diamond Shelf Social Studio", version="0.1.0-phase0")
+app.add_middleware(AdminAuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
@@ -22,7 +23,6 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Accept"],
 )
-app.add_middleware(AdminAuthMiddleware)
 app.include_router(health_router, prefix="/api")
 app.include_router(utilities_router, prefix="/api")
 app.include_router(phase1_router, prefix="/api")
