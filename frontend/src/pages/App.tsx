@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { CheckCircle2, Clock3, Image, Images, PackageSearch, Radio, ShieldCheck, Sparkles } from 'lucide-react'
 import { ProductsPage } from './Products'
 import { ProposalsPage } from './Proposals'
@@ -8,6 +8,19 @@ import { ChannelsPage } from './Channels'
 import { CreativeStudioPage } from './CreativeStudio'
 
 export function App() {
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null)
+  const [loginError, setLoginError] = useState('')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  useEffect(() => { fetch('/api/auth/status').then((r) => r.json()).then((v) => setAuthenticated(Boolean(v.authenticated))).catch(() => setAuthenticated(false)) }, [])
+  async function login(event: FormEvent) {
+    event.preventDefault(); setLoginError('')
+    const response = await fetch('/api/auth/login', { method: 'POST', headers: {'Content-Type': 'application/json'}, credentials: 'include', body: JSON.stringify({ username, password }) })
+    if (!response.ok) { setLoginError('Invalid credentials or unavailable authentication service.'); return }
+    setPassword(''); setAuthenticated(true)
+  }
+  if (authenticated === null) return <div className="app-shell"><main><p>Checking authentication…</p></main></div>
+  if (!authenticated) return <div className="app-shell"><main><section className="panel" style={{maxWidth: 420, margin: '10vh auto'}}><p className="eyebrow">DIAMOND SHELF</p><h2>Sign in</h2><form onSubmit={login}><label>Username<input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" /></label><label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" /></label>{loginError && <p role="alert">{loginError}</p>}<button type="submit">Sign in</button></form></section></main></div>
   const [backendStatus, setBackendStatus] = useState<'checking' | 'connected' | 'unavailable'>('checking')
   const [proposalSummary, setProposalSummary] = useState<ProposalSummary | null>(null)
   const [creativeCount, setCreativeCount] = useState<number | null>(null)

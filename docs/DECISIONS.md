@@ -19,3 +19,7 @@ Hosted text defaults to `gpt-5.6-luna`; `gpt-5.6-terra` is explicit-only escalat
 ## Publishing policy
 
 `PUBLISHING_ENABLED=false` is authoritative. No Pinterest API, scheduling worker, auto-approval, or automatic publication is permitted in the current phase.
+
+## Authentication v1
+
+Use a stateless HMAC-signed, short-lived HttpOnly cookie for the single admin. Keep credentials and secrets in server configuration, enforce Origin checks for unsafe API requests, and fail closed in exposed environments. Do not add a database migration.

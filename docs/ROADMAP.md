@@ -20,3 +20,5 @@ Add authentication and authorization to internal proposal/review APIs before exp
 - Analytics ingestion and attribution after publication identity is proven end to end
 
 None of these later phases is enabled by Task #34.
+
+Task #35 completed the internal admin authentication boundary. Pinterest OAuth, board management, scheduler, publishing, analytics, and provider calls remain future work and disabled.

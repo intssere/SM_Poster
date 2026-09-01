@@ -2,6 +2,8 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.core.config import get_settings
+from app.middleware import AdminAuthMiddleware
 
 from app.api.routes.health import router as health_router
 from app.api.routes.utilities import router as utilities_router
@@ -10,8 +12,9 @@ from app.api.routes.catalog import router as catalog_router
 from app.api.routes.proposals import router as proposals_router
 from app.api.routes.channels import router as channels_router
 from app.api.routes.ai import router as ai_router
+from app.api.routes.auth import router as auth_router
 
-cors_origins = ["http://localhost:5000", "http://127.0.0.1:5000"]
+cors_origins = get_settings().allowed_origins
 if replit_domain := os.getenv("REPLIT_DEV_DOMAIN"):
     cors_origins.append(f"https://{replit_domain}")
 
@@ -19,10 +22,11 @@ app = FastAPI(title="Diamond Shelf Social Studio", version="0.1.0-phase0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Accept"],
 )
+app.add_middleware(AdminAuthMiddleware)
 app.include_router(health_router, prefix="/api")
 app.include_router(utilities_router, prefix="/api")
 app.include_router(phase1_router, prefix="/api")
@@ -30,6 +34,7 @@ app.include_router(catalog_router, prefix="/api")
 app.include_router(proposals_router, prefix="/api")
 app.include_router(channels_router, prefix="/api")
 app.include_router(ai_router, prefix="/api")
+app.include_router(auth_router, prefix="/api")
 
 
 @app.get("/")

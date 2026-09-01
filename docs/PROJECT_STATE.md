@@ -6,6 +6,10 @@ Current capabilities include catalog normalization, controlled proposal generati
 
 Database head is Alembic `0010`. This migration adds nullable identity fields for historical compatibility; it does not invent revision identities for existing rows.
 
+Task #34 / PR #10 is merged on `main` at `6bff2e6cf36bbbac0c3f7831fe6680868d07a1be` (tree `22bae2de2346e408552eeeba57786959d38c2f2c`). Task #35 adds internal single-admin authentication without a migration.
+
+Admin authentication protects operational API routes centrally. Sessions are signed, HttpOnly, Secure in exposed mode, SameSite strict, short-lived, and never stored in browser storage. Production fails closed without server-side auth configuration; authentication bypass is permitted only when explicitly enabled in local/test mode.
+
 ## Repository and test state
 
 Task #34 adds models, migration logic, services, and isolated regression fixtures. Test-created approval/publication rows are ephemeral and do not represent deployed business data. No production database was connected or queried during this repository-only verification.
