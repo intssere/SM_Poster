@@ -41,7 +41,7 @@ PR #10 is merged into `main` at `6bff2e6cf36bbbac0c3f7831fe6680868d07a1be`, tree
 
 ## Known issues and next work
 
-After PR #11, design Pinterest Account Connection/OAuth as a separate reviewed task. Do not enable publishing as part of either analysis or migration work.
+Task #36 implements Pinterest Account Connection/OAuth v1 only. Next expected task is Pinterest Board Sync & Board Manager v1. Publishing remains disabled; runtime counts remain carried-forward historical values, not freshly queried.
 
 ## Verification commands
 

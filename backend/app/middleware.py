@@ -7,7 +7,7 @@ from app.core.auth import auth_configured, auth_is_bypassed, current_user
 from app.core.config import get_settings
 
 
-PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/status"}
+PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/status", "/api/channels/pinterest/callback"}
 
 
 class AdminAuthMiddleware(BaseHTTPMiddleware):

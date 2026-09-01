@@ -10,7 +10,7 @@
 
 ## Next recommended task
 
-Add authentication and authorization to internal proposal/review APIs before expanding operational access.
+Pinterest Account Connection/OAuth v1 (Task #36) is complete in scope; next is reviewed board sync design.
 
 ## Later phases
 

@@ -446,6 +446,41 @@ class PinPublication(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class PinterestOAuthState(Base):
+    __tablename__ = "pinterest_oauth_states"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    state_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    initiated_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    redirect_after: Mapped[str | None] = mapped_column(Text)
+
+
+class PinterestConnection(Base):
+    __tablename__ = "pinterest_connections"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    provider: Mapped[str] = mapped_column(String(30), default="pinterest", nullable=False)
+    external_user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    username: Mapped[str | None] = mapped_column(String(255))
+    account_type: Mapped[str | None] = mapped_column(String(80))
+    profile_image_url: Mapped[str | None] = mapped_column(Text)
+    granted_scopes: Mapped[list] = mapped_column(JSON, default=list)
+    access_token_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    refresh_token_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    access_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    refresh_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    token_type: Mapped[str | None] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(30), default="CONNECTED", index=True)
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class IntegrationAccount(Base):
     __tablename__ = "integration_accounts"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
