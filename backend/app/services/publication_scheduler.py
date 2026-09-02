@@ -1,7 +1,7 @@
 """Explicit, bounded publication scheduling primitives (no background worker)."""
 from datetime import datetime, timezone
 from sqlalchemy import select, update
-from app.models.domain import PinPublication, PublicationStatus
+from app.models.domain import PinPublication, PublicationStatus, PublicationAttempt
 from app.services.publication_state import require_transition
 
 MAX_DISPATCH_BATCH = 25
@@ -27,7 +27,7 @@ def cancel(db, publication):
     db.commit()
     return publication
 
-def claim(db, publication):
+def claim(db, publication, request_fingerprint=None):
     """Compare-and-set claim; caller commits before provider execution."""
     now = datetime.now(timezone.utc)
     result = db.execute(update(PinPublication).where(
@@ -36,4 +36,10 @@ def claim(db, publication):
         PinPublication.scheduled_for.is_not(None),
         PinPublication.scheduled_for <= now,
     ).values(status=PublicationStatus.PUBLISHING, attempt_started_at=now))
-    return result.rowcount == 1
+    if result.rowcount != 1:
+        return None
+    attempt_no = (db.scalar(select(PublicationAttempt.attempt_number).where(PublicationAttempt.publication_id == publication.id).order_by(PublicationAttempt.attempt_number.desc()).limit(1)) or 0) + 1
+    attempt = PublicationAttempt(publication_id=publication.id, attempt_number=attempt_no, status="STARTED", request_fingerprint=request_fingerprint)
+    db.add(attempt)
+    db.commit()
+    return attempt

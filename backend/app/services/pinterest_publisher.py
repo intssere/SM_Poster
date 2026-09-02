@@ -39,14 +39,12 @@ def publishing_ready(db, publication):
         return False, "MEDIA_NOT_PUBLISHABLE"
     return True, None
 
-async def publish_once(db, publication, gateway):
+async def publish_once(db, publication, gateway, attempt=None):
+    if publication.status != PublicationStatus.PUBLISHING or attempt is None or attempt.publication_id != publication.id or attempt.status != "STARTED":
+        raise RuntimeError("INVALID_PUBLISH_ATTEMPT")
     ready, reason = publishing_ready(db, publication)
     if not ready:
         raise RuntimeError(reason)
-    attempt_no = (db.query(PublicationAttempt).filter(PublicationAttempt.publication_id == publication.id).count() + 1)
-    attempt = PublicationAttempt(publication_id=publication.id, attempt_number=attempt_no, status="STARTED")
-    db.add(attempt)
-    db.commit()
     payload = PinterestPinPayload(
         board_id=publication.pinterest_board_id_snapshot or publication.pinterest_board_id or "",
         title=publication.title_snapshot or "",

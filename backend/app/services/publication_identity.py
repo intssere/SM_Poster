@@ -170,7 +170,7 @@ class PublicationIdentityService:
                 template_version=template.version,
                 text_fingerprint=text_hash,
                 creative_fingerprint=creative.creative_fingerprint,
-                board_id=board.id,
+                board_id=board.id if board else None,
                 pinterest_board_id=board.pinterest_board_id if board else pinterest_board.external_board_id,
                 pinterest_connection_id=connection.id if connection else None,
                 pinterest_board_record_id=pinterest_board.id if pinterest_board else None,
