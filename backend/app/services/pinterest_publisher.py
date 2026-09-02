@@ -66,6 +66,18 @@ def preflight_publish_readiness(db, publication):
         return False, "NOT_DUE"
     return publishing_ready(db, publication)
 
+def publication_readiness(db, publication, *, now=None):
+    """Pure, non-mutating readiness explanation for API consumers."""
+    now = now or datetime.now(timezone.utc)
+    if not get_settings().publishing_enabled:
+        return "PUBLISHING_DISABLED"
+    if publication.status not in {PublicationStatus.SCHEDULED, PublicationStatus.PUBLISHING}:
+        return "INVALID_PUBLICATION_STATE"
+    if publication.status == PublicationStatus.SCHEDULED and (not publication.scheduled_for or publication.scheduled_for > now):
+        return "NOT_DUE"
+    ready, reason = publishing_ready(db, publication)
+    return "READY" if ready else reason
+
 def execution_publish_readiness(db, publication, attempt):
     from app.services.publication_scheduler import request_fingerprint_for
     if not attempt or attempt.status != "STARTED" or attempt.publication_id != publication.id or attempt.request_fingerprint != request_fingerprint_for(publication):
