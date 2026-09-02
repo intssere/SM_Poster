@@ -481,6 +481,46 @@ class PinterestConnection(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class PinterestBoard(Base):
+    __tablename__ = "pinterest_boards"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    connection_id: Mapped[str] = mapped_column(ForeignKey("pinterest_connections.id", ondelete="CASCADE"), index=True, nullable=False)
+    external_board_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    privacy: Mapped[str | None] = mapped_column(String(40))
+    owner_username: Mapped[str | None] = mapped_column(String(255))
+    pin_count: Mapped[int | None] = mapped_column(Integer)
+    follower_count: Mapped[int | None] = mapped_column(Integer)
+    collaborator_count: Mapped[int | None] = mapped_column(Integer)
+    is_ads_only: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    image_cover_url: Mapped[str | None] = mapped_column(Text)
+    board_pins_modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    provider_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_eligible: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    routing_label: Mapped[str | None] = mapped_column(String(120))
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    __table_args__ = (UniqueConstraint("connection_id", "external_board_id", name="uq_pinterest_board_identity"),)
+
+
+class PinterestBoardSection(Base):
+    __tablename__ = "pinterest_board_sections"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    board_id: Mapped[str] = mapped_column(ForeignKey("pinterest_boards.id", ondelete="CASCADE"), index=True, nullable=False)
+    external_section_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    __table_args__ = (UniqueConstraint("board_id", "external_section_id", name="uq_pinterest_section_identity"),)
+
+
 class IntegrationAccount(Base):
     __tablename__ = "integration_accounts"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)

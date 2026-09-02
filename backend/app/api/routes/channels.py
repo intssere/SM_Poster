@@ -8,13 +8,37 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.core.config import get_settings
-from app.models.domain import PinterestOAuthState, PinterestConnection
+from app.models.domain import PinterestOAuthState, PinterestConnection, PinterestBoard, PinterestBoardSection
+from app.services.pinterest_boards import sync_boards
 from app.services.pinterest_oauth import authorization_url, new_state, PinterestClient, encrypt_token, SCOPES
 
 from app.services.social_channels import channel_capability_payload
 
 
 router = APIRouter(prefix="/channels", tags=["social-channels"])
+
+@router.post("/pinterest/boards/sync")
+async def pinterest_boards_sync(db: Session = Depends(get_db)):
+    connection = db.scalar(select(PinterestConnection).where(PinterestConnection.status == "CONNECTED"))
+    if not connection: raise HTTPException(status_code=409, detail="Pinterest account is not connected")
+    try: count = await sync_boards(db, connection)
+    except RuntimeError as exc: db.rollback(); raise HTTPException(status_code=502, detail=str(exc))
+    return {"synced": count}
+
+@router.get("/pinterest/boards")
+def pinterest_boards(db: Session = Depends(get_db)):
+    connection = db.scalar(select(PinterestConnection).where(PinterestConnection.status == "CONNECTED"))
+    if not connection: return {"status": "NOT_CONNECTED", "boards": []}
+    rows = db.scalars(select(PinterestBoard).where(PinterestBoard.connection_id == connection.id)).all()
+    return {"status": "CONNECTED", "boards": [{"id": r.id, "external_board_id": r.external_board_id, "name": r.name, "description": r.description, "privacy": r.privacy, "is_active": r.is_active, "is_eligible": r.is_eligible, "routing_label": r.routing_label, "sections": [{"id": s.id, "external_section_id": s.external_section_id, "name": s.name, "is_active": s.is_active} for s in db.scalars(select(PinterestBoardSection).where(PinterestBoardSection.board_id == r.id)).all()]} for r in rows]}
+
+@router.patch("/pinterest/boards/{board_id}")
+def pinterest_board_config(board_id: str, payload: dict, db: Session = Depends(get_db)):
+    row = db.get(PinterestBoard, board_id)
+    if not row: raise HTTPException(status_code=404, detail="Board not found")
+    if "is_eligible" in payload: row.is_eligible = bool(payload["is_eligible"])
+    if "routing_label" in payload: row.routing_label = str(payload["routing_label"])[:120] if payload["routing_label"] is not None else None
+    db.commit(); return {"id": row.id, "is_eligible": row.is_eligible, "routing_label": row.routing_label}
 
 def _result_redirect(result: str) -> str:
     target = get_settings().frontend_return_url
