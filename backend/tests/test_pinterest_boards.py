@@ -185,6 +185,15 @@ def test_publication_validator_explicit_boundaries(db):
     for cid, bid in [(c1.id,"unknown"),(c1.id,inactive.id),(c1.id,ineligible.id),(c2.id,wrong.id),("missing",good.id)]:
         with pytest.raises(ValueError): validate_publication_board(db, cid, bid)
 
+def test_board_api_security_origin_matrix(monkeypatch, app_db):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:"); monkeypatch.setenv("APP_ENV", "development"); monkeypatch.setenv("AUTH_DISABLED", "false"); monkeypatch.setenv("ADMIN_USERNAME", "admin"); monkeypatch.setenv("ADMIN_PASSWORD", "pw"); get_settings.cache_clear()
+    client = TestClient(app)
+    assert client.get("/api/channels/pinterest/boards").status_code == 401
+    assert client.post("/api/channels/pinterest/boards/sync").status_code == 403
+    assert client.post("/api/channels/pinterest/boards/sync", headers={"Origin":"https://evil.example"}).status_code == 403
+    assert client.patch("/api/channels/pinterest/boards/missing", json={"is_eligible":True}).status_code == 403
+    assert client.patch("/api/channels/pinterest/boards/missing", json={"is_eligible":True}, headers={"Origin":"https://evil.example"}).status_code == 403
+
 def test_official_nested_metadata_persists(db, monkeypatch):
     monkeypatch.setattr("app.services.pinterest_boards.decrypt_token", lambda _: "t"); conn = connected(db)
     fake = FakeClient({("/v5/boards", None): {"items":[{"id":"official","name":"Catalog","owner":{"username":"owner"},"media":{"image_cover_url":"https://img"},"pin_count":1,"follower_count":2,"collaborator_count":0,"is_ads_only":False,"board_pins_modified_at":"2026-01-01T00:00:00Z","created_at":"2025-01-01T00:00:00Z"}]}, ("/v5/boards/official/sections", None): {"items":[]}})
