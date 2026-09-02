@@ -57,7 +57,7 @@ async def sync_boards(db, connection: PinterestConnection, client=None):
     else: raise RuntimeError("Pinterest board pagination limit exceeded")
     seen = set()
     for item in boards:
-        if not isinstance(item, dict) or not item.get("id"): raise RuntimeError("Pinterest board response invalid")
+        if not isinstance(item, dict) or not isinstance(item.get("id"), (str, int)) or isinstance(item.get("id"), bool) or not str(item.get("id")).strip(): raise RuntimeError("Pinterest board response invalid")
         external = str(item["id"]); seen.add(external)
         row = db.scalar(select(PinterestBoard).where(PinterestBoard.connection_id == connection.id, PinterestBoard.external_board_id == external))
         if not row: row = PinterestBoard(connection_id=connection.id, external_board_id=external); db.add(row)
@@ -70,7 +70,9 @@ async def sync_boards(db, connection: PinterestConnection, client=None):
         for field, value in (("name",name),("description",item.get("description")),("privacy",item.get("privacy")),("owner_username",owner_name),("image_cover_url",cover), ("board_pins_modified_at",_datetime(item.get("board_pins_modified_at"))), ("provider_created_at",_datetime(item.get("created_at")))):
             setattr(row, field, value)
         for field in ("pin_count","follower_count","collaborator_count"): setattr(row, field, _int(item.get(field)))
-        row.is_ads_only = bool(item.get("is_ads_only", False)); row.is_active = True; row.last_seen_at = now; row.last_synced_at = now
+        ads_only = item.get("is_ads_only", False)
+        if not isinstance(ads_only, bool): raise RuntimeError("Pinterest board response invalid")
+        row.is_ads_only = ads_only; row.is_active = True; row.last_seen_at = now; row.last_synced_at = now
         db.flush()
         bookmark_s = None; section_seen = set(); section_bookmarks = set()
         for _ in range(MAX_SECTION_PAGES):
@@ -101,6 +103,8 @@ def eligible_boards(db, connection_id):
     return list(db.scalars(select(PinterestBoard).where(PinterestBoard.connection_id == connection_id, PinterestBoard.is_active.is_(True), PinterestBoard.is_eligible.is_(True))))
 
 def validate_publication_board(db, connection_id, board_id):
+    connection = db.get(PinterestConnection, connection_id)
+    if not connection or connection.status != "CONNECTED": raise ValueError("Pinterest account is not connected")
     row = db.scalar(select(PinterestBoard).where(PinterestBoard.id == board_id, PinterestBoard.connection_id == connection_id, PinterestBoard.is_active.is_(True), PinterestBoard.is_eligible.is_(True)))
     if not row: raise ValueError("Pinterest board is not eligible")
     return row
