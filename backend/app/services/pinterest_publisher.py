@@ -8,6 +8,13 @@ from app.integrations.pinterest.gateway import PinterestDefinitiveRejection, Pin
 class PublicationReconciliationError(RuntimeError):
     pass
 
+def normalize_persisted_utc(value):
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
 SAFE_METADATA_KEYS = {"validated_pin_id", "http_status", "provider_error_code", "request_id", "correlation_id"}
 def sanitize_metadata(value):
     if not isinstance(value, dict):
@@ -64,7 +71,8 @@ def publishing_ready(db, publication):
 
 def preflight_publish_readiness(db, publication):
     from datetime import datetime, timezone
-    if publication.status != PublicationStatus.SCHEDULED or not publication.scheduled_for or publication.scheduled_for > datetime.now(timezone.utc):
+    scheduled_for = normalize_persisted_utc(publication.scheduled_for)
+    if publication.status != PublicationStatus.SCHEDULED or not scheduled_for or scheduled_for > datetime.now(timezone.utc):
         return False, "NOT_DUE"
     return publishing_ready(db, publication)
 
@@ -75,7 +83,8 @@ def publication_readiness(db, publication, *, now=None):
         return "PUBLISHING_DISABLED"
     if publication.status not in {PublicationStatus.SCHEDULED, PublicationStatus.PUBLISHING}:
         return "INVALID_PUBLICATION_STATE"
-    if publication.status == PublicationStatus.SCHEDULED and (not publication.scheduled_for or publication.scheduled_for > now):
+    scheduled_for = normalize_persisted_utc(publication.scheduled_for)
+    if publication.status == PublicationStatus.SCHEDULED and (not scheduled_for or scheduled_for > normalize_persisted_utc(now)):
         return "NOT_DUE"
     ready, reason = publishing_ready(db, publication)
     return "READY" if ready else reason

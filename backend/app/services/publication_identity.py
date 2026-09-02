@@ -7,7 +7,7 @@ an audit snapshot while publishing remains disabled.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -27,6 +27,13 @@ from app.models.domain import (
     PinPublication,
     PublicationStatus,
 )
+
+def normalize_user_schedule(value):
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise PublicationIdentityError("scheduled_for must include timezone")
+    return value.astimezone(timezone.utc)
 from app.services.fingerprints import publication_identity_fingerprint
 
 
@@ -159,6 +166,7 @@ class PublicationIdentityService:
             ):
                 raise PublicationIdentityError("An identical publication snapshot already exists.")
 
+            scheduled_for = normalize_user_schedule(scheduled_for)
             publication = PinPublication(
                 draft_id=draft.id,
                 revision_id=revision.id if revision else None,
