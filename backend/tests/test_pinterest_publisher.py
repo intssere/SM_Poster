@@ -213,3 +213,37 @@ def test_db_backed_publish_blocks_inactive_board(monkeypatch):
     assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None
     assert persisted_attempt.safe_response_metadata == {}
     db.close()
+
+def test_db_backed_publish_blocks_ineligible_board(monkeypatch):
+    db, proposals, draft, creative = _prepared("ineligible-board")
+    revision = _revision(db, draft, creative, 2); _activate(db, draft, revision)
+    creative.rendered_url = "https://cdn.example.test/source.png"
+    db.commit()
+    proposals.decide(draft.id, "APPROVED", reviewed_creative_id=creative.id)
+    approval = db.query(PinApproval).filter_by(draft_id=draft.id).one()
+    connection = PinterestConnection(external_user_id="user-1", access_token_ciphertext="enc-a", refresh_token_ciphertext="enc-r", granted_scopes=["pins:write"], status="CONNECTED")
+    db.add(connection); db.flush()
+    board = PinterestBoard(connection_id=connection.id, external_board_id="ext-board", name="Board", is_active=True, is_eligible=True)
+    db.add(board); db.commit(); db.refresh(board)
+    publication = PublicationIdentityService(proposals.session_factory).create_snapshot(approval_id=approval.id, board_id="", pinterest_connection_id=connection.id, pinterest_board_record_id=board.id, scheduled_for=None)
+    db = proposals.session_factory(); publication = db.get(PinPublication, publication.id)
+    publication.status = PublicationStatus.PUBLISHING; db.commit(); db.refresh(publication)
+    attempt = PublicationAttempt(publication_id=publication.id, attempt_number=1, status="STARTED", request_fingerprint=request_fingerprint_for(publication), safe_response_metadata={})
+    db.add(attempt); db.commit(); db.refresh(attempt)
+    board = db.get(PinterestBoard, board.id)
+    board.is_eligible = False; db.commit()
+    monkeypatch.setattr("app.services.pinterest_publisher.get_settings", lambda: type("S", (), {"publishing_enabled": True})())
+    class FakeGateway:
+        calls = 0
+        async def create_pin(self, payload): self.calls += 1; return {"id": "must-not-exist"}
+    gateway = FakeGateway()
+    with pytest.raises(RuntimeError, match="INVALID_DESTINATION"):
+        asyncio.run(__import__("app.services.pinterest_publisher", fromlist=["publish_once"]).publish_once(db, publication, gateway, attempt))
+    db.expire_all(); persisted = db.get(PinPublication, publication.id); persisted_attempt = db.get(PublicationAttempt, attempt.id); persisted_board = db.get(PinterestBoard, board.id)
+    assert persisted_board.is_active is True and persisted_board.is_eligible is False
+    assert gateway.calls == 0
+    assert persisted.status == PublicationStatus.PUBLISH_UNKNOWN and persisted_attempt.status == "UNKNOWN"
+    assert persisted.error_code == persisted_attempt.error_code == "INVALID_DESTINATION"
+    assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None
+    assert persisted_attempt.safe_response_metadata == {}
+    db.close()
