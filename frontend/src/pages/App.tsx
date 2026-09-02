@@ -6,6 +6,7 @@ import { CreativeGalleryPage } from './CreativeGallery'
 import { getCreativeQa, getProposalSummary, ProposalSummary } from '../api/proposals'
 import { ChannelsPage } from './Channels'
 import { CreativeStudioPage } from './CreativeStudio'
+import { PublicationsPage } from './Publications'
 
 export function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null)
@@ -28,13 +29,14 @@ function AuthenticatedDashboard() {
   const [backendStatus, setBackendStatus] = useState<'checking' | 'connected' | 'unavailable'>('checking')
   const [proposalSummary, setProposalSummary] = useState<ProposalSummary | null>(null)
   const [creativeCount, setCreativeCount] = useState<number | null>(null)
-  type Page = 'overview' | 'products' | 'proposals' | 'gallery' | 'studio' | 'channels'
+  type Page = 'overview' | 'products' | 'proposals' | 'gallery' | 'studio' | 'channels' | 'publications'
   function pageFromHash(hash: string): Page {
     if (hash === '#products') return 'products'
     if (hash === '#proposals') return 'proposals'
     if (hash === '#gallery' || hash === '#content-library') return 'gallery'
     if (hash === '#studio') return 'studio'
     if (hash === '#channels') return 'channels'
+    if (hash === '#publications') return 'publications'
     return 'overview'
   }
   const [activePage, setActivePage] = useState<Page>(() => pageFromHash(window.location.hash))
@@ -85,7 +87,7 @@ function AuthenticatedDashboard() {
        <div><h1>Diamond Shelf</h1><p>Social Studio</p></div>
        <nav><button className={activePage === 'overview' ? 'active' : ''} onClick={() => selectPage('overview')}>Overview</button><button className={activePage === 'products' ? 'active' : ''} onClick={() => selectPage('products')}>Products</button><button className={activePage === 'gallery' ? 'active' : ''} onClick={() => selectPage('gallery')}><Images size={15} />Content Library<span className="nav-count">{creativeCount ?? '—'}</span></button><button className={activePage === 'studio' ? 'active' : ''} onClick={() => selectPage('studio')}><Sparkles size={15} />Creative Studio</button><button className={activePage === 'channels' ? 'active' : ''} onClick={() => selectPage('channels')}><Radio size={15} />Channels</button><button className={activePage === 'proposals' ? 'active' : ''} onClick={() => selectPage('proposals')}>Approval Queue</button><span>Integrations</span><span>Drafts</span><span>Templates</span><span>Campaigns</span></nav>
     </aside>
-     <main>{activePage === 'products' ? <ProductsPage/> : activePage === 'proposals' ? <ProposalsPage onOpenGallery={() => selectPage('gallery')} /> : activePage === 'gallery' ? <CreativeGalleryPage onOpenQueue={() => selectPage('proposals')} /> : activePage === 'channels' ? <ChannelsPage /> : activePage === 'studio' ? <CreativeStudioPage creativeCount={creativeCount} reviewCount={proposalSummary?.review || 0} onOpenLibrary={() => selectPage('gallery')} onOpenChannels={() => selectPage('channels')} onOpenQueue={() => selectPage('proposals')} /> : <>
+     <main>{activePage === 'products' ? <ProductsPage/> : activePage === 'proposals' ? <ProposalsPage onOpenGallery={() => selectPage('gallery')} /> : activePage === 'gallery' ? <CreativeGalleryPage onOpenQueue={() => selectPage('proposals')} /> : activePage === 'channels' ? <ChannelsPage /> : activePage === 'publications' ? <PublicationsPage /> : activePage === 'studio' ? <CreativeStudioPage creativeCount={creativeCount} reviewCount={proposalSummary?.review || 0} onOpenLibrary={() => selectPage('gallery')} onOpenChannels={() => selectPage('channels')} onOpenQueue={() => selectPage('proposals')} /> : <>
       <header><div><p className="eyebrow">SOCIAL STUDIO FOUNDATION</p><h2>Content Operations Dashboard</h2><p>Catalog → content variants → human approval → channel adapters.</p></div><div className="header-status"><div className="gate"><ShieldCheck size={18}/><span>Production publishing disabled</span></div><div className={`connection-state ${backendStatus}`} aria-live="polite"><span className="status-dot" />{backendLabel}</div></div></header>
       <section className="cards">{cards.map(([name,value,note,Icon]: any) => <article key={name}><Icon size={22}/><p>{name}</p><strong>{value}</strong><small>{note}</small></article>)}</section>
       <section className="panel">
