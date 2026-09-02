@@ -11,7 +11,7 @@
 
 ## Next recommended task
 
-Task #36 OAuth and Task #37 reviewed board sync/Board Manager v1 are complete in scope.
+Task #35 authentication, Task #36 OAuth, and Task #37 reviewed board sync/Board Manager v1 are complete and merged.
 
 ## Later phases
 

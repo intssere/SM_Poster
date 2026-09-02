@@ -1,6 +1,6 @@
 # Project State
 
-Diamond Shelf Social Studio is an internal Shopify-catalog-to-editorial-content review system. The authoritative GitHub `main` baseline for Task #37 is `beca739cc7b0832f4c74898c928d2f028d453bc9` (tree `62bc9f03f939f322acad0cd81891cd92ac53fc03`).
+Diamond Shelf Social Studio is an internal Shopify-catalog-to-editorial-content review system. Current authoritative GitHub `main` is `886ba9ec25e316f0d5b9a3a590ae8cbef103a059` (tree `f0b3ec2eaaa7f9ac050f43f3b0ad3bc015c409e0`).
 
 Current capabilities include catalog normalization, controlled proposal generation, deterministic authentic-product creative rendering, immutable AI-assisted copy revisions, review-only generated backgrounds and video specifications, explicit version selection, approval auditing, and read-only revision previews.
 
@@ -30,8 +30,8 @@ These are carried-forward runtime values, not fresh Task #34 measurements. Task 
 `AISettings.enabled=false` and `PUBLISHING_ENABLED=false`. No provider or Pinterest publishing call is part of publication identity operations.
 ## Task #36 status
 
-Pinterest Account Connection/OAuth v1 is implemented as account connection only. Alembic head is 0011; publishing and AI/provider modes remain disabled.
+Pinterest Account Connection/OAuth v1 is complete as a read-only account foundation. Alembic head is 0013; publishing and AI/provider modes remain disabled.
 
 ## Task #37 status
 
-Pinterest Board Sync & Board Manager v1 is PR #15 PRE-MERGE / under independent review as a read-only capability. It provides connection-level successful-sync state (including zero-board success), five-minute token preflight using Task #36 refresh at most once, strict provider metadata validation, and local-only eligibility/routing. No Pinterest board or Pin writes, scheduler, publishing, or analytics ingestion are enabled. Alembic head is `0013`.
+Pinterest Board Sync & Board Manager v1 is COMPLETE; PR #15 is MERGED and Issue #14 is CLOSED. It provides connection-level successful-sync state (including zero-board success), five-minute token preflight using Task #36 refresh at most once, strict provider metadata validation, and local-only eligibility/routing. No Pinterest board or Pin writes, scheduler, publishing, or analytics ingestion are enabled. Alembic head is `0013`.
