@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, ConfigDict, Field
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -17,27 +18,37 @@ from app.services.social_channels import channel_capability_payload
 
 router = APIRouter(prefix="/channels", tags=["social-channels"])
 
+class BoardConfigPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    is_eligible: bool | None = None
+    routing_label: str | None = Field(default=None, max_length=120)
+
+def _board_payload(db, r):
+    return {"id": r.id, "external_board_id": r.external_board_id, "name": r.name, "description": r.description, "privacy": r.privacy, "owner_username": r.owner_username, "pin_count": r.pin_count, "follower_count": r.follower_count, "collaborator_count": r.collaborator_count, "is_ads_only": r.is_ads_only, "image_cover_url": r.image_cover_url, "board_pins_modified_at": r.board_pins_modified_at, "provider_created_at": r.provider_created_at, "is_active": r.is_active, "is_eligible": r.is_eligible, "routing_label": r.routing_label, "last_seen_at": r.last_seen_at, "last_synced_at": r.last_synced_at, "sections": [{"id": s.id, "external_section_id": s.external_section_id, "name": s.name, "is_active": s.is_active, "last_seen_at": s.last_seen_at, "last_synced_at": s.last_synced_at} for s in db.scalars(select(PinterestBoardSection).where(PinterestBoardSection.board_id == r.id)).all()]}
+
 @router.post("/pinterest/boards/sync")
 async def pinterest_boards_sync(db: Session = Depends(get_db)):
     connection = db.scalar(select(PinterestConnection).where(PinterestConnection.status == "CONNECTED"))
     if not connection: raise HTTPException(status_code=409, detail="Pinterest account is not connected")
     try: count = await sync_boards(db, connection)
     except RuntimeError as exc: db.rollback(); raise HTTPException(status_code=502, detail=str(exc))
-    return {"synced": count}
+    rows = db.scalars(select(PinterestBoard).where(PinterestBoard.connection_id == connection.id)).all()
+    return {"connection_status": "CONNECTED", "boards": [_board_payload(db, r) for r in rows], "sync": {"boards_seen": count}}
 
 @router.get("/pinterest/boards")
 def pinterest_boards(db: Session = Depends(get_db)):
     connection = db.scalar(select(PinterestConnection).where(PinterestConnection.status == "CONNECTED"))
     if not connection: return {"status": "NOT_CONNECTED", "boards": []}
     rows = db.scalars(select(PinterestBoard).where(PinterestBoard.connection_id == connection.id)).all()
-    return {"status": "CONNECTED", "boards": [{"id": r.id, "external_board_id": r.external_board_id, "name": r.name, "description": r.description, "privacy": r.privacy, "is_active": r.is_active, "is_eligible": r.is_eligible, "routing_label": r.routing_label, "sections": [{"id": s.id, "external_section_id": s.external_section_id, "name": s.name, "is_active": s.is_active} for s in db.scalars(select(PinterestBoardSection).where(PinterestBoardSection.board_id == r.id)).all()]} for r in rows]}
+    return {"status": "CONNECTED", "connection_status": "CONNECTED", "boards": [_board_payload(db, r) for r in rows]}
 
 @router.patch("/pinterest/boards/{board_id}")
-def pinterest_board_config(board_id: str, payload: dict, db: Session = Depends(get_db)):
+def pinterest_board_config(board_id: str, payload: BoardConfigPatch, db: Session = Depends(get_db)):
     row = db.get(PinterestBoard, board_id)
     if not row: raise HTTPException(status_code=404, detail="Board not found")
-    if "is_eligible" in payload: row.is_eligible = bool(payload["is_eligible"])
-    if "routing_label" in payload: row.routing_label = str(payload["routing_label"])[:120] if payload["routing_label"] is not None else None
+    values = payload.model_dump(exclude_unset=True)
+    if "is_eligible" in values and values["is_eligible"] is not None: row.is_eligible = values["is_eligible"]
+    if "routing_label" in values: row.routing_label = values["routing_label"]
     db.commit(); return {"id": row.id, "is_eligible": row.is_eligible, "routing_label": row.routing_label}
 
 def _result_redirect(result: str) -> str:

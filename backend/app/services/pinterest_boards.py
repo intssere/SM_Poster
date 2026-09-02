@@ -6,6 +6,9 @@ from app.core.config import get_settings
 from app.models.domain import PinterestConnection, PinterestBoard, PinterestBoardSection
 from app.services.pinterest_oauth import decrypt_token
 
+MAX_BOARD_PAGES = 100
+MAX_SECTION_PAGES = 100
+
 class PinterestBoardClient:
     async def get(self, path, access_token, params=None):
         try:
@@ -24,6 +27,19 @@ class PinterestBoardClient:
 def _int(value):
     return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
+def _datetime(value):
+    if value is None: return None
+    if not isinstance(value, str): raise RuntimeError("Pinterest board response invalid")
+    try: return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc: raise RuntimeError("Pinterest board response invalid") from exc
+
+def _page(payload):
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        raise RuntimeError("Pinterest board response invalid")
+    bookmark = payload.get("bookmark")
+    if bookmark is not None and not isinstance(bookmark, str): raise RuntimeError("Pinterest pagination invalid")
+    return payload["items"], bookmark
+
 async def sync_boards(db, connection: PinterestConnection, client=None):
     if connection.status != "CONNECTED" or not connection.access_token_ciphertext: raise RuntimeError("Pinterest account is not connected")
     access = decrypt_token(connection.access_token_ciphertext); client = client or PinterestBoardClient(); now = datetime.now(timezone.utc)
@@ -32,32 +48,41 @@ async def sync_boards(db, connection: PinterestConnection, client=None):
         except RuntimeError as exc:
             raise RuntimeError("Pinterest board request failed safely") from exc
     boards, sections = [], [] ; bookmark = None; seen_bookmarks = set()
-    while True:
+    for _ in range(MAX_BOARD_PAGES):
         if bookmark in seen_bookmarks: raise RuntimeError("Pinterest board pagination invalid")
         if bookmark: seen_bookmarks.add(bookmark)
         payload = await safe_get("/v5/boards", {"bookmark": bookmark} if bookmark else None)
-        boards.extend(payload.get("items", [])); bookmark = payload.get("bookmark")
+        items, bookmark = _page(payload); boards.extend(items)
         if not bookmark: break
+    else: raise RuntimeError("Pinterest board pagination limit exceeded")
     seen = set()
     for item in boards:
         if not isinstance(item, dict) or not item.get("id"): raise RuntimeError("Pinterest board response invalid")
         external = str(item["id"]); seen.add(external)
         row = db.scalar(select(PinterestBoard).where(PinterestBoard.connection_id == connection.id, PinterestBoard.external_board_id == external))
         if not row: row = PinterestBoard(connection_id=connection.id, external_board_id=external); db.add(row)
-        for field, key in (("name","name"),("description","description"),("privacy","privacy"),("owner_username","owner_username"),("image_cover_url","image_cover_url")):
-            setattr(row, field, item.get(key))
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip() or len(name) > 255: raise RuntimeError("Pinterest board response invalid")
+        owner = item.get("owner")
+        media = item.get("media")
+        owner_name = owner.get("username") if isinstance(owner, dict) else None
+        cover = media.get("image_cover_url") if isinstance(media, dict) else None
+        for field, value in (("name",name),("description",item.get("description")),("privacy",item.get("privacy")),("owner_username",owner_name),("image_cover_url",cover), ("board_pins_modified_at",_datetime(item.get("board_pins_modified_at"))), ("provider_created_at",_datetime(item.get("created_at")))):
+            setattr(row, field, value)
         for field in ("pin_count","follower_count","collaborator_count"): setattr(row, field, _int(item.get(field)))
         row.is_ads_only = bool(item.get("is_ads_only", False)); row.is_active = True; row.last_seen_at = now; row.last_synced_at = now
         db.flush()
         bookmark_s = None; section_seen = set(); section_bookmarks = set()
-        while True:
+        for _ in range(MAX_SECTION_PAGES):
             if bookmark_s in section_bookmarks: raise RuntimeError("Pinterest section pagination invalid")
             if bookmark_s: section_bookmarks.add(bookmark_s)
             section_payload = await safe_get(f"/v5/boards/{external}/sections", {"bookmark": bookmark_s} if bookmark_s else None)
-            for x in section_payload.get("items", []):
+            section_items, bookmark_s = _page(section_payload)
+            for x in section_items:
+                if not isinstance(x, dict) or not isinstance(x.get("id"), (str, int)) or isinstance(x.get("id"), bool) or not str(x.get("id")).strip(): raise RuntimeError("Pinterest section response invalid")
                 sections.append((row, x)); section_seen.add(str(x.get("id")))
-            bookmark_s = section_payload.get("bookmark")
             if not bookmark_s: break
+        else: raise RuntimeError("Pinterest section pagination limit exceeded")
         for existing in db.scalars(select(PinterestBoardSection).where(PinterestBoardSection.board_id == row.id)):
             if existing.external_section_id not in section_seen: existing.is_active = False
     for board in db.scalars(select(PinterestBoard).where(PinterestBoard.connection_id == connection.id)):
@@ -74,3 +99,8 @@ async def sync_boards(db, connection: PinterestConnection, client=None):
 
 def eligible_boards(db, connection_id):
     return list(db.scalars(select(PinterestBoard).where(PinterestBoard.connection_id == connection_id, PinterestBoard.is_active.is_(True), PinterestBoard.is_eligible.is_(True))))
+
+def validate_publication_board(db, connection_id, board_id):
+    row = db.scalar(select(PinterestBoard).where(PinterestBoard.id == board_id, PinterestBoard.connection_id == connection_id, PinterestBoard.is_active.is_(True), PinterestBoard.is_eligible.is_(True)))
+    if not row: raise ValueError("Pinterest board is not eligible")
+    return row
