@@ -149,6 +149,42 @@ def test_pre_sync_refresh_failure_makes_no_discovery_call(db, monkeypatch):
     with pytest.raises(RuntimeError): asyncio.run(sync_boards(db, conn, Spy({})))
     assert not calls
 
+@pytest.mark.parametrize("value", ["true", "false", 1, 0])
+def test_patch_rejects_non_boolean_is_eligible(monkeypatch, app_db, value):
+    auth_env(monkeypatch)
+    with app_db() as s:
+        c = connected(s); b = PinterestBoard(connection_id=c.id, external_board_id="p", name="P"); s.add(b); s.commit(); bid = b.id
+    response = TestClient(app).patch(f"/api/channels/pinterest/boards/{bid}", json={"is_eligible": value}, headers={"Origin":"http://localhost:5000"})
+    assert response.status_code == 422
+
+@pytest.mark.parametrize("value", [True, False])
+def test_patch_accepts_real_boolean_is_eligible(monkeypatch, app_db, value):
+    auth_env(monkeypatch)
+    with app_db() as s:
+        c = connected(s); b = PinterestBoard(connection_id=c.id, external_board_id="p", name="P"); s.add(b); s.commit(); bid = b.id
+    response = TestClient(app).patch(f"/api/channels/pinterest/boards/{bid}", json={"is_eligible": value}, headers={"Origin":"http://localhost:5000"})
+    assert response.status_code == 200 and response.json()["is_eligible"] is value
+
+@pytest.mark.parametrize("payload", [{"name":"x"},{"external_board_id":"x"},{"is_eligible":True,"name":"x"}])
+def test_patch_rejects_provider_owned_fields_without_partial_apply(monkeypatch, app_db, payload):
+    auth_env(monkeypatch)
+    with app_db() as s:
+        c = connected(s); b = PinterestBoard(connection_id=c.id, external_board_id="p", name="P", is_eligible=False); s.add(b); s.commit(); bid = b.id
+    response = TestClient(app).patch(f"/api/channels/pinterest/boards/{bid}", json=payload, headers={"Origin":"http://localhost:5000"})
+    assert response.status_code == 422
+    with app_db() as s: assert s.get(PinterestBoard, bid).is_eligible is False
+
+def test_publication_validator_explicit_boundaries(db):
+    from app.services.pinterest_boards import validate_publication_board
+    c1, c2 = connected(db), connected(db); c2.status = "DISCONNECTED"
+    good = PinterestBoard(connection_id=c1.id, external_board_id="good", name="Good", is_active=True, is_eligible=True)
+    inactive = PinterestBoard(connection_id=c1.id, external_board_id="inactive", name="Inactive", is_active=False, is_eligible=True)
+    ineligible = PinterestBoard(connection_id=c1.id, external_board_id="ineligible", name="Ineligible", is_active=True, is_eligible=False)
+    wrong = PinterestBoard(connection_id=c2.id, external_board_id="wrong", name="Wrong", is_active=True, is_eligible=True); db.add_all([good,inactive,ineligible,wrong]); db.commit()
+    assert validate_publication_board(db, c1.id, good.id).id == good.id
+    for cid, bid in [(c1.id,"unknown"),(c1.id,inactive.id),(c1.id,ineligible.id),(c2.id,wrong.id),("missing",good.id)]:
+        with pytest.raises(ValueError): validate_publication_board(db, cid, bid)
+
 def test_official_nested_metadata_persists(db, monkeypatch):
     monkeypatch.setattr("app.services.pinterest_boards.decrypt_token", lambda _: "t"); conn = connected(db)
     fake = FakeClient({("/v5/boards", None): {"items":[{"id":"official","name":"Catalog","owner":{"username":"owner"},"media":{"image_cover_url":"https://img"},"pin_count":1,"follower_count":2,"collaborator_count":0,"is_ads_only":False,"board_pins_modified_at":"2026-01-01T00:00:00Z","created_at":"2025-01-01T00:00:00Z"}]}, ("/v5/boards/official/sections", None): {"items":[]}})
