@@ -15,7 +15,7 @@ Task #35 authentication, Task #36 OAuth, and Task #37 reviewed board sync/Board 
 
 ## Later phases
 
-- Publisher + Scheduler design (explicit authorization required)
+- Separately authorized live-publishing and `pins:write` enablement (explicit authorization required)
 - Explicit scheduler design with idempotency and `PUBLISH_UNKNOWN` recovery
 - Production publishing only after access review, sandbox validation, and a separate enablement decision
 - Analytics ingestion and attribution after publication identity is proven end to end

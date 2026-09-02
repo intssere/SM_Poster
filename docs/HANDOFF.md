@@ -42,7 +42,7 @@ Task #34 verification uses isolated test databases. Those fixtures create and de
 
 The latest previously verified runtime snapshot, carried forward from controlled Adagio v3 verification, is 4 content revisions, 1 selection (Adagio v3), 5 telemetry records, 0 generated assets, 0 approvals, and 0 publications. Treat these values as a prior verified snapshot, not as counts measured by Task #34. Re-query the deployed PostgreSQL database before relying on them operationally.
 
-PR #15 is MERGED and Issue #14 is CLOSED on `main` at `886ba9ec25e316f0d5b9a3a590ae8cbef103a059` (tree `f0b3ec2eaaa7f9ac050f43f3b0ad3bc015c409e0`). Task #35, Task #36, and Task #37 are COMPLETE; Alembic is `0013`. Pinterest board sync is read-only with connection-level successful-sync state, strict provider validation, five-minute refresh preflight, and local-only eligibility/routing; publishing, scheduling, and analytics remain disabled. The next stage is Publisher + Scheduler design.
+PR #15 is MERGED and Issue #14 is CLOSED on `main` at `886ba9ec25e316f0d5b9a3a590ae8cbef103a059` (tree `f0b3ec2eaaa7f9ac050f43f3b0ad3bc015c409e0`). Task #35, Task #36, and Task #37 are COMPLETE; Alembic is `0013`. Pinterest board sync is read-only with connection-level successful-sync state, strict provider validation, five-minute refresh preflight, and local-only eligibility/routing. Task #38 supplies the publisher/scheduler foundation; live publishing remains disabled.
 
 ## Known issues and next work
 
@@ -50,7 +50,7 @@ PR #15 is MERGED and Issue #14 is CLOSED on `main` at `886ba9ec25e316f0d5b9a3a59
 
 Task #38 is PRE-MERGE. Publication snapshots are provider-independent immutable audit records; provider execution remains separately gated by `PUBLISHING_ENABLED=true`, connected Pinterest `pins:write`, approved identities, eligible destination, and public HTTPS media. Scheduling, cancellation, bounded due discovery, transactional claims, and durable attempts are foundations only; no autonomous worker or automatic `PUBLISH_UNKNOWN` retry exists. Current OAuth scopes remain `user_accounts:read`, `boards:read`, and `pins:read`; publishing remains disabled.
 
-Task #35, Task #36, and Task #37 are COMPLETE; PR #15 is MERGED and Issue #14 is CLOSED. Alembic is `0013`. Publishing remains disabled; runtime counts remain carried-forward historical values, not freshly queried. The next implementation stage is Publisher + Scheduler design, subject to explicit authorization.
+Task #35, Task #36, and Task #37 are COMPLETE; PR #15 is MERGED and Issue #14 is CLOSED. Alembic is `0013`. Publishing remains disabled; runtime counts remain carried-forward historical values, not freshly queried. The next implementation stage is separately authorized live-publishing and `pins:write` enablement.
 
 ## Verification commands
 

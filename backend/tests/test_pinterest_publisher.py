@@ -21,5 +21,6 @@ def test_metadata_allowlist_removes_credentials_and_raw_payloads():
     data = {"access_token":"secret", "refresh_token":"secret2", "Authorization":"Bearer x", "raw_body":"x", "validated_pin_id":"pin123", "http_status":201, "request_id":"r"}
     assert sanitize_metadata(data) == {"validated_pin_id":"pin123", "http_status":201, "request_id":"r"}
 
-def test_metadata_allowlist_handles_none_and_non_mapping():
-    assert sanitize_metadata(None) == {}
+@pytest.mark.parametrize("value", [None, [], ["secret"], "secret", 123])
+def test_metadata_allowlist_handles_none_and_non_mapping(value):
+    assert sanitize_metadata(value) == {}

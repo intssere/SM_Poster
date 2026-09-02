@@ -25,7 +25,7 @@
 - Added additive migrations `0012`/`0013` and authenticated read-only Pinterest board/section synchronization with connection-level sync state.
 - Added Board Manager UI for reviewing and explicitly selecting persisted board metadata.
 - Kept Pinterest writes, publishing, scheduling, and analytics disabled.
-- PR #15 merged; Issue #14 closed. Next stage is Publisher + Scheduler design; no publishing enablement is implied.
+- PR #15 merged; Issue #14 closed. Task #38 now provides the publisher/scheduler foundation; no live publishing enablement is implied.
 # Unreleased
 
 - Task #38 foundation: immutable provider-independent publication snapshots, Pinterest destination identity fields, and durable publication-attempt auditing. Publishing remains disabled.

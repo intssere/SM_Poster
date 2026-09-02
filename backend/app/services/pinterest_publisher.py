@@ -10,6 +10,8 @@ class PublicationReconciliationError(RuntimeError):
 
 SAFE_METADATA_KEYS = {"validated_pin_id", "http_status", "provider_error_code", "request_id", "correlation_id"}
 def sanitize_metadata(value):
+    if not isinstance(value, dict):
+        return {}
     return {k: v for k, v in (value or {}).items() if k in SAFE_METADATA_KEYS and isinstance(k, str)}
 from urllib.parse import urlsplit
 import ipaddress
