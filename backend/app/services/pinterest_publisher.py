@@ -147,6 +147,8 @@ async def publish_once(db, publication, gateway, attempt=None):
             raise RuntimeError("PUBLISH_UNKNOWN") from None
         return result
     except Exception as exc:
+        if isinstance(exc, PublicationReconciliationError):
+            raise
         if isinstance(exc, (PublicationReconciliationError, RuntimeError)) and str(exc) == "PUBLISH_UNKNOWN":
             raise
         db.rollback(); attempt = db.get(PublicationAttempt, attempt.id)
