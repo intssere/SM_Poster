@@ -59,3 +59,10 @@ async function json<T>(response: Response): Promise<T> {
 export async function getChannelCapabilities(): Promise<ChannelCapabilities> {
   return json(await fetch('/api/channels/capabilities'))
 }
+
+export type PinterestBoardSection = { id: string; external_section_id: string; name: string; is_active: boolean }
+export type PinterestBoard = { id: string; external_board_id: string; name: string; description?: string | null; privacy?: string | null; owner_username?: string | null; pin_count?: number | null; follower_count?: number | null; collaborator_count?: number | null; is_ads_only?: boolean; image_cover_url?: string | null; is_active: boolean; is_eligible: boolean; routing_label?: string | null; last_seen_at?: string | null; last_synced_at?: string | null; sections?: PinterestBoardSection[] }
+export type PinterestBoardsResponse = { connection_status: string; last_synced_at?: string | null; boards: PinterestBoard[]; sync?: { boards_seen?: number; boards_created?: number; boards_updated?: number; boards_inactivated?: number; sections_seen?: number } }
+export async function getPinterestBoards(): Promise<PinterestBoardsResponse> { return json(await fetch('/api/channels/pinterest/boards')) }
+export async function syncPinterestBoards(): Promise<PinterestBoardsResponse> { return json(await fetch('/api/channels/pinterest/boards/sync', { method: 'POST' })) }
+export async function updatePinterestBoard(id: string, body: { is_eligible?: boolean; routing_label?: string | null }): Promise<PinterestBoard> { return json(await fetch(`/api/channels/pinterest/boards/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })) }

@@ -26,3 +26,21 @@ Use a stateless HMAC-signed, short-lived HttpOnly cookie for the single admin. K
 ## Task #36
 
 Use Authorization Code OAuth with one-time hashed state and Fernet-encrypted credentials. Restrict scopes to account/board/Pin reads; retain publishing disabled.
+
+## Task #37
+
+Board synchronization persists normalized read snapshots through additive migrations `0012` and `0013`; `0013` stores connection-level successful-sync time. Board and section mutations, Pin writes, scheduling, and analytics ingestion are prohibited; local selection never authorizes publication.
+
+### Safe Pinterest token refresh
+
+Connection refresh uses a prepare-then-commit boundary: provider data, scopes,
+expirations, and replacement credentials are validated and encrypted into
+locals before the connection is mutated. If no replacement refresh token is
+provided, the existing encrypted credential is retained. Provider, parsing,
+validation, or encryption failures preserve credential metadata and record only
+a sanitized error code; database failures roll back without exposing provider
+payloads or secrets. Refresh is explicitly invoked and provider-read-only; no
+scheduler or background refresh job is enabled.
+# Board-sync token refresh policy
+
+Board synchronization performs a five-minute access-token expiry preflight. Healthy tokens are not refreshed; expired or imminently expiring tokens invoke the existing Task #36 `refresh_connection` helper at most once. The refreshed encrypted credential is used for discovery. Refresh failure fails closed before board/section requests, reconciliation, or advancement of `boards_last_synced_at`; there is no background scheduler or retry loop, and OAuth scopes remain read-only.
