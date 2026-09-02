@@ -65,8 +65,15 @@ async def sync_boards(db, connection: PinterestConnection, client=None):
         if not isinstance(name, str) or not name.strip() or len(name) > 255: raise RuntimeError("Pinterest board response invalid")
         owner = item.get("owner")
         media = item.get("media")
-        owner_name = owner.get("username") if isinstance(owner, dict) else None
-        cover = media.get("image_cover_url") if isinstance(media, dict) else None
+        if owner is not None and not isinstance(owner, dict): raise RuntimeError("Pinterest board response invalid")
+        if media is not None and not isinstance(media, dict): raise RuntimeError("Pinterest board response invalid")
+        description, privacy = item.get("description"), item.get("privacy")
+        if description is not None and not isinstance(description, str): raise RuntimeError("Pinterest board response invalid")
+        if privacy is not None and (not isinstance(privacy, str) or len(privacy) > 40): raise RuntimeError("Pinterest board response invalid")
+        owner_name = owner.get("username") if owner is not None else None
+        cover = media.get("image_cover_url") if media is not None else None
+        if owner_name is not None and (not isinstance(owner_name, str) or len(owner_name) > 255): raise RuntimeError("Pinterest board response invalid")
+        if cover is not None and not isinstance(cover, str): raise RuntimeError("Pinterest board response invalid")
         for field, value in (("name",name),("description",item.get("description")),("privacy",item.get("privacy")),("owner_username",owner_name),("image_cover_url",cover), ("board_pins_modified_at",_datetime(item.get("board_pins_modified_at"))), ("provider_created_at",_datetime(item.get("created_at")))):
             setattr(row, field, value)
         for field in ("pin_count","follower_count","collaborator_count"): setattr(row, field, _int(item.get(field)))
@@ -96,7 +103,9 @@ async def sync_boards(db, connection: PinterestConnection, client=None):
         if not isinstance(item, dict) or not item.get("id"): raise RuntimeError("Pinterest section response invalid")
         section = db.scalar(select(PinterestBoardSection).where(PinterestBoardSection.board_id == board.id, PinterestBoardSection.external_section_id == str(item["id"])))
         if not section: section = PinterestBoardSection(board_id=board.id, external_section_id=str(item["id"])); db.add(section)
-        section.name = item.get("name") or ""; section.is_active = True; section.last_seen_at = now; section.last_synced_at = now
+        section_name = item.get("name")
+        if not isinstance(section_name, str) or not section_name.strip() or len(section_name) > 255: raise RuntimeError("Pinterest section response invalid")
+        section.name = section_name; section.is_active = True; section.last_seen_at = now; section.last_synced_at = now
     connection.boards_last_synced_at = now
     db.commit(); return len(boards)
 
