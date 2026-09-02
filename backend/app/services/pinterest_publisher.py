@@ -7,6 +7,10 @@ from app.integrations.pinterest.gateway import PinterestDefinitiveRejection, Pin
 
 class PublicationReconciliationError(RuntimeError):
     pass
+
+SAFE_METADATA_KEYS = {"validated_pin_id", "http_status", "provider_error_code", "request_id", "correlation_id"}
+def sanitize_metadata(value):
+    return {k: v for k, v in (value or {}).items() if k in SAFE_METADATA_KEYS and isinstance(k, str)}
 from urllib.parse import urlsplit
 import ipaddress
 
@@ -81,7 +85,6 @@ def finalize_post_claim_unknown(db, publication, attempt, code="POST_CLAIM_REVAL
 
 async def publish_once(db, publication, gateway, attempt=None):
     if publication.status != PublicationStatus.PUBLISHING or attempt is None or attempt.publication_id != publication.id or attempt.status != "STARTED":
-        if attempt is not None: finalize_post_claim_unknown(db, publication, attempt, "ATTEMPT_IDENTITY_MISMATCH")
         raise RuntimeError("ATTEMPT_IDENTITY_MISMATCH")
     ready, reason = publishing_ready(db, publication)
     if not ready:
@@ -100,7 +103,7 @@ async def publish_once(db, publication, gateway, attempt=None):
         pin_id = result.get("id") if isinstance(result, dict) else None
         if not isinstance(pin_id, str) or not pin_id.strip():
             raise RuntimeError("AMBIGUOUS_PROVIDER_RESULT")
-        attempt.status = "SUCCEEDED"; attempt.provider_pin_id = pin_id; attempt.safe_response_metadata = {"validated_pin_id": pin_id}; attempt.completed_at = datetime.now(timezone.utc)
+        attempt.status = "SUCCEEDED"; attempt.provider_pin_id = pin_id; attempt.safe_response_metadata = sanitize_metadata({"validated_pin_id": pin_id}); attempt.completed_at = datetime.now(timezone.utc)
         publication.status = PublicationStatus.PUBLISHED; publication.pinterest_pin_id = pin_id; publication.published_at = datetime.now(timezone.utc)
         db.commit()
         return result
