@@ -86,7 +86,10 @@ def finalize_post_claim_unknown(db, publication, attempt, code="POST_CLAIM_REVAL
 async def publish_once(db, publication, gateway, attempt=None):
     if publication.status != PublicationStatus.PUBLISHING or attempt is None or attempt.publication_id != publication.id or attempt.status != "STARTED":
         raise RuntimeError("ATTEMPT_IDENTITY_MISMATCH")
-    ready, reason = publishing_ready(db, publication)
+    # Re-check the attempt identity and all provider gates immediately before
+    # dispatch.  Callers may have loaded/claimed the row earlier, so this
+    # second check is the final safety boundary before the network POST.
+    ready, reason = execution_publish_readiness(db, publication, attempt)
     if not ready:
         finalize_post_claim_unknown(db, publication, attempt, reason)
         raise RuntimeError(reason)
@@ -105,7 +108,31 @@ async def publish_once(db, publication, gateway, attempt=None):
             raise RuntimeError("AMBIGUOUS_PROVIDER_RESULT")
         attempt.status = "SUCCEEDED"; attempt.provider_pin_id = pin_id; attempt.safe_response_metadata = sanitize_metadata({"validated_pin_id": pin_id}); attempt.completed_at = datetime.now(timezone.utc)
         publication.status = PublicationStatus.PUBLISHED; publication.pinterest_pin_id = pin_id; publication.published_at = datetime.now(timezone.utc)
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            # A provider success followed by a persistence failure is
+            # inherently ambiguous.  Preserve the provider id as audit data
+            # and classify the publication as unknown; never retry blindly.
+            db.rollback()
+            try:
+                persisted_attempt = db.get(PublicationAttempt, attempt.id)
+                persisted_publication = db.get(type(publication), publication.id)
+                if not persisted_attempt or not persisted_publication:
+                    raise RuntimeError
+                persisted_attempt.status = "UNKNOWN"
+                persisted_attempt.provider_pin_id = pin_id
+                persisted_attempt.error_code = "PUBLISH_UNKNOWN"
+                persisted_attempt.safe_response_metadata = sanitize_metadata({"validated_pin_id": pin_id})
+                persisted_attempt.completed_at = datetime.now(timezone.utc)
+                persisted_publication.status = PublicationStatus.PUBLISH_UNKNOWN
+                persisted_publication.pinterest_pin_id = pin_id
+                persisted_publication.error_code = "PUBLISH_UNKNOWN"
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise PublicationReconciliationError("Publication reconciliation could not be persisted") from None
+            raise RuntimeError("PUBLISH_UNKNOWN") from None
         return result
     except Exception as exc:
         db.rollback(); attempt = db.get(PublicationAttempt, attempt.id)
