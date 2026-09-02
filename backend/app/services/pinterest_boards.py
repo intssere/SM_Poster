@@ -4,7 +4,10 @@ import httpx
 from sqlalchemy import select
 from app.core.config import get_settings
 from app.models.domain import PinterestConnection, PinterestBoard, PinterestBoardSection
-from app.services.pinterest_oauth import decrypt_token
+from app.services.pinterest_oauth import decrypt_token, refresh_connection
+from datetime import timedelta
+
+PINTEREST_ACCESS_TOKEN_REFRESH_WINDOW = timedelta(minutes=5)
 
 MAX_BOARD_PAGES = 100
 MAX_SECTION_PAGES = 100
@@ -42,6 +45,12 @@ def _page(payload):
 
 async def sync_boards(db, connection: PinterestConnection, client=None):
     if connection.status != "CONNECTED" or not connection.access_token_ciphertext: raise RuntimeError("Pinterest account is not connected")
+    if connection.access_token_expires_at is not None:
+        expiry = connection.access_token_expires_at
+        if expiry.tzinfo is None: expiry = expiry.replace(tzinfo=timezone.utc)
+        if expiry <= datetime.now(timezone.utc) + PINTEREST_ACCESS_TOKEN_REFRESH_WINDOW:
+            await refresh_connection(db, connection)
+            db.refresh(connection)
     access = decrypt_token(connection.access_token_ciphertext); client = client or PinterestBoardClient(); now = datetime.now(timezone.utc)
     async def safe_get(path, params=None):
         try: return await client.get(path, access, params)

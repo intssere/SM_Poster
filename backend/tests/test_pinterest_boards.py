@@ -134,6 +134,21 @@ def test_malformed_section_names_preserve_existing_state(db, monkeypatch, name):
         asyncio.run(sync_boards(db, conn, FakeClient({("/v5/boards",None): {"items":[_payload()]}, ("/v5/boards/v/sections",None): {"items":[{"id":"s", "name":name}]}})))
     assert conn.boards_last_synced_at is None
 
+def test_pre_sync_refreshes_expiring_token_once(db, monkeypatch):
+    conn = connected(db); conn.access_token_expires_at = datetime.now(timezone.utc) + timedelta(minutes=1); db.commit(); calls = []
+    async def refresh(session, connection): calls.append(1); connection.access_token_ciphertext = "new"; connection.access_token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1); session.commit(); return connection
+    monkeypatch.setattr("app.services.pinterest_boards.refresh_connection", refresh); monkeypatch.setattr("app.services.pinterest_boards.decrypt_token", lambda token: "token")
+    asyncio.run(sync_boards(db, conn, FakeClient({("/v5/boards",None): {"items":[]}}))); assert calls == [1]
+
+def test_pre_sync_refresh_failure_makes_no_discovery_call(db, monkeypatch):
+    conn = connected(db); conn.access_token_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1); db.commit(); calls = []
+    async def fail(*args): raise RuntimeError("safe refresh failure")
+    class Spy(FakeClient):
+        async def get(self, *args, **kwargs): calls.append(1); return {"items":[]}
+    monkeypatch.setattr("app.services.pinterest_boards.refresh_connection", fail)
+    with pytest.raises(RuntimeError): asyncio.run(sync_boards(db, conn, Spy({})))
+    assert not calls
+
 def test_official_nested_metadata_persists(db, monkeypatch):
     monkeypatch.setattr("app.services.pinterest_boards.decrypt_token", lambda _: "t"); conn = connected(db)
     fake = FakeClient({("/v5/boards", None): {"items":[{"id":"official","name":"Catalog","owner":{"username":"owner"},"media":{"image_cover_url":"https://img"},"pin_count":1,"follower_count":2,"collaborator_count":0,"is_ads_only":False,"board_pins_modified_at":"2026-01-01T00:00:00Z","created_at":"2025-01-01T00:00:00Z"}]}, ("/v5/boards/official/sections", None): {"items":[]}})
