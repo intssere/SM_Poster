@@ -110,6 +110,28 @@ def test_provider_failure_does_not_expose_credentials(db, monkeypatch):
     with pytest.raises(RuntimeError) as exc: asyncio.run(sync_boards(db, conn, Broken({})))
     assert "secret-token" not in str(exc.value)
 
+def test_official_nested_metadata_persists(db, monkeypatch):
+    monkeypatch.setattr("app.services.pinterest_boards.decrypt_token", lambda _: "t"); conn = connected(db)
+    fake = FakeClient({("/v5/boards", None): {"items":[{"id":"official","name":"Catalog","owner":{"username":"owner"},"media":{"image_cover_url":"https://img"},"pin_count":1,"follower_count":2,"collaborator_count":0,"is_ads_only":False,"board_pins_modified_at":"2026-01-01T00:00:00Z","created_at":"2025-01-01T00:00:00Z"}]}, ("/v5/boards/official/sections", None): {"items":[]}})
+    asyncio.run(sync_boards(db, conn, fake)); row = db.query(PinterestBoard).one()
+    assert (row.owner_username,row.image_cover_url,row.pin_count,row.follower_count,row.collaborator_count,row.is_ads_only) == ("owner","https://img",1,2,0,False)
+    assert row.board_pins_modified_at and row.provider_created_at and row.last_synced_at
+
+def test_hard_board_and_section_page_limits(db, monkeypatch):
+    monkeypatch.setattr("app.services.pinterest_boards.decrypt_token", lambda _: "t"); conn = connected(db)
+    from app.services.pinterest_boards import MAX_BOARD_PAGES, MAX_SECTION_PAGES
+    class Endless(FakeClient):
+        async def get(self, path, token, params=None):
+            self.calls.append((path,params));
+            if path == "/v5/boards": return {"items": [], "bookmark": str(len(self.calls))}
+            return {"items": [], "bookmark": str(len(self.calls))}
+    with pytest.raises(RuntimeError, match="limit"): asyncio.run(sync_boards(db, conn, Endless({})))
+    class SectionEndless(Endless):
+        async def get(self, path, token, params=None):
+            self.calls.append((path,params)); return {"items":[{"id":"b","name":"B"}]} if path == "/v5/boards" else {"items":[],"bookmark":str(len(self.calls))}
+    with pytest.raises(RuntimeError, match="limit"): asyncio.run(sync_boards(db, conn, SectionEndless({})))
+    assert MAX_BOARD_PAGES > 0 and MAX_SECTION_PAGES > 0
+
 def test_board_api_auth_and_patch_local_only(monkeypatch, app_db):
     auth_env(monkeypatch)
     with app_db() as s:
