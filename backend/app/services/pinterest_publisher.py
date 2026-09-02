@@ -4,6 +4,9 @@ from datetime import datetime, timezone
 from app.models.domain import PublicationStatus, PinterestConnection, PinterestBoard, PublicationAttempt
 from app.integrations.pinterest.gateway import PinterestPinPayload
 from app.integrations.pinterest.gateway import PinterestDefinitiveRejection, PinterestAmbiguousFailure
+
+class PublicationReconciliationError(RuntimeError):
+    pass
 from urllib.parse import urlsplit
 import ipaddress
 
@@ -69,7 +72,11 @@ def finalize_post_claim_unknown(db, publication, attempt, code="POST_CLAIM_REVAL
     from datetime import datetime, timezone
     attempt.status = "UNKNOWN"; attempt.error_code = code; attempt.completed_at = datetime.now(timezone.utc)
     publication.status = PublicationStatus.PUBLISH_UNKNOWN; publication.error_code = code
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise PublicationReconciliationError("Publication reconciliation could not be persisted") from None
     return publication
 
 async def publish_once(db, publication, gateway, attempt=None):
@@ -93,7 +100,7 @@ async def publish_once(db, publication, gateway, attempt=None):
         pin_id = result.get("id") if isinstance(result, dict) else None
         if not isinstance(pin_id, str) or not pin_id.strip():
             raise RuntimeError("AMBIGUOUS_PROVIDER_RESULT")
-        attempt.status = "SUCCEEDED"; attempt.provider_pin_id = pin_id; attempt.completed_at = datetime.now(timezone.utc)
+        attempt.status = "SUCCEEDED"; attempt.provider_pin_id = pin_id; attempt.safe_response_metadata = {"validated_pin_id": pin_id}; attempt.completed_at = datetime.now(timezone.utc)
         publication.status = PublicationStatus.PUBLISHED; publication.pinterest_pin_id = pin_id; publication.published_at = datetime.now(timezone.utc)
         db.commit()
         return result

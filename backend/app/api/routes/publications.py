@@ -84,11 +84,11 @@ async def publish(publication_id: str, db: Session = Depends(get_db)):
     try:
         attempt = claim(db, row)
         if not attempt: raise HTTPException(409, "Publication is not due or already claimed")
-        gateway = PinterestV5Gateway(access_token=decrypt_token(connection.access_token_ciphertext), publishing_enabled=True)
         ready, reason = execution_publish_readiness(db, row, attempt)
         if not ready:
             finalize_post_claim_unknown(db, row, attempt, reason)
             raise HTTPException(409, reason)
+        gateway = PinterestV5Gateway(access_token=decrypt_token(connection.access_token_ciphertext), publishing_enabled=True)
         await publish_once(db, row, gateway, attempt)
     except HTTPException: raise
     except Exception:
