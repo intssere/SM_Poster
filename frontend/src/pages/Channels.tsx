@@ -55,7 +55,7 @@ export function ChannelsPage() {
 
   useEffect(() => { void load() }, [load])
   useEffect(() => { getPinterestBoards().then((result) => { setBoards(result.boards); setLastSyncedAt(result.last_synced_at || null) }).catch(() => setBoardError('Could not load boards.')) }, [])
-  async function syncBoards() { setSyncing(true); setBoardError(null); try { const result = await syncPinterestBoards(); setBoards(result.boards); setLastSyncedAt(result.last_synced_at || new Date().toISOString()) } catch { setBoardError('Board sync failed.') } finally { setSyncing(false) } }
+  async function syncBoards() { setSyncing(true); setBoardError(null); try { const result = await syncPinterestBoards(); setBoards(result.boards); setLastSyncedAt(result.last_synced_at || null) } catch { setBoardError('Board sync failed.') } finally { setSyncing(false) } }
   async function updateBoard(board: PinterestBoard, body: { is_eligible?: boolean; routing_label?: string | null }) { try { const updated = await updatePinterestBoard(board.id, body); setBoards((items) => items?.map((item) => item.id === updated.id ? { ...item, ...updated } : item) || null) } catch { setBoardError('Could not update local configuration.') } }
   useEffect(() => { fetch('/api/channels/pinterest/status', { credentials: 'include' }).then(r => r.json()).then(setPinterest).catch(() => null); const params = new URLSearchParams(window.location.search); const result = params.get('result'); if (result) { setError(result === 'connected' ? null : `Pinterest connection: ${result}`); window.history.replaceState({}, '', `${window.location.pathname}#channels`) } }, [])
   async function connectPinterest() {

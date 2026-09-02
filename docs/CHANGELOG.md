@@ -22,7 +22,7 @@
 
 ## Task #37
 
-- Added additive migration `0012` and authenticated read-only Pinterest board/section synchronization.
+- Added additive migrations `0012`/`0013` and authenticated read-only Pinterest board/section synchronization with connection-level sync state.
 - Added Board Manager UI for reviewing and explicitly selecting persisted board metadata.
 - Kept Pinterest writes, publishing, scheduling, and analytics disabled.
 # Unreleased

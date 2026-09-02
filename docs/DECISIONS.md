@@ -29,7 +29,7 @@ Use Authorization Code OAuth with one-time hashed state and Fernet-encrypted cre
 
 ## Task #37
 
-Board synchronization persists normalized read snapshots through additive migration `0012`. Board and section mutations, Pin writes, scheduling, and analytics ingestion are prohibited; local selection never authorizes publication.
+Board synchronization persists normalized read snapshots through additive migrations `0012` and `0013`; `0013` stores connection-level successful-sync time. Board and section mutations, Pin writes, scheduling, and analytics ingestion are prohibited; local selection never authorizes publication.
 
 ### Safe Pinterest token refresh
 
