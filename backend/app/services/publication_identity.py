@@ -123,9 +123,10 @@ class PublicationIdentityService:
                 pinterest_board = db.get(PinterestBoard, pinterest_board_record_id) if pinterest_board_record_id else None
                 if not connection or connection.status != "CONNECTED" or not pinterest_board or pinterest_board.connection_id != connection.id or not pinterest_board.is_active or not pinterest_board.is_eligible:
                     raise PublicationIdentityError("Pinterest destination is not eligible.")
+                board = board  # legacy board may be absent for authoritative Pinterest destinations
             concept = db.get(PinConcept, draft.concept_id)
             template = db.get(CreativeTemplate, creative.template_id)
-            if not board or not concept or board.store_id != concept.store_id:
+            if (not board and not pinterest_board) or not concept or (board and board.store_id != concept.store_id):
                 raise PublicationIdentityError("Board does not belong to the proposal store.")
             account = None
             if integration_account_id:
@@ -143,7 +144,7 @@ class PublicationIdentityService:
                 revision_id=revision.id if revision else None,
                 creative_id=creative.id,
                 source_image_id=creative.source_image_id,
-                board_id=board.id,
+                board_id=board.id if board else None,
                 integration_account_id=account.id if account else None,
                 destination_url=destination,
                 utm_url=utm_url,
@@ -170,7 +171,7 @@ class PublicationIdentityService:
                 text_fingerprint=text_hash,
                 creative_fingerprint=creative.creative_fingerprint,
                 board_id=board.id,
-                pinterest_board_id=board.pinterest_board_id,
+                pinterest_board_id=board.pinterest_board_id if board else pinterest_board.external_board_id,
                 pinterest_connection_id=connection.id if connection else None,
                 pinterest_board_record_id=pinterest_board.id if pinterest_board else None,
                 pinterest_board_id_snapshot=pinterest_board.external_board_id if pinterest_board else board.pinterest_board_id,

@@ -3,6 +3,26 @@ from app.core.config import get_settings
 from datetime import datetime, timezone
 from app.models.domain import PublicationStatus, PinterestConnection, PinterestBoard, PublicationAttempt
 from app.integrations.pinterest.gateway import PinterestPinPayload
+from urllib.parse import urlsplit
+import ipaddress
+
+def media_publishable(value):
+    try:
+        p = urlsplit(value or "")
+        if p.scheme != "https" or not p.hostname or p.username or p.password:
+            return False
+        host = p.hostname.lower().rstrip(".")
+        if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
+            return False
+        try:
+            ip = ipaddress.ip_address(host)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified or ip.is_multicast:
+                return False
+        except ValueError:
+            pass
+        return True
+    except ValueError:
+        return False
 
 def publishing_ready(db, publication):
     settings = get_settings()
@@ -15,7 +35,7 @@ def publishing_ready(db, publication):
     if not board or board.connection_id != connection.id or not board.is_active or not board.is_eligible:
         return False, "INVALID_DESTINATION"
     media = publication.media_url_snapshot
-    if not media or not media.startswith("https://"):
+    if not media_publishable(media):
         return False, "MEDIA_NOT_PUBLISHABLE"
     return True, None
 

@@ -13,6 +13,8 @@ depends_on = None
 
 
 def upgrade():
+    with op.batch_alter_table("pin_publications") as batch:
+        batch.alter_column("board_id", existing_type=sa.String(36), nullable=True)
     op.add_column("pin_publications", sa.Column("pinterest_connection_id", sa.String(36), nullable=True))
     op.add_column("pin_publications", sa.Column("pinterest_board_record_id", sa.String(36), nullable=True))
     op.add_column("pin_publications", sa.Column("pinterest_board_id_snapshot", sa.String(255), nullable=True))
@@ -53,3 +55,4 @@ def downgrade():
         batch.drop_constraint("fk_pin_publications_pinterest_connection", type_="foreignkey")
         for name in ("media_url_snapshot", "alt_text_snapshot", "description_snapshot", "title_snapshot", "pinterest_board_id_snapshot", "pinterest_board_record_id", "pinterest_connection_id"):
             batch.drop_column(name)
+        batch.alter_column("board_id", existing_type=sa.String(36), nullable=False)

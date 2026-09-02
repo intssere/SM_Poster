@@ -427,7 +427,7 @@ class PinPublication(Base):
     template_version: Mapped[int | None] = mapped_column(Integer)
     text_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     creative_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
-    board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), index=True)
+    board_id: Mapped[str | None] = mapped_column(ForeignKey("boards.id"), index=True)
     pinterest_board_id: Mapped[str | None] = mapped_column(String(80), index=True)
     integration_account_id: Mapped[str | None] = mapped_column(
         ForeignKey("integration_accounts.id", ondelete="RESTRICT"), index=True

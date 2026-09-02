@@ -34,13 +34,8 @@ def create(payload: PublicationCreate, db: Session = Depends(get_db)):
     approval = db.get(PinApproval, payload.approval_id)
     if not approval:
         raise HTTPException(404, "Approval not found")
-    # Legacy board FK is retained for historical rows; resolve only an existing store board.
-    from app.models.domain import Board
-    legacy = db.scalar(select(Board).where(Board.pinterest_board_id == board.external_board_id))
-    if not legacy:
-        raise HTTPException(422, "Publication destination is not mapped")
     try:
-        row = PublicationIdentityService(lambda: db).create_snapshot(approval_id=payload.approval_id, board_id=legacy.id, pinterest_connection_id=connection.id, pinterest_board_record_id=board.id, scheduled_for=payload.scheduled_for)
+        row = PublicationIdentityService(lambda: db).create_snapshot(approval_id=payload.approval_id, board_id="", pinterest_connection_id=connection.id, pinterest_board_record_id=board.id, scheduled_for=payload.scheduled_for)
     except PublicationIdentityError as exc:
         raise HTTPException(422, str(exc))
     return _dto(row)
