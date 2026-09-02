@@ -3,6 +3,7 @@ from app.core.config import get_settings
 from datetime import datetime, timezone
 from app.models.domain import PublicationStatus, PinterestConnection, PinterestBoard, PublicationAttempt
 from app.integrations.pinterest.gateway import PinterestPinPayload
+from app.integrations.pinterest.gateway import PinterestDefinitiveRejection, PinterestAmbiguousFailure
 from urllib.parse import urlsplit
 import ipaddress
 
@@ -64,7 +65,7 @@ async def publish_once(db, publication, gateway, attempt=None):
         return result
     except Exception as exc:
         db.rollback(); attempt = db.get(PublicationAttempt, attempt.id)
-        attempt.status = "UNKNOWN" if "timeout" in str(exc).lower() or "reset" in str(exc).lower() or "ambiguous" in str(exc).lower() else "FAILED"
+        attempt.status = "FAILED" if isinstance(exc, PinterestDefinitiveRejection) else "UNKNOWN"
         attempt.error_code = "PUBLISH_UNKNOWN" if attempt.status == "UNKNOWN" else "PROVIDER_REJECTED"
         attempt.completed_at = datetime.now(timezone.utc)
         publication.status = PublicationStatus.PUBLISH_UNKNOWN if attempt.status == "UNKNOWN" else PublicationStatus.PUBLISH_FAILED
