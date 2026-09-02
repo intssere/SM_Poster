@@ -28,6 +28,8 @@ The latest previously verified runtime snapshot was recorded during the controll
 These are carried-forward runtime values, not fresh Task #34 measurements. Task #34 used isolated test databases and did not query the production PostgreSQL database. Re-verify against the deployed database before operational use.
 
 `AISettings.enabled=false` and `PUBLISHING_ENABLED=false`. No provider or Pinterest publishing call is part of publication identity operations.
+
+Task #38 is PRE-MERGE: Alembic `0014` adds immutable Pinterest publication destination/payload snapshots and durable publication attempts. Snapshot creation is database-only; provider dispatch separately requires publishing enabled, `pins:write`, approved identity, eligible destination, and public HTTPS media. No autonomous scheduler or `PUBLISH_UNKNOWN` retry is enabled.
 ## Task #36 status
 
 Pinterest Account Connection/OAuth v1 is complete as a read-only account foundation. Alembic head is 0013; publishing and AI/provider modes remain disabled.

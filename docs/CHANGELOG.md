@@ -28,4 +28,6 @@
 - PR #15 merged; Issue #14 closed. Next stage is Publisher + Scheduler design; no publishing enablement is implied.
 # Unreleased
 
+- Task #38 foundation: immutable provider-independent publication snapshots, Pinterest destination identity fields, and durable publication-attempt auditing. Publishing remains disabled.
+
 - Documented bounded Pinterest board-sync access-token refresh behavior.

@@ -34,13 +34,6 @@ class PublicationIdentityError(ValueError):
     pass
 
 
-def _publishing_must_be_disabled() -> None:
-    if get_settings().publishing_enabled:
-        raise PublicationIdentityError(
-            "Publication identity snapshots are review-only while publishing is enabled."
-        )
-
-
 def _creative_for_approval(db: Any, draft: PinDraft, revision: ContentRevision | None) -> PinCreative:
     if revision and revision.creative_id:
         creative = db.get(PinCreative, revision.creative_id)
@@ -94,10 +87,11 @@ class PublicationIdentityService:
         approval_id: str,
         board_id: str,
         integration_account_id: str | None = None,
+        pinterest_connection_id: str | None = None,
+        pinterest_board_record_id: str | None = None,
         scheduled_for: datetime | None = None,
     ) -> PinPublication:
         """Create an immutable, non-publishing snapshot for an exact approval."""
-        _publishing_must_be_disabled()
         db = self.session_factory()
         try:
             approval = db.get(PinApproval, approval_id)
@@ -119,6 +113,14 @@ class PublicationIdentityService:
                 raise PublicationIdentityError("Approval version identity is inconsistent.")
 
             board = db.get(Board, board_id)
+            pinterest_board = None
+            connection = None
+            if pinterest_connection_id or pinterest_board_record_id:
+                from app.models.domain import PinterestBoard, PinterestConnection
+                connection = db.get(PinterestConnection, pinterest_connection_id) if pinterest_connection_id else None
+                pinterest_board = db.get(PinterestBoard, pinterest_board_record_id) if pinterest_board_record_id else None
+                if not connection or connection.status != "CONNECTED" or not pinterest_board or pinterest_board.connection_id != connection.id or not pinterest_board.is_active or not pinterest_board.is_eligible:
+                    raise PublicationIdentityError("Pinterest destination is not eligible.")
             concept = db.get(PinConcept, draft.concept_id)
             template = db.get(CreativeTemplate, creative.template_id)
             if not board or not concept or board.store_id != concept.store_id:
@@ -164,6 +166,13 @@ class PublicationIdentityService:
                 creative_fingerprint=creative.creative_fingerprint,
                 board_id=board.id,
                 pinterest_board_id=board.pinterest_board_id,
+                pinterest_connection_id=connection.id if connection else None,
+                pinterest_board_record_id=pinterest_board.id if pinterest_board else None,
+                pinterest_board_id_snapshot=board.pinterest_board_id,
+                title_snapshot=revision.title if revision else draft.title,
+                description_snapshot=revision.description if revision else draft.description,
+                alt_text_snapshot=revision.alt_text if revision else draft.alt_text,
+                media_url_snapshot=creative.rendered_url,
                 integration_account_id=account.id if account else None,
                 destination_url=destination,
                 utm_url=utm_url,

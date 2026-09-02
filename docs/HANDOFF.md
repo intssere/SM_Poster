@@ -46,6 +46,10 @@ PR #15 is MERGED and Issue #14 is CLOSED on `main` at `886ba9ec25e316f0d5b9a3a59
 
 ## Known issues and next work
 
+## Task #38 — Publisher + Scheduler Foundation v1
+
+Task #38 is PRE-MERGE. Publication snapshots are provider-independent immutable audit records; provider execution remains separately gated by `PUBLISHING_ENABLED=true`, connected Pinterest `pins:write`, approved identities, eligible destination, and public HTTPS media. Scheduling, cancellation, bounded due discovery, transactional claims, and durable attempts are foundations only; no autonomous worker or automatic `PUBLISH_UNKNOWN` retry exists. Current OAuth scopes remain `user_accounts:read`, `boards:read`, and `pins:read`; publishing remains disabled.
+
 Task #35, Task #36, and Task #37 are COMPLETE; PR #15 is MERGED and Issue #14 is CLOSED. Alembic is `0013`. Publishing remains disabled; runtime counts remain carried-forward historical values, not freshly queried. The next implementation stage is Publisher + Scheduler design, subject to explicit authorization.
 
 ## Verification commands
