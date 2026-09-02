@@ -8,13 +8,18 @@ from app.services.pinterest_oauth import decrypt_token
 
 class PinterestBoardClient:
     async def get(self, path, access_token, params=None):
-        s = get_settings()
-        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
-            response = await client.get(f"{s.pinterest_api_base.rstrip('/')}{path}", params=params, headers={"Authorization": f"Bearer {access_token}"})
-        if response.status_code >= 400: raise RuntimeError("Pinterest board request failed")
-        payload = response.json()
-        if not isinstance(payload, dict): raise RuntimeError("Pinterest board response invalid")
-        return payload
+        try:
+            s = get_settings()
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+                response = await client.get(f"{s.pinterest_api_base.rstrip('/')}{path}", params=params, headers={"Authorization": f"Bearer {access_token}"})
+            if response.status_code >= 400: raise RuntimeError("Pinterest board request failed")
+            payload = response.json()
+            if not isinstance(payload, dict): raise RuntimeError("Pinterest board response invalid")
+            return payload
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError("Pinterest board request failed safely") from exc
 
 def _int(value):
     return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
@@ -22,11 +27,15 @@ def _int(value):
 async def sync_boards(db, connection: PinterestConnection, client=None):
     if connection.status != "CONNECTED" or not connection.access_token_ciphertext: raise RuntimeError("Pinterest account is not connected")
     access = decrypt_token(connection.access_token_ciphertext); client = client or PinterestBoardClient(); now = datetime.now(timezone.utc)
+    async def safe_get(path, params=None):
+        try: return await client.get(path, access, params)
+        except RuntimeError as exc:
+            raise RuntimeError("Pinterest board request failed safely") from exc
     boards, sections = [], [] ; bookmark = None; seen_bookmarks = set()
     while True:
         if bookmark in seen_bookmarks: raise RuntimeError("Pinterest board pagination invalid")
         if bookmark: seen_bookmarks.add(bookmark)
-        payload = await client.get("/v5/boards", access, {"bookmark": bookmark} if bookmark else None)
+        payload = await safe_get("/v5/boards", {"bookmark": bookmark} if bookmark else None)
         boards.extend(payload.get("items", [])); bookmark = payload.get("bookmark")
         if not bookmark: break
     seen = set()
@@ -44,7 +53,7 @@ async def sync_boards(db, connection: PinterestConnection, client=None):
         while True:
             if bookmark_s in section_bookmarks: raise RuntimeError("Pinterest section pagination invalid")
             if bookmark_s: section_bookmarks.add(bookmark_s)
-            section_payload = await client.get(f"/v5/boards/{external}/sections", access, {"bookmark": bookmark_s} if bookmark_s else None)
+            section_payload = await safe_get(f"/v5/boards/{external}/sections", {"bookmark": bookmark_s} if bookmark_s else None)
             for x in section_payload.get("items", []):
                 sections.append((row, x)); section_seen.add(str(x.get("id")))
             bookmark_s = section_payload.get("bookmark")

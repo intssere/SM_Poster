@@ -53,3 +53,40 @@ def test_partial_provider_failure_does_not_inactivate_existing(db, monkeypatch):
 def test_eligible_board_boundary(db):
     conn = connected(db); db.add_all([PinterestBoard(connection_id=conn.id, external_board_id="a", name="A", is_active=True, is_eligible=True), PinterestBoard(connection_id=conn.id, external_board_id="b", name="B", is_active=False, is_eligible=True)]); db.commit()
     assert [x.external_board_id for x in eligible_boards(db, conn.id)] == ["a"]
+
+def test_disconnected_connection_fails_closed(db, monkeypatch):
+    monkeypatch.setattr("app.services.pinterest_boards.decrypt_token", lambda _: "token")
+    conn = connected(db); conn.status = "DISCONNECTED"; db.commit()
+    with pytest.raises(RuntimeError, match="not connected"): asyncio.run(sync_boards(db, conn, FakeClient({})))
+
+def test_repeated_board_bookmark_rejected(db, monkeypatch):
+    monkeypatch.setattr("app.services.pinterest_boards.decrypt_token", lambda _: "token")
+    conn = connected(db); fake = FakeClient({("/v5/boards", None): {"items": [], "bookmark": "loop"}, ("/v5/boards", "loop"): {"items": [], "bookmark": "loop"}})
+    with pytest.raises(RuntimeError, match="pagination"): asyncio.run(sync_boards(db, conn, fake))
+    assert len(fake.calls) == 2
+
+def test_repeated_section_bookmark_rejected(db, monkeypatch):
+    monkeypatch.setattr("app.services.pinterest_boards.decrypt_token", lambda _: "token")
+    conn = connected(db); fake = FakeClient({("/v5/boards", None): {"items": [{"id":"b1", "name":"Board"}]}, ("/v5/boards/b1/sections", None): {"items": [], "bookmark": "loop"}, ("/v5/boards/b1/sections", "loop"): {"items": [], "bookmark": "loop"}})
+    with pytest.raises(RuntimeError, match="pagination"): asyncio.run(sync_boards(db, conn, fake))
+
+def test_provider_metadata_updates_and_local_config_survives(db, monkeypatch):
+    monkeypatch.setattr("app.services.pinterest_boards.decrypt_token", lambda _: "token")
+    conn = connected(db); fake = FakeClient({("/v5/boards", None): {"items": [{"id":"b1", "name":"New", "privacy":"SECRET"}]}, ("/v5/boards/b1/sections", None): {"items": [{"id":"s1", "name":"Updated"}]}})
+    asyncio.run(sync_boards(db, conn, fake)); board = db.query(PinterestBoard).one(); board.is_eligible = True; board.routing_label = "hair"; db.commit()
+    asyncio.run(sync_boards(db, conn, fake)); board = db.query(PinterestBoard).one(); section = db.query(PinterestBoardSection).one()
+    assert board.name == "New" and board.privacy == "SECRET" and board.is_eligible and board.routing_label == "hair" and section.name == "Updated"
+
+def test_malformed_board_and_section_payloads_fail_safely(db, monkeypatch):
+    monkeypatch.setattr("app.services.pinterest_boards.decrypt_token", lambda _: "token")
+    conn = connected(db)
+    with pytest.raises(RuntimeError, match="invalid"): asyncio.run(sync_boards(db, conn, FakeClient({("/v5/boards", None): {"items": [{"name":"missing-id"}]}})))
+    with pytest.raises(RuntimeError, match="invalid"): asyncio.run(sync_boards(db, conn, FakeClient({("/v5/boards", None): {"items": [{"id":"b", "name":"Board"}]}, ("/v5/boards/b/sections", None): {"items": [{"name":"missing-id"}]}})))
+
+def test_provider_failure_does_not_expose_credentials(db, monkeypatch):
+    monkeypatch.setattr("app.services.pinterest_boards.decrypt_token", lambda _: "secret-token")
+    conn = connected(db)
+    class Broken(FakeClient):
+        async def get(self, path, token, params=None): raise RuntimeError(f"provider body {token}")
+    with pytest.raises(RuntimeError) as exc: asyncio.run(sync_boards(db, conn, Broken({})))
+    assert "secret-token" not in str(exc.value)
