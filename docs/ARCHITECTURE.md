@@ -27,5 +27,5 @@ Task #37 is complete: read-only board/section snapshots and an authenticated Boa
 Task #38 implements provider-independent publication snapshots, durable attempts, and bounded scheduling/claim services for explicit invocation only. Pinterest dispatch has independent hard gates and remains disabled by default; no background worker or unknown-outcome retry exists.
 # Pinterest board sync refresh boundary
 
-Manual board sync checks access-token expiry using a five-minute preflight and may call the existing refresh helper once. Discovery uses the refreshed encrypted state; failures stop all provider calls and reconciliation. No scheduler or provider retry loop exists.
+Manual board sync checks access-token expiry using a five-minute preflight and may call the existing refresh helper once. Discovery uses the refreshed encrypted state; failures stop all provider calls and reconciliation. No autonomous/background scheduler or provider retry loop exists.
 Task #38 scheduling and publisher services are implemented foundations invoked explicitly; no autonomous worker exists. Provider writes remain separately gated.

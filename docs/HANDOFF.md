@@ -6,7 +6,7 @@ Diamond Shelf Social Studio (`intssere/SM_Poster`) is an internal system for tur
 
 ## Current baseline
 
-- Authoritative Task #38 main baseline is `4242b80e6626886b528641749beeb64cf7e4ea62` (tree `ac35cffe2f58c1d47deac578e43cabe12189e519`). Current Task #38 branch head is recorded separately in Git history.
+- Authoritative Task #38 main baseline is `4242b80e6626886b528641749beeb64cf7e4ea62` (tree `ac35cffe2f58c1d47deac578e43cabe12189e519`). Current Task #38 branch head is `7b7fbe750939a8f968033ddad35961ee6c3f2b5c` with tree `59d6d86efb54482df3a6bfbf61142ee80fe87169`.
 - Authoritative main Alembic baseline: `0013`. Task #38 PRE-MERGE branch Alembic head: `0014`.
 - Backend: FastAPI, SQLAlchemy, Alembic, PostgreSQL-ready models.
 - Frontend: React/Vite internal review dashboard.
