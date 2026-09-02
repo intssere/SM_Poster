@@ -97,6 +97,7 @@ async def sync_boards(db, connection: PinterestConnection, client=None):
         section = db.scalar(select(PinterestBoardSection).where(PinterestBoardSection.board_id == board.id, PinterestBoardSection.external_section_id == str(item["id"])))
         if not section: section = PinterestBoardSection(board_id=board.id, external_section_id=str(item["id"])); db.add(section)
         section.name = item.get("name") or ""; section.is_active = True; section.last_seen_at = now; section.last_synced_at = now
+    connection.boards_last_synced_at = now
     db.commit(); return len(boards)
 
 def eligible_boards(db, connection_id):

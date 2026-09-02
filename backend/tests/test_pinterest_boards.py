@@ -38,6 +38,8 @@ def app_db():
 
 def auth_env(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:"); monkeypatch.setenv("APP_ENV", "development"); monkeypatch.setenv("AUTH_DISABLED", "true")
+    from app.core.config import get_settings
+    get_settings.cache_clear()
 
 def connected(db):
     row = PinterestConnection(external_user_id="acct", access_token_ciphertext="x", refresh_token_ciphertext="y", status="CONNECTED")

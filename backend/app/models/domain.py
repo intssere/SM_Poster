@@ -479,6 +479,7 @@ class PinterestConnection(Base):
     last_error_code: Mapped[str | None] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    boards_last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class PinterestBoard(Base):

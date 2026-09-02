@@ -37,14 +37,14 @@ async def pinterest_boards_sync(db: Session = Depends(get_db)):
     try: count = await sync_boards(db, connection)
     except RuntimeError as exc: db.rollback(); raise HTTPException(status_code=502, detail=str(exc))
     rows = db.scalars(select(PinterestBoard).where(PinterestBoard.connection_id == connection.id)).all()
-    return {"connection_status": "CONNECTED", "last_synced_at": _last_synced(db, connection.id), "boards": [_board_payload(db, r) for r in rows], "sync": {"boards_seen": count}}
+    return {"connection_status": "CONNECTED", "last_synced_at": connection.boards_last_synced_at, "boards": [_board_payload(db, r) for r in rows], "sync": {"boards_seen": count}}
 
 @router.get("/pinterest/boards")
 def pinterest_boards(db: Session = Depends(get_db)):
     connection = db.scalar(select(PinterestConnection).where(PinterestConnection.status == "CONNECTED"))
     if not connection: return {"status": "NOT_CONNECTED", "connection_status": "NOT_CONNECTED", "last_synced_at": None, "boards": []}
     rows = db.scalars(select(PinterestBoard).where(PinterestBoard.connection_id == connection.id)).all()
-    return {"status": "CONNECTED", "connection_status": "CONNECTED", "last_synced_at": _last_synced(db, connection.id), "boards": [_board_payload(db, r) for r in rows]}
+    return {"status": "CONNECTED", "connection_status": "CONNECTED", "last_synced_at": connection.boards_last_synced_at, "boards": [_board_payload(db, r) for r in rows]}
 
 @router.patch("/pinterest/boards/{board_id}")
 def pinterest_board_config(board_id: str, payload: BoardConfigPatch, db: Session = Depends(get_db)):
