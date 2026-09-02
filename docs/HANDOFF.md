@@ -6,7 +6,7 @@ Diamond Shelf Social Studio (`intssere/SM_Poster`) is an internal system for tur
 
 ## Current baseline
 
-- Current authoritative GitHub `main` is `886ba9ec25e316f0d5b9a3a590ae8cbef103a059` (tree `f0b3ec2eaaa7f9ac050f43f3b0ad3bc015c409e0`).
+- Authoritative Task #38 main baseline is `4242b80e6626886b528641749beeb64cf7e4ea62` (tree `ac35cffe2f58c1d47deac578e43cabe12189e519`). Current Task #38 branch head is recorded separately in Git history.
 - Alembic head: `0013`; migration 0013 adds nullable `PinterestConnection.boards_last_synced_at` for connection-level successful board-sync state.
 - Backend: FastAPI, SQLAlchemy, Alembic, PostgreSQL-ready models.
 - Frontend: React/Vite internal review dashboard.
@@ -64,4 +64,4 @@ npm run build
 ```
 # Task #37 refresh behavior
 
-PR #15 — PRE-MERGE / under independent review. Alembic is `0013`. Board sync performs a five-minute token expiry preflight and invokes the existing refresh helper at most once; failures make zero board/section calls and do not advance successful-sync state. Publishing remains disabled.
+Task #38 is PRE-MERGE. Alembic is `0014`; publication snapshots are provider-independent and Pinterest dispatch has separate publishing/scope/media gates. Publishing remains disabled.
