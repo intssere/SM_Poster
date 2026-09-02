@@ -1,6 +1,6 @@
 """Explicit, bounded publication scheduling primitives (no background worker)."""
 from datetime import datetime, timezone
-from sqlalchemy import select
+from sqlalchemy import select, update
 from app.models.domain import PinPublication, PublicationStatus
 from app.services.publication_state import require_transition
 
@@ -29,10 +29,11 @@ def cancel(db, publication):
 
 def claim(db, publication):
     """Compare-and-set claim; caller commits before provider execution."""
-    if publication.status != PublicationStatus.SCHEDULED:
-        return False
-    require_transition(publication.status, PublicationStatus.PUBLISHING)
-    publication.status = PublicationStatus.PUBLISHING
-    publication.attempt_started_at = datetime.now(timezone.utc)
-    db.flush()
-    return True
+    now = datetime.now(timezone.utc)
+    result = db.execute(update(PinPublication).where(
+        PinPublication.id == publication.id,
+        PinPublication.status == PublicationStatus.SCHEDULED,
+        PinPublication.scheduled_for.is_not(None),
+        PinPublication.scheduled_for <= now,
+    ).values(status=PublicationStatus.PUBLISHING, attempt_started_at=now))
+    return result.rowcount == 1

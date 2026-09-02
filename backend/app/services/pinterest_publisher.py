@@ -1,6 +1,7 @@
 """Provider dispatch boundary; never invoked automatically."""
 from app.core.config import get_settings
-from app.models.domain import PublicationStatus, PinterestConnection, PinterestBoard
+from datetime import datetime, timezone
+from app.models.domain import PublicationStatus, PinterestConnection, PinterestBoard, PublicationAttempt
 from app.integrations.pinterest.gateway import PinterestPinPayload
 
 def publishing_ready(db, publication):
@@ -22,6 +23,10 @@ async def publish_once(db, publication, gateway):
     ready, reason = publishing_ready(db, publication)
     if not ready:
         raise RuntimeError(reason)
+    attempt_no = (db.query(PublicationAttempt).filter(PublicationAttempt.publication_id == publication.id).count() + 1)
+    attempt = PublicationAttempt(publication_id=publication.id, attempt_number=attempt_no, status="STARTED")
+    db.add(attempt)
+    db.commit()
     payload = PinterestPinPayload(
         board_id=publication.pinterest_board_id_snapshot or publication.pinterest_board_id or "",
         title=publication.title_snapshot or "",
@@ -30,4 +35,21 @@ async def publish_once(db, publication, gateway):
         image_url=publication.media_url_snapshot,
         alt_text=publication.alt_text_snapshot,
     )
-    return await gateway.create_pin(payload)
+    try:
+        result = await gateway.create_pin(payload)
+        pin_id = result.get("id") if isinstance(result, dict) else None
+        if not isinstance(pin_id, str) or not pin_id.strip():
+            raise RuntimeError("AMBIGUOUS_PROVIDER_RESULT")
+        attempt.status = "SUCCEEDED"; attempt.provider_pin_id = pin_id; attempt.completed_at = datetime.now(timezone.utc)
+        publication.status = PublicationStatus.PUBLISHED; publication.pinterest_pin_id = pin_id; publication.published_at = datetime.now(timezone.utc)
+        db.commit()
+        return result
+    except Exception as exc:
+        db.rollback(); attempt = db.get(PublicationAttempt, attempt.id)
+        attempt.status = "UNKNOWN" if "timeout" in str(exc).lower() or "reset" in str(exc).lower() or "ambiguous" in str(exc).lower() else "FAILED"
+        attempt.error_code = "PUBLISH_UNKNOWN" if attempt.status == "UNKNOWN" else "PROVIDER_REJECTED"
+        attempt.completed_at = datetime.now(timezone.utc)
+        publication.status = PublicationStatus.PUBLISH_UNKNOWN if attempt.status == "UNKNOWN" else PublicationStatus.PUBLISH_FAILED
+        publication.error_code = attempt.error_code
+        db.commit()
+        raise RuntimeError(attempt.error_code) from None

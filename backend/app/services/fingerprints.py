@@ -56,6 +56,9 @@ def publication_identity_fingerprint(
     *, draft_id: str, revision_id: str | None, creative_id: str,
     source_image_id: str, board_id: str,
     integration_account_id: str | None, destination_url: str, utm_url: str,
+    pinterest_connection_id: str | None = None,
+    pinterest_board_record_id: str | None = None,
+    pinterest_board_id_snapshot: str | None = None,
 ) -> str:
     """Fingerprint the immutable publication identity, not mutable proposal state."""
     return _sha256({
@@ -65,6 +68,9 @@ def publication_identity_fingerprint(
         "source_image_id": source_image_id,
         "board_id": board_id,
         "integration_account_id": integration_account_id or "",
+        "pinterest_connection_id": pinterest_connection_id or "",
+        "pinterest_board_record_id": pinterest_board_record_id or "",
+        "pinterest_board_id_snapshot": pinterest_board_id_snapshot or "",
         "destination_url": destination_url.rstrip("/"),
         "utm_url": utm_url,
     })

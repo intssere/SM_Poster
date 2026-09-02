@@ -115,7 +115,9 @@ class PublicationIdentityService:
             board = db.get(Board, board_id)
             pinterest_board = None
             connection = None
-            if pinterest_connection_id or pinterest_board_record_id:
+            if bool(pinterest_connection_id) != bool(pinterest_board_record_id):
+                raise PublicationIdentityError("Pinterest connection and board identities are both required.")
+            if pinterest_connection_id and pinterest_board_record_id:
                 from app.models.domain import PinterestBoard, PinterestConnection
                 connection = db.get(PinterestConnection, pinterest_connection_id) if pinterest_connection_id else None
                 pinterest_board = db.get(PinterestBoard, pinterest_board_record_id) if pinterest_board_record_id else None
@@ -145,6 +147,9 @@ class PublicationIdentityService:
                 integration_account_id=account.id if account else None,
                 destination_url=destination,
                 utm_url=utm_url,
+                pinterest_connection_id=connection.id if connection else None,
+                pinterest_board_record_id=pinterest_board.id if pinterest_board else None,
+                pinterest_board_id_snapshot=pinterest_board.external_board_id if pinterest_board else None,
             )
             if db.scalar(
                 select(PinPublication).where(
@@ -168,7 +173,7 @@ class PublicationIdentityService:
                 pinterest_board_id=board.pinterest_board_id,
                 pinterest_connection_id=connection.id if connection else None,
                 pinterest_board_record_id=pinterest_board.id if pinterest_board else None,
-                pinterest_board_id_snapshot=board.pinterest_board_id,
+                pinterest_board_id_snapshot=pinterest_board.external_board_id if pinterest_board else board.pinterest_board_id,
                 title_snapshot=revision.title if revision else draft.title,
                 description_snapshot=revision.description if revision else draft.description,
                 alt_text_snapshot=revision.alt_text if revision else draft.alt_text,
