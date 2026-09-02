@@ -119,8 +119,9 @@ def test_board_api_auth_and_patch_local_only(monkeypatch, app_db):
     assert client.get("/api/channels/pinterest/boards").json()["boards"][0]["external_board_id"] == "b"
     calls = []
     monkeypatch.setattr("app.api.routes.channels.sync_boards", lambda *a, **k: calls.append(1))
-    response = client.patch(f"/api/channels/pinterest/boards/{board_id}", json={"is_eligible": True, "routing_label": "hair", "name": "provider"}, headers={"Origin":"http://localhost:5000"})
+    response = client.patch(f"/api/channels/pinterest/boards/{board_id}", json={"is_eligible": True, "routing_label": "hair"}, headers={"Origin":"http://localhost:5000"})
     assert response.status_code == 200 and response.json()["is_eligible"] and response.json()["routing_label"] == "hair" and not calls
+    assert client.patch(f"/api/channels/pinterest/boards/{board_id}", json={"name":"provider"}, headers={"Origin":"http://localhost:5000"}).status_code == 422
     body = str(client.get("/api/channels/pinterest/boards").json()); assert all(x not in body for x in ("secret-access", "secret-refresh", "access_token_ciphertext", "refresh_token_ciphertext", "Authorization"))
 
 def test_board_api_anonymous_denied_when_auth_enabled(monkeypatch, app_db):
