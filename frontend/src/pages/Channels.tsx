@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { CheckCircle2, Clock3, Image, Radio, ShieldAlert } from 'lucide-react'
-import { ChannelCapabilities, ChannelDescriptor, getChannelCapabilities } from '../api/channels'
+import { ChannelCapabilities, ChannelDescriptor, getChannelCapabilities, getPinterestBoards, PinterestBoard, syncPinterestBoards, updatePinterestBoard } from '../api/channels'
 
 function readableStatus(channel: ChannelDescriptor) {
   return channel.status === 'INTERNAL_PREVIEW' ? 'Internal preview' : 'Future / not connected'
@@ -38,6 +38,9 @@ function ChannelCard({ channel, pinterest, onConnect, onDisconnect }: { channel:
 export function ChannelsPage() {
   const [capabilities, setCapabilities] = useState<ChannelCapabilities | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [boards, setBoards] = useState<PinterestBoard[] | null>(null)
+  const [syncing, setSyncing] = useState(false)
+  const [boardError, setBoardError] = useState<string | null>(null)
   const [pinterest, setPinterest] = useState<any>(null)
 
   const load = useCallback(async () => {
@@ -50,6 +53,9 @@ export function ChannelsPage() {
   }, [])
 
   useEffect(() => { void load() }, [load])
+  useEffect(() => { getPinterestBoards().then((result) => setBoards(result.boards)).catch(() => setBoardError('Could not load boards.')) }, [])
+  async function syncBoards() { setSyncing(true); try { setBoards((await syncPinterestBoards()).boards) } catch { setBoardError('Board sync failed.') } finally { setSyncing(false) } }
+  async function toggle(board: PinterestBoard, value: boolean) { try { const updated = await updatePinterestBoard(board.id, { is_eligible: value }); setBoards((items) => items?.map((item) => item.id === updated.id ? { ...item, ...updated } : item) || null) } catch { setBoardError('Could not update local configuration.') } }
   useEffect(() => { fetch('/api/channels/pinterest/status', { credentials: 'include' }).then(r => r.json()).then(setPinterest).catch(() => null); const params = new URLSearchParams(window.location.search); const result = params.get('result'); if (result) { setError(result === 'connected' ? null : `Pinterest connection: ${result}`); window.history.replaceState({}, '', `${window.location.pathname}#channels`) } }, [])
   async function connectPinterest() {
     const response = await fetch('/api/channels/pinterest/oauth/start', { method: 'POST', credentials: 'include' })
@@ -69,6 +75,6 @@ export function ChannelsPage() {
     <section className="channel-intro"><div><p className="eyebrow">ADAPTER STATUS</p><h3>Build once. Adapt by channel.</h3><p>Channel requirements are modeled separately from the existing Pinterest proposal and creative records. No future platform is connected or contacted.</p></div><div className="channel-legend"><span><i className="legend-dot internal" /> Pinterest internal preview</span><span><i className="legend-dot future" /> Future / not connected</span></div></section>
     {error ? <div className="channel-error" role="alert"><ShieldAlert size={20} /><div><strong>Channel status unavailable</strong><p>{error}</p><button className="secondary-action" onClick={() => void load()}>Try again</button></div></div>
       : !capabilities ? <div className="channel-loading"><span /><span /><span /></div>
-        : <section className="channel-grid">{capabilities.channels.map((channel) => <ChannelCard channel={channel} pinterest={channel.key === 'pinterest' ? pinterest : undefined} onConnect={() => void connectPinterest()} onDisconnect={() => void disconnectPinterest()} key={channel.key} />)}</section>}
+        : <><section className="channel-grid">{capabilities.channels.map((channel) => <ChannelCard channel={channel} pinterest={channel.key === 'pinterest' ? pinterest : undefined} onConnect={() => void connectPinterest()} onDisconnect={() => void disconnectPinterest()} key={channel.key} />)}</section><section className="panel board-manager"><div className="page-heading"><div><p className="eyebrow">PINTEREST / BOARD MANAGER</p><h3>Connected boards</h3><p>Provider metadata is read-only; eligibility and routing are local configuration.</p></div><button className="secondary-action" onClick={() => void syncBoards()} disabled={syncing}>{syncing ? 'Syncing…' : 'Sync boards'}</button></div>{boardError && <p role="alert">{boardError}</p>}{boards?.map((board) => <article className="board-row" key={board.id}><div><strong>{board.name}</strong><small>Provider ID: {board.external_board_id} · {board.privacy || 'privacy unavailable'}</small><small>{board.pin_count ?? '—'} pins · {board.follower_count ?? '—'} followers · {board.is_active ? 'Active' : 'Inactive'}</small>{board.sections?.length ? <small>Sections: {board.sections.map((section) => section.name).join(', ')}</small> : null}</div><label><input type="checkbox" checked={board.is_eligible} onChange={(event) => void toggle(board, event.target.checked)} /> Eligible for routing</label></article>)}</section></>}
   </div>
 }

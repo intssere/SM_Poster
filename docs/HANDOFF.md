@@ -37,11 +37,11 @@ Task #34 verification uses isolated test databases. Those fixtures create and de
 
 The latest previously verified runtime snapshot, carried forward from controlled Adagio v3 verification, is 4 content revisions, 1 selection (Adagio v3), 5 telemetry records, 0 generated assets, 0 approvals, and 0 publications. Treat these values as a prior verified snapshot, not as counts measured by Task #34. Re-query the deployed PostgreSQL database before relying on them operationally.
 
-PR #10 is merged into `main`; Task #35 is COMPLETE and Task #36 is PRE-MERGE / PR #13. Alembic is 0011. Pinterest account OAuth is implemented without publishing; scheduling and analytics remain disabled. The next task is Pinterest Board Sync & Board Manager v1.
+PR #13 is merged into `main` at `beca739cc7b0832f4c74898c928d2f028d453bc9` (tree `62bc9f03f939f322acad0cd81891cd92ac53fc03`). Task #36 is COMPLETE. Task #37 is CURRENT on branch `task-37-pinterest-board-manager-v1`; Alembic is 0012. Pinterest board sync is read-only; publishing, scheduling, and analytics remain disabled. The next task is Publisher + Scheduler.
 
 ## Known issues and next work
 
-Task #35 is COMPLETE. Task #36 is PRE-MERGE / PR #13 on verified main `e998ec3fbcda0d91cad2ffaa57fa5be8e77d20d1`, Alembic 0011. Next expected task is Pinterest Board Sync & Board Manager v1. Publishing remains disabled; runtime counts remain carried-forward historical values, not freshly queried.
+Task #35 and Task #36 are COMPLETE. Task #37 is CURRENT / implementation in progress on the verified baseline above; Alembic 0012. Publishing remains disabled; runtime counts remain carried-forward historical values, not freshly queried.
 
 ## Verification commands
 
