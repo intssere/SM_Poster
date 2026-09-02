@@ -27,7 +27,7 @@ def media_publishable(value):
 
 def publishing_ready(db, publication):
     settings = get_settings()
-    if publication.status != PublicationStatus.PUBLISHING:
+    if publication.status not in {PublicationStatus.SCHEDULED, PublicationStatus.PUBLISHING}:
         return False, "INVALID_PUBLICATION_STATE"
     if not all((publication.publication_fingerprint, publication.pinterest_connection_id, publication.pinterest_board_record_id, publication.pinterest_board_id_snapshot, publication.title_snapshot, publication.description_snapshot, publication.destination_url, publication.media_url_snapshot)):
         return False, "INCOMPLETE_SNAPSHOT"
@@ -52,6 +52,18 @@ def publishing_ready(db, publication):
     if not media_publishable(media):
         return False, "MEDIA_NOT_PUBLISHABLE"
     return True, None
+
+def preflight_publish_readiness(db, publication):
+    from datetime import datetime, timezone
+    if publication.status != PublicationStatus.SCHEDULED or not publication.scheduled_for or publication.scheduled_for > datetime.now(timezone.utc):
+        return False, "NOT_DUE"
+    return publishing_ready(db, publication)
+
+def execution_publish_readiness(db, publication, attempt):
+    from app.services.publication_scheduler import request_fingerprint_for
+    if not attempt or attempt.status != "STARTED" or attempt.publication_id != publication.id or attempt.request_fingerprint != request_fingerprint_for(publication):
+        return False, "ATTEMPT_MISMATCH"
+    return publishing_ready(db, publication)
 
 async def publish_once(db, publication, gateway, attempt=None):
     if publication.status != PublicationStatus.PUBLISHING or attempt is None or attempt.publication_id != publication.id or attempt.status != "STARTED":
