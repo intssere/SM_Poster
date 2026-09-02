@@ -41,3 +41,6 @@ validation, or encryption failures preserve credential metadata and record only
 a sanitized error code; database failures roll back without exposing provider
 payloads or secrets. Refresh is explicitly invoked and provider-read-only; no
 scheduler or background refresh job is enabled.
+# Board-sync token refresh policy
+
+Board synchronization performs a five-minute access-token expiry preflight. Healthy tokens are not refreshed; expired or imminently expiring tokens invoke the existing Task #36 `refresh_connection` helper at most once. The refreshed encrypted credential is used for discovery. Refresh failure fails closed before board/section requests, reconciliation, or advancement of `boards_last_synced_at`; there is no background scheduler or retry loop, and OAuth scopes remain read-only.

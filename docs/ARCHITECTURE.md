@@ -23,3 +23,6 @@ Task #35 adds a centralized single-admin authentication boundary: operational AP
 Task #36 adds a server-side OAuth boundary for account connection only. Tokens are encrypted at rest and never returned to the frontend; no board or Pin write path exists.
 
 Task #37 adds read-only board/section snapshots and an authenticated Board Manager. Synchronization never creates or modifies Pinterest boards, Pins, schedules, or analytics records.
+# Pinterest board sync refresh boundary
+
+Manual board sync checks access-token expiry using a five-minute preflight and may call the existing refresh helper once. Discovery uses the refreshed encrypted state; failures stop all provider calls and reconciliation. No scheduler or provider retry loop exists.

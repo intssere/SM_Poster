@@ -25,3 +25,6 @@
 - Added additive migration `0012` and authenticated read-only Pinterest board/section synchronization.
 - Added Board Manager UI for reviewing and explicitly selecting persisted board metadata.
 - Kept Pinterest writes, publishing, scheduling, and analytics disabled.
+# Unreleased
+
+- Documented bounded Pinterest board-sync access-token refresh behavior.

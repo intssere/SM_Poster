@@ -58,3 +58,6 @@ alembic upgrade head
 cd ../frontend
 npm run build
 ```
+# Task #37 refresh behavior
+
+PR #15 — PRE-MERGE / under independent review. Alembic is `0013`. Board sync performs a five-minute token expiry preflight and invokes the existing refresh helper at most once; failures make zero board/section calls and do not advance successful-sync state. Publishing remains disabled.

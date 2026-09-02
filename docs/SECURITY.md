@@ -33,3 +33,6 @@ Board Sync & Board Manager v1 stores normalized read snapshots behind authentica
 # Pinterest provider validation
 
 Provider metadata is type-validated before persistence. Malformed containers or values fail closed; provider values are never silently stringified or truncated. Failed malformed synchronization does not advance `boards_last_synced_at`. PR #15 remains pre-merge under independent review; publishing is disabled.
+# Board synchronization refresh safety
+
+Expiry preflight uses a five-minute window and one bounded refresh. Refresh failures preserve inventory and sync timestamps, with no background refresh or provider retry loop.
