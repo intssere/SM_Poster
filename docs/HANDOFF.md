@@ -6,8 +6,8 @@ Diamond Shelf Social Studio (`intssere/SM_Poster`) is an internal system for tur
 
 ## Current baseline
 
-- Task #34 started from GitHub `main` at PR #8 merge `d2674c98eec5da08f6e5c1843aa3526fce0f857c`.
-- Alembic head: `0010` after Publication Identity v2.
+- Task #37 started from authoritative GitHub `main` at `beca739cc7b0832f4c74898c928d2f028d453bc9` (tree `62bc9f03f939f322acad0cd81891cd92ac53fc03`).
+- Alembic head: `0012` after read-only Pinterest board synchronization.
 - Backend: FastAPI, SQLAlchemy, Alembic, PostgreSQL-ready models.
 - Frontend: React/Vite internal review dashboard.
 - Publishing: disabled (`PUBLISHING_ENABLED=false`).
@@ -29,7 +29,7 @@ PRs #1–#8 established review-only AI foundations, production model configurati
 
 ## Pinterest and analytics status
 
-Task #36 implements account OAuth only; production Pin creation, board creation, scheduling, and analytics polling are not implemented. Publication Identity v2 remains audit-safe.
+Task #36 implements account OAuth only. Task #37 adds read-only board/section synchronization and local Board Manager selection; Pinterest writes, scheduling, and analytics remain disabled. Publication Identity v2 remains audit-safe.
 
 ## Repository/test state versus runtime state
 
@@ -37,11 +37,11 @@ Task #34 verification uses isolated test databases. Those fixtures create and de
 
 The latest previously verified runtime snapshot, carried forward from controlled Adagio v3 verification, is 4 content revisions, 1 selection (Adagio v3), 5 telemetry records, 0 generated assets, 0 approvals, and 0 publications. Treat these values as a prior verified snapshot, not as counts measured by Task #34. Re-query the deployed PostgreSQL database before relying on them operationally.
 
-PR #13 is merged into `main` at `beca739cc7b0832f4c74898c928d2f028d453bc9` (tree `62bc9f03f939f322acad0cd81891cd92ac53fc03`). Task #36 is COMPLETE. Task #37 is CURRENT on branch `task-37-pinterest-board-manager-v1`; Alembic is 0012. Pinterest board sync is read-only; publishing, scheduling, and analytics remain disabled. The next task is Publisher + Scheduler.
+PR #13 is merged into `main` at `beca739cc7b0832f4c74898c928d2f028d453bc9` (tree `62bc9f03f939f322acad0cd81891cd92ac53fc03`). Task #35 and Task #36 are COMPLETE. Task #37 is COMPLETE on branch `task-37-pinterest-board-manager-v1`; Alembic is `0012`. Pinterest board sync is read-only; publishing, scheduling, and analytics remain disabled. The next task is Publisher + Scheduler design.
 
 ## Known issues and next work
 
-Task #35 and Task #36 are COMPLETE. Task #37 is CURRENT / implementation in progress on the verified baseline above; Alembic 0012. Publishing remains disabled; runtime counts remain carried-forward historical values, not freshly queried.
+Task #35, Task #36, and Task #37 are COMPLETE; Alembic is `0012`. Publishing remains disabled; runtime counts remain carried-forward historical values, not freshly queried. The next implementation stage is Publisher + Scheduler design, subject to explicit authorization.
 
 ## Verification commands
 
