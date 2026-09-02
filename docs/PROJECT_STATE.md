@@ -1,6 +1,6 @@
 # Project State
 
-Diamond Shelf Social Studio is an internal Shopify-catalog-to-editorial-content review system. Current authoritative GitHub `main` is `886ba9ec25e316f0d5b9a3a590ae8cbef103a059` (tree `f0b3ec2eaaa7f9ac050f43f3b0ad3bc015c409e0`).
+Diamond Shelf Social Studio is an internal Shopify-catalog-to-editorial-content review system. Task #38 authoritative starting `main` is `4242b80e6626886b528641749beeb64cf7e4ea62` (tree `ac35cffe2f58c1d47deac578e43cabe12189e519`).
 
 Current capabilities include catalog normalization, controlled proposal generation, deterministic authentic-product creative rendering, immutable AI-assisted copy revisions, review-only generated backgrounds and video specifications, explicit version selection, approval auditing, and read-only revision previews.
 

@@ -29,7 +29,7 @@ PRs #1–#8 established review-only AI foundations, production model configurati
 
 ## Pinterest and analytics status
 
-Task #36 account OAuth and Task #37 read-only board/section synchronization with local Board Manager selection are COMPLETE (PR #15 MERGED, Issue #14 CLOSED). Pinterest writes, scheduling, and analytics remain disabled. Publication Identity v2 remains audit-safe.
+Task #36 account OAuth and Task #37 read-only board/section synchronization with local Board Manager selection are COMPLETE (PR #15 MERGED, Issue #14 CLOSED). Live Pinterest writes and analytics remain disabled; explicit human scheduling controls are provided by Task #38. Publication Identity v2 remains audit-safe.
 
 Pinterest connection refresh is provider-read-only: replacement values are
 validated and encrypted before connection fields are changed. Failed refreshes

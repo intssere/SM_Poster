@@ -22,6 +22,6 @@ Task #35 authentication, Task #36 OAuth, and Task #37 reviewed board sync/Board 
 
 None of these later phases is enabled by Task #34.
 
-Task #35 completed authentication; Task #36 OAuth and Task #37 read-only board management are implemented. Scheduler, publishing, analytics ingestion, and provider writes remain future work and disabled.
+Task #35 completed authentication; Task #36 OAuth and Task #37 read-only board management are implemented. Task #38 provides explicit scheduling foundations; live publishing, analytics ingestion, and provider writes remain separately authorized and disabled.
 
 Task #38 is the PRE-MERGE Publisher + Scheduler Foundation: immutable snapshots, durable attempts, bounded due processing, and transactional claims. Live publishing remains disabled pending explicit authorization.
