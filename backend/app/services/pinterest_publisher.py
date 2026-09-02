@@ -65,11 +65,20 @@ def execution_publish_readiness(db, publication, attempt):
         return False, "ATTEMPT_MISMATCH"
     return publishing_ready(db, publication)
 
+def finalize_post_claim_unknown(db, publication, attempt, code="POST_CLAIM_REVALIDATION_FAILED"):
+    from datetime import datetime, timezone
+    attempt.status = "UNKNOWN"; attempt.error_code = code; attempt.completed_at = datetime.now(timezone.utc)
+    publication.status = PublicationStatus.PUBLISH_UNKNOWN; publication.error_code = code
+    db.commit()
+    return publication
+
 async def publish_once(db, publication, gateway, attempt=None):
     if publication.status != PublicationStatus.PUBLISHING or attempt is None or attempt.publication_id != publication.id or attempt.status != "STARTED":
-        raise RuntimeError("INVALID_PUBLISH_ATTEMPT")
+        if attempt is not None: finalize_post_claim_unknown(db, publication, attempt, "ATTEMPT_IDENTITY_MISMATCH")
+        raise RuntimeError("ATTEMPT_IDENTITY_MISMATCH")
     ready, reason = publishing_ready(db, publication)
     if not ready:
+        finalize_post_claim_unknown(db, publication, attempt, reason)
         raise RuntimeError(reason)
     payload = PinterestPinPayload(
         board_id=publication.pinterest_board_id_snapshot or publication.pinterest_board_id or "",
