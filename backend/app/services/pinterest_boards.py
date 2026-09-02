@@ -22,8 +22,10 @@ def _int(value):
 async def sync_boards(db, connection: PinterestConnection, client=None):
     if connection.status != "CONNECTED" or not connection.access_token_ciphertext: raise RuntimeError("Pinterest account is not connected")
     access = decrypt_token(connection.access_token_ciphertext); client = client or PinterestBoardClient(); now = datetime.now(timezone.utc)
-    boards, sections = [], [] ; bookmark = None
+    boards, sections = [], [] ; bookmark = None; seen_bookmarks = set()
     while True:
+        if bookmark in seen_bookmarks: raise RuntimeError("Pinterest board pagination invalid")
+        if bookmark: seen_bookmarks.add(bookmark)
         payload = await client.get("/v5/boards", access, {"bookmark": bookmark} if bookmark else None)
         boards.extend(payload.get("items", [])); bookmark = payload.get("bookmark")
         if not bookmark: break
@@ -38,11 +40,17 @@ async def sync_boards(db, connection: PinterestConnection, client=None):
         for field in ("pin_count","follower_count","collaborator_count"): setattr(row, field, _int(item.get(field)))
         row.is_ads_only = bool(item.get("is_ads_only", False)); row.is_active = True; row.last_seen_at = now; row.last_synced_at = now
         db.flush()
-        bookmark_s = None
+        bookmark_s = None; section_seen = set(); section_bookmarks = set()
         while True:
+            if bookmark_s in section_bookmarks: raise RuntimeError("Pinterest section pagination invalid")
+            if bookmark_s: section_bookmarks.add(bookmark_s)
             section_payload = await client.get(f"/v5/boards/{external}/sections", access, {"bookmark": bookmark_s} if bookmark_s else None)
-            sections.extend((row, x) for x in section_payload.get("items", [])); bookmark_s = section_payload.get("bookmark")
+            for x in section_payload.get("items", []):
+                sections.append((row, x)); section_seen.add(str(x.get("id")))
+            bookmark_s = section_payload.get("bookmark")
             if not bookmark_s: break
+        for existing in db.scalars(select(PinterestBoardSection).where(PinterestBoardSection.board_id == row.id)):
+            if existing.external_section_id not in section_seen: existing.is_active = False
     for board in db.scalars(select(PinterestBoard).where(PinterestBoard.connection_id == connection.id)):
         if board.external_board_id not in seen: board.is_active = False
     for board, item in sections:
