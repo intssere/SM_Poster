@@ -27,6 +27,10 @@ def media_publishable(value):
 
 def publishing_ready(db, publication):
     settings = get_settings()
+    if publication.status != PublicationStatus.PUBLISHING:
+        return False, "INVALID_PUBLICATION_STATE"
+    if not all((publication.publication_fingerprint, publication.pinterest_connection_id, publication.pinterest_board_record_id, publication.pinterest_board_id_snapshot, publication.title_snapshot, publication.description_snapshot, publication.destination_url, publication.media_url_snapshot)):
+        return False, "INCOMPLETE_SNAPSHOT"
     if not settings.publishing_enabled:
         return False, "PUBLISHING_DISABLED"
     connection = db.get(PinterestConnection, publication.pinterest_connection_id)
@@ -35,6 +39,15 @@ def publishing_ready(db, publication):
         return False, "PUBLISHING_SCOPE_REQUIRED"
     if not board or board.connection_id != connection.id or not board.is_active or not board.is_eligible:
         return False, "INVALID_DESTINATION"
+    if board.external_board_id != publication.pinterest_board_id_snapshot:
+        return False, "DESTINATION_MISMATCH"
+    from app.models.domain import PinApproval, PinCreative
+    approval = db.get(PinApproval, publication.approval_id) if publication.approval_id else None
+    creative = db.get(PinCreative, publication.creative_id)
+    if not approval or approval.decision != "APPROVED" or approval.draft_id != publication.draft_id or approval.revision_id != publication.revision_id or approval.creative_id != publication.creative_id:
+        return False, "INVALID_APPROVAL"
+    if not creative or creative.draft_id != publication.draft_id or creative.source_image_id != publication.source_image_id:
+        return False, "INVALID_CREATIVE"
     media = publication.media_url_snapshot
     if not media_publishable(media):
         return False, "MEDIA_NOT_PUBLISHABLE"

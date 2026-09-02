@@ -72,6 +72,17 @@ async def publish(publication_id: str, db: Session = Depends(get_db)):
     from app.core.config import get_settings
     if not get_settings().publishing_enabled:
         raise HTTPException(409, "Publishing is disabled")
-    ready, reason = publishing_ready(db, row)
-    if not ready: raise HTTPException(409, reason)
-    raise HTTPException(501, "Publisher gateway requires explicit provider wiring")
+    from app.services.publication_scheduler import claim
+    from app.services.pinterest_oauth import decrypt_token
+    from app.integrations.pinterest.gateway import PinterestV5Gateway
+    from app.services.pinterest_publisher import publish_once
+    connection = db.get(PinterestConnection, row.pinterest_connection_id)
+    try:
+        attempt = claim(db, row)
+        if not attempt: raise HTTPException(409, "Publication is not due or already claimed")
+        gateway = PinterestV5Gateway(access_token=decrypt_token(connection.access_token_ciphertext), publishing_enabled=True)
+        await publish_once(db, row, gateway, attempt)
+    except HTTPException: raise
+    except Exception:
+        raise HTTPException(502, "Pinterest publication failed") from None
+    return _dto(row)
