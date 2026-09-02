@@ -6,6 +6,10 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from app.models.domain import Base, PinterestConnection, PinterestBoard, PinterestBoardSection
 from app.services.pinterest_boards import sync_boards, eligible_boards
+from app.core.config import get_settings
+from app.main import app
+from app.db.session import get_db
+from fastapi.testclient import TestClient
 
 class FakeClient:
     def __init__(self, pages): self.pages = pages; self.calls = []
@@ -19,6 +23,21 @@ def db():
     with Session() as session:
         yield session
     engine.dispose()
+
+@pytest.fixture
+def app_db():
+    engine = create_engine("sqlite+pysqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine); Session = sessionmaker(bind=engine)
+    def override():
+        s = Session()
+        try: yield s
+        finally: s.close()
+    app.dependency_overrides[get_db] = override
+    try: yield Session
+    finally: app.dependency_overrides.pop(get_db, None); engine.dispose()
+
+def auth_env(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:"); monkeypatch.setenv("APP_ENV", "development"); monkeypatch.setenv("AUTH_DISABLED", "true")
 
 def connected(db):
     row = PinterestConnection(external_user_id="acct", access_token_ciphertext="x", refresh_token_ciphertext="y", status="CONNECTED")
@@ -90,3 +109,21 @@ def test_provider_failure_does_not_expose_credentials(db, monkeypatch):
         async def get(self, path, token, params=None): raise RuntimeError(f"provider body {token}")
     with pytest.raises(RuntimeError) as exc: asyncio.run(sync_boards(db, conn, Broken({})))
     assert "secret-token" not in str(exc.value)
+
+def test_board_api_auth_and_patch_local_only(monkeypatch, app_db):
+    auth_env(monkeypatch)
+    with app_db() as s:
+        conn = PinterestConnection(external_user_id="acct", access_token_ciphertext="secret-access", refresh_token_ciphertext="secret-refresh"); s.add(conn); s.flush(); board = PinterestBoard(connection_id=conn.id, external_board_id="b", name="Board"); s.add(board); s.commit(); board_id = board.id
+    client = TestClient(app)
+    assert client.get("/api/channels/pinterest/boards").status_code == 200
+    assert client.get("/api/channels/pinterest/boards").json()["boards"][0]["external_board_id"] == "b"
+    calls = []
+    monkeypatch.setattr("app.api.routes.channels.sync_boards", lambda *a, **k: calls.append(1))
+    response = client.patch(f"/api/channels/pinterest/boards/{board_id}", json={"is_eligible": True, "routing_label": "hair", "name": "provider"}, headers={"Origin":"http://localhost:5000"})
+    assert response.status_code == 200 and response.json()["is_eligible"] and response.json()["routing_label"] == "hair" and not calls
+    body = str(client.get("/api/channels/pinterest/boards").json()); assert all(x not in body for x in ("secret-access", "secret-refresh", "access_token_ciphertext", "refresh_token_ciphertext", "Authorization"))
+
+def test_board_api_anonymous_denied_when_auth_enabled(monkeypatch, app_db):
+    auth_env(monkeypatch); monkeypatch.setenv("AUTH_DISABLED", "false"); monkeypatch.setenv("ADMIN_PASSWORD", "pw"); monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    get_settings.cache_clear()
+    assert TestClient(app).get("/api/channels/pinterest/boards").status_code == 401
