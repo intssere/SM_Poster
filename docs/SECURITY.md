@@ -30,3 +30,6 @@ Task #36 OAuth uses one-time hashed state records, server-side code exchange, an
 ## Task #37 status
 
 Board Sync & Board Manager v1 stores normalized read snapshots behind authenticated routes only. It performs no Pinterest mutations, scheduling, analytics ingestion, or publication. `PUBLISHING_ENABLED=false` remains authoritative and AI/provider mode remains disabled.
+# Pinterest provider validation
+
+Provider metadata is type-validated before persistence. Malformed containers or values fail closed; provider values are never silently stringified or truncated. Failed malformed synchronization does not advance `boards_last_synced_at`. PR #15 remains pre-merge under independent review; publishing is disabled.

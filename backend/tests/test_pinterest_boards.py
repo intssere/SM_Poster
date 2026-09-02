@@ -112,6 +112,28 @@ def test_provider_failure_does_not_expose_credentials(db, monkeypatch):
     with pytest.raises(RuntimeError) as exc: asyncio.run(sync_boards(db, conn, Broken({})))
     assert "secret-token" not in str(exc.value)
 
+def _payload(**fields):
+    value = {"id":"v", "name":"Board"}; value.update(fields); return value
+
+@pytest.mark.parametrize("field,value", [("description",None),("description","ok"),("privacy","PUBLIC")])
+def test_nullable_provider_strings_accept_valid_values(db, monkeypatch, field, value):
+    monkeypatch.setattr("app.services.pinterest_boards.decrypt_token", lambda _: "t"); conn = connected(db)
+    fake = FakeClient({("/v5/boards",None): {"items":[_payload(**{field:value})]}, ("/v5/boards/v/sections",None): {"items":[]}})
+    asyncio.run(sync_boards(db, conn, fake)); assert db.query(PinterestBoard).one()
+
+@pytest.mark.parametrize("field,value", [("description",{}),("description",[]),("description",True),("description",1),("privacy","x"*41),("privacy",{}),("privacy",[]),("privacy",False),("privacy",1),("owner",[]),("owner","x"),("owner",{"username":{}}),("owner",{"username":[]}), ("owner",{"username":True}), ("owner",{"username":"x"*256}), ("media",[]),("media","x"),("media",{"image_cover_url":{}}),("media",{"image_cover_url":[]}), ("media",{"image_cover_url":False}),("media",{"image_cover_url":1})])
+def test_malformed_nullable_provider_strings_fail_closed(db, monkeypatch, field, value):
+    monkeypatch.setattr("app.services.pinterest_boards.decrypt_token", lambda _: "t"); conn = connected(db)
+    with pytest.raises(RuntimeError, match="invalid"):
+        asyncio.run(sync_boards(db, conn, FakeClient({("/v5/boards",None): {"items":[_payload(**{field:value})]}})))
+
+@pytest.mark.parametrize("name", [None,"","   ",{},[],True,1,"x"*256])
+def test_malformed_section_names_preserve_existing_state(db, monkeypatch, name):
+    monkeypatch.setattr("app.services.pinterest_boards.decrypt_token", lambda _: "t"); conn = connected(db)
+    with pytest.raises(RuntimeError, match="invalid"):
+        asyncio.run(sync_boards(db, conn, FakeClient({("/v5/boards",None): {"items":[_payload()]}, ("/v5/boards/v/sections",None): {"items":[{"id":"s", "name":name}]}})))
+    assert conn.boards_last_synced_at is None
+
 def test_official_nested_metadata_persists(db, monkeypatch):
     monkeypatch.setattr("app.services.pinterest_boards.decrypt_token", lambda _: "t"); conn = connected(db)
     fake = FakeClient({("/v5/boards", None): {"items":[{"id":"official","name":"Catalog","owner":{"username":"owner"},"media":{"image_cover_url":"https://img"},"pin_count":1,"follower_count":2,"collaborator_count":0,"is_ads_only":False,"board_pins_modified_at":"2026-01-01T00:00:00Z","created_at":"2025-01-01T00:00:00Z"}]}, ("/v5/boards/official/sections", None): {"items":[]}})
