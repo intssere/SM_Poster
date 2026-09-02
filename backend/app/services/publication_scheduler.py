@@ -39,7 +39,7 @@ def cancel(db, publication):
     db.commit()
     return publication
 
-def claim(db, publication, request_fingerprint=None):
+def claim(db, publication):
     """Compare-and-set claim; caller commits before provider execution."""
     now = datetime.now(timezone.utc)
     result = db.execute(update(PinPublication).where(
@@ -51,7 +51,7 @@ def claim(db, publication, request_fingerprint=None):
     if result.rowcount != 1:
         return None
     attempt_no = (db.scalar(select(PublicationAttempt.attempt_number).where(PublicationAttempt.publication_id == publication.id).order_by(PublicationAttempt.attempt_number.desc()).limit(1)) or 0) + 1
-    attempt = PublicationAttempt(publication_id=publication.id, attempt_number=attempt_no, status="STARTED", request_fingerprint=request_fingerprint or request_fingerprint_for(publication))
+    attempt = PublicationAttempt(publication_id=publication.id, attempt_number=attempt_no, status="STARTED", request_fingerprint=request_fingerprint_for(publication))
     db.add(attempt)
     db.commit()
     return attempt

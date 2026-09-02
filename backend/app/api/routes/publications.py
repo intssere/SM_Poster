@@ -67,4 +67,11 @@ def cancel_publication(publication_id: str, db: Session = Depends(get_db)):
 
 @router.post("/{publication_id}/publish")
 async def publish(publication_id: str, db: Session = Depends(get_db)):
-    raise HTTPException(409, "Publishing is disabled")
+    row = db.get(PinPublication, publication_id)
+    if not row: raise HTTPException(404, "Publication not found")
+    from app.core.config import get_settings
+    if not get_settings().publishing_enabled:
+        raise HTTPException(409, "Publishing is disabled")
+    ready, reason = publishing_ready(db, row)
+    if not ready: raise HTTPException(409, reason)
+    raise HTTPException(501, "Publisher gateway requires explicit provider wiring")
