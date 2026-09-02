@@ -37,11 +37,11 @@ Task #34 verification uses isolated test databases. Those fixtures create and de
 
 The latest previously verified runtime snapshot, carried forward from controlled Adagio v3 verification, is 4 content revisions, 1 selection (Adagio v3), 5 telemetry records, 0 generated assets, 0 approvals, and 0 publications. Treat these values as a prior verified snapshot, not as counts measured by Task #34. Re-query the deployed PostgreSQL database before relying on them operationally.
 
-PR #13 is merged into `main` at `beca739cc7b0832f4c74898c928d2f028d453bc9` (tree `62bc9f03f939f322acad0cd81891cd92ac53fc03`). Task #35 and Task #36 are COMPLETE. Task #37 is COMPLETE on branch `task-37-pinterest-board-manager-v1`; Alembic is `0012`. Pinterest board sync is read-only; publishing, scheduling, and analytics remain disabled. The next task is Publisher + Scheduler design.
+PR #13 is merged into `main` at `beca739cc7b0832f4c74898c928d2f028d453bc9` (tree `62bc9f03f939f322acad0cd81891cd92ac53fc03`). Task #35 and Task #36 are COMPLETE. Task #37 is PR #15 — PRE-MERGE / under independent review on branch `task-37-pinterest-board-manager-v1`; Alembic is `0012`. Pinterest board sync is read-only; publishing, scheduling, and analytics remain disabled. The next stage after merge is Publisher + Scheduler design.
 
 ## Known issues and next work
 
-Task #35, Task #36, and Task #37 are COMPLETE; Alembic is `0012`. Publishing remains disabled; runtime counts remain carried-forward historical values, not freshly queried. The next implementation stage is Publisher + Scheduler design, subject to explicit authorization.
+Task #35 and Task #36 are COMPLETE. Task #37 is PR #15 — PRE-MERGE / under independent review; Alembic is `0012`. Publishing remains disabled; runtime counts remain carried-forward historical values, not freshly queried. The next implementation stage after merge is Publisher + Scheduler design, subject to explicit authorization.
 
 ## Verification commands
 
