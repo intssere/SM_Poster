@@ -42,7 +42,7 @@ def cancel(db, publication):
 def claim(db, publication):
     """Compare-and-set claim; caller commits before provider execution."""
     now = datetime.now(timezone.utc)
-    result = db.execute(update(PinPublication).where(
+    result = db.execute(update(PinPublication).execution_options(synchronize_session=False).where(
         PinPublication.id == publication.id,
         PinPublication.status == PublicationStatus.SCHEDULED,
         PinPublication.scheduled_for.is_not(None),
