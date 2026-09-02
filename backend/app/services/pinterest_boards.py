@@ -52,7 +52,10 @@ async def sync_boards(db, connection: PinterestConnection, client=None):
         for existing in db.scalars(select(PinterestBoardSection).where(PinterestBoardSection.board_id == row.id)):
             if existing.external_section_id not in section_seen: existing.is_active = False
     for board in db.scalars(select(PinterestBoard).where(PinterestBoard.connection_id == connection.id)):
-        if board.external_board_id not in seen: board.is_active = False
+        if board.external_board_id not in seen:
+            board.is_active = False
+            for section in db.scalars(select(PinterestBoardSection).where(PinterestBoardSection.board_id == board.id)):
+                section.is_active = False
     for board, item in sections:
         if not isinstance(item, dict) or not item.get("id"): raise RuntimeError("Pinterest section response invalid")
         section = db.scalar(select(PinterestBoardSection).where(PinterestBoardSection.board_id == board.id, PinterestBoardSection.external_section_id == str(item["id"])))
