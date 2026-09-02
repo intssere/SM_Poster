@@ -19,3 +19,9 @@
 ## Task #36
 
 - Added read-only Pinterest OAuth account connection with hashed one-time state and encrypted credentials.
+
+## Task #37
+
+- Added additive migration `0012` and authenticated read-only Pinterest board/section synchronization.
+- Added Board Manager UI for reviewing and explicitly selecting persisted board metadata.
+- Kept Pinterest writes, publishing, scheduling, and analytics disabled.

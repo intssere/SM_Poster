@@ -26,3 +26,7 @@ Use a stateless HMAC-signed, short-lived HttpOnly cookie for the single admin. K
 ## Task #36
 
 Use Authorization Code OAuth with one-time hashed state and Fernet-encrypted credentials. Restrict scopes to account/board/Pin reads; retain publishing disabled.
+
+## Task #37
+
+Board synchronization persists normalized read snapshots through additive migration `0012`. Board and section mutations, Pin writes, scheduling, and analytics ingestion are prohibited; local selection never authorizes publication.
