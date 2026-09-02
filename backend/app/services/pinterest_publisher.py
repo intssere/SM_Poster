@@ -83,6 +83,24 @@ def finalize_post_claim_unknown(db, publication, attempt, code="POST_CLAIM_REVAL
         raise PublicationReconciliationError("Publication reconciliation could not be persisted") from None
     return publication
 
+def _reconcile(db, publication, attempt, *, status, error_code, pin_id=None):
+    """Persist an attempt outcome, converting DB failures to a typed error."""
+    attempt.status = status
+    attempt.error_code = error_code
+    if pin_id:
+        attempt.provider_pin_id = pin_id
+        attempt.safe_response_metadata = sanitize_metadata({"validated_pin_id": pin_id})
+    attempt.completed_at = datetime.now(timezone.utc)
+    publication.status = PublicationStatus.PUBLISH_UNKNOWN if status == "UNKNOWN" else PublicationStatus.PUBLISH_FAILED
+    publication.error_code = error_code
+    if pin_id:
+        publication.pinterest_pin_id = pin_id
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise PublicationReconciliationError("Publication reconciliation could not be persisted") from None
+
 async def publish_once(db, publication, gateway, attempt=None):
     if publication.status != PublicationStatus.PUBLISHING or attempt is None or attempt.publication_id != publication.id or attempt.status != "STARTED":
         raise RuntimeError("ATTEMPT_IDENTITY_MISMATCH")
@@ -120,26 +138,19 @@ async def publish_once(db, publication, gateway, attempt=None):
                 persisted_publication = db.get(type(publication), publication.id)
                 if not persisted_attempt or not persisted_publication:
                     raise RuntimeError
-                persisted_attempt.status = "UNKNOWN"
-                persisted_attempt.provider_pin_id = pin_id
-                persisted_attempt.error_code = "PUBLISH_UNKNOWN"
-                persisted_attempt.safe_response_metadata = sanitize_metadata({"validated_pin_id": pin_id})
-                persisted_attempt.completed_at = datetime.now(timezone.utc)
-                persisted_publication.status = PublicationStatus.PUBLISH_UNKNOWN
-                persisted_publication.pinterest_pin_id = pin_id
-                persisted_publication.error_code = "PUBLISH_UNKNOWN"
-                db.commit()
-            except Exception:
+                _reconcile(db, persisted_publication, persisted_attempt, status="UNKNOWN", error_code="PUBLISHED_STATE_PERSISTENCE_UNKNOWN", pin_id=pin_id)
+            except Exception as reconcile_exc:
+                if isinstance(reconcile_exc, PublicationReconciliationError):
+                    raise
                 db.rollback()
                 raise PublicationReconciliationError("Publication reconciliation could not be persisted") from None
             raise RuntimeError("PUBLISH_UNKNOWN") from None
         return result
     except Exception as exc:
+        if isinstance(exc, (PublicationReconciliationError, RuntimeError)) and str(exc) == "PUBLISH_UNKNOWN":
+            raise
         db.rollback(); attempt = db.get(PublicationAttempt, attempt.id)
-        attempt.status = "FAILED" if isinstance(exc, PinterestDefinitiveRejection) else "UNKNOWN"
-        attempt.error_code = "PUBLISH_UNKNOWN" if attempt.status == "UNKNOWN" else "PROVIDER_REJECTED"
-        attempt.completed_at = datetime.now(timezone.utc)
-        publication.status = PublicationStatus.PUBLISH_UNKNOWN if attempt.status == "UNKNOWN" else PublicationStatus.PUBLISH_FAILED
-        publication.error_code = attempt.error_code
-        db.commit()
-        raise RuntimeError(attempt.error_code) from None
+        status = "FAILED" if isinstance(exc, PinterestDefinitiveRejection) else "UNKNOWN"
+        code = "PUBLISH_UNKNOWN" if status == "UNKNOWN" else "PROVIDER_REJECTED"
+        _reconcile(db, publication, attempt, status=status, error_code=code)
+        raise RuntimeError(code) from None
