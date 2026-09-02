@@ -17,9 +17,9 @@
 - No automatic selection, approval, schedule, publication, retry, or model escalation.
 - Board synchronization is read-only; no Pinterest board, section, or Pin writes are permitted.
 
-## Known gap
+## Operational authentication
 
-Internal proposal APIs do not yet have dedicated authentication/authorization. Address this in a separate security-hardening task before broader operational exposure.
+Task #35 centralizes authentication and authorization for operational APIs. Task #38 permits explicit human scheduling only; no autonomous publishing worker or automatic unknown-outcome retry exists.
 
 ## Task #35 status
 
