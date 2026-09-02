@@ -28,3 +28,4 @@ Task #38 adds provider-independent publication snapshots and durable attempt aud
 # Pinterest board sync refresh boundary
 
 Manual board sync checks access-token expiry using a five-minute preflight and may call the existing refresh helper once. Discovery uses the refreshed encrypted state; failures stop all provider calls and reconciliation. No scheduler or provider retry loop exists.
+Task #38 scheduling and publisher services are implemented foundations invoked explicitly; no autonomous worker exists. Provider writes remain separately gated.

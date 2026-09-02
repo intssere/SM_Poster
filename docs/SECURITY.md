@@ -38,3 +38,4 @@ Provider metadata is type-validated before persistence. Malformed containers or 
 # Board synchronization refresh safety
 
 Expiry preflight uses a five-minute window and one bounded refresh. Refresh failures preserve inventory and sync timestamps, with no background refresh or provider retry loop.
+Task #38 keeps provider writes disabled, uses allowlisted attempt metadata, and never automatically retries `PUBLISH_UNKNOWN`.

@@ -37,3 +37,5 @@ Pinterest Account Connection/OAuth v1 is complete as a read-only account foundat
 ## Task #37 status
 
 Pinterest Board Sync & Board Manager v1 is COMPLETE; PR #15 is MERGED and Issue #14 is CLOSED. It provides connection-level successful-sync state (including zero-board success), five-minute token preflight using Task #36 refresh at most once, strict provider metadata validation, and local-only eligibility/routing. No Pinterest board or Pin writes, scheduler, publishing, or analytics ingestion are enabled. Alembic head is `0013`.
+### Task #38 current state
+Task #38 is PRE-MERGE on `task-38-publisher-scheduler-foundation-v1` with Alembic `0014`. It provides immutable publication snapshots, explicit human scheduling, bounded due discovery, transactional claims, durable attempts, provider execution gates, and server-derived readiness. Live publishing, `pins:write` OAuth requests, autonomous workers, and automatic `PUBLISH_UNKNOWN` retries remain disabled.

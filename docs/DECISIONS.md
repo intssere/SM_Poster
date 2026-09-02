@@ -48,3 +48,4 @@ Publication identity snapshots are pure database/audit operations independent of
 # Board-sync token refresh policy
 
 Board synchronization performs a five-minute access-token expiry preflight. Healthy tokens are not refreshed; expired or imminently expiring tokens invoke the existing Task #36 `refresh_connection` helper at most once. The refreshed encrypted credential is used for discovery. Refresh failure fails closed before board/section requests, reconciliation, or advancement of `boards_last_synced_at`; there is no background scheduler or retry loop, and OAuth scopes remain read-only.
+Task #38 permits explicit human scheduling/rescheduling/cancellation, while live publishing and automatic unknown retries remain disabled.
