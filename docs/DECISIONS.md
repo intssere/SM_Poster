@@ -30,3 +30,14 @@ Use Authorization Code OAuth with one-time hashed state and Fernet-encrypted cre
 ## Task #37
 
 Board synchronization persists normalized read snapshots through additive migration `0012`. Board and section mutations, Pin writes, scheduling, and analytics ingestion are prohibited; local selection never authorizes publication.
+
+### Safe Pinterest token refresh
+
+Connection refresh uses a prepare-then-commit boundary: provider data, scopes,
+expirations, and replacement credentials are validated and encrypted into
+locals before the connection is mutated. If no replacement refresh token is
+provided, the existing encrypted credential is retained. Provider, parsing,
+validation, or encryption failures preserve credential metadata and record only
+a sanitized error code; database failures roll back without exposing provider
+payloads or secrets. Refresh is explicitly invoked and provider-read-only; no
+scheduler or background refresh job is enabled.

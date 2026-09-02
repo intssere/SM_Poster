@@ -31,6 +31,11 @@ PRs #1–#8 established review-only AI foundations, production model configurati
 
 Task #36 implements account OAuth only. Task #37 adds read-only board/section synchronization and local Board Manager selection; Pinterest writes, scheduling, and analytics remain disabled. Publication Identity v2 remains audit-safe.
 
+Pinterest connection refresh is provider-read-only: replacement values are
+validated and encrypted before connection fields are changed. Failed refreshes
+preserve encrypted credentials and all expiry/scope/timestamp metadata; only a
+sanitized error code may be recorded. No background refresh job is enabled.
+
 ## Repository/test state versus runtime state
 
 Task #34 verification uses isolated test databases. Those fixtures create and delete approvals and publication snapshots and are not evidence of live runtime counts. This repository session had no production database connection, so it did not re-query or mutate runtime business data.
