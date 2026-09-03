@@ -2908,3 +2908,265 @@ def test_publication_publish_nonpublishable_media_fails_before_claim(monkeypatch
     finally:
         app.dependency_overrides.pop(get_db, None)
         engine.dispose()
+
+
+def test_publication_detail_returns_ordered_sanitized_attempt_history(monkeypatch):
+    from datetime import datetime, timezone
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.core import auth
+    from app.core.config import get_settings
+    from app.db.session import get_db
+    from app.integrations.pinterest import gateway as gateway_module
+    from app.main import app
+    from app.models.domain import (
+        Base,
+        PinPublication,
+        PublicationAttempt,
+        PublicationStatus,
+    )
+    from app.services import pinterest_oauth, publication_scheduler
+    from app.services.pinterest_publisher import sanitize_metadata
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("APP_SECRET_KEY", "a" * 48)
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", auth.hash_password("secret"))
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5000")
+    monkeypatch.setenv("PUBLISHING_ENABLED", "false")
+    get_settings.cache_clear()
+    assert get_settings().publishing_enabled is False
+
+    claim_call_count = 0
+    token_decrypt_call_count = 0
+    gateway_constructor_call_count = 0
+    provider_call_count = 0
+
+    def forbidden_claim(*args, **kwargs):
+        nonlocal claim_call_count
+        claim_call_count += 1
+        raise AssertionError("read-only attempt history must not claim publications")
+
+    def forbidden_decrypt_token(*args, **kwargs):
+        nonlocal token_decrypt_call_count
+        token_decrypt_call_count += 1
+        raise AssertionError("read-only attempt history must not decrypt tokens")
+
+    class ForbiddenGateway:
+        def __init__(self, *args, **kwargs):
+            nonlocal gateway_constructor_call_count
+            gateway_constructor_call_count += 1
+            raise AssertionError("read-only attempt history must not construct a gateway")
+
+        async def create_pin(self, *args, **kwargs):
+            nonlocal provider_call_count
+            provider_call_count += 1
+            raise AssertionError("read-only attempt history must not call provider create_pin")
+
+    monkeypatch.setattr(publication_scheduler, "claim", forbidden_claim)
+    monkeypatch.setattr(pinterest_oauth, "decrypt_token", forbidden_decrypt_token)
+    monkeypatch.setattr(gateway_module, "PinterestV5Gateway", ForbiddenGateway)
+
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+    )
+
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    started_1 = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    completed_1 = datetime(2026, 1, 2, 3, 5, 5, tzinfo=timezone.utc)
+    started_2 = datetime(2026, 1, 2, 4, 4, 5, tzinfo=timezone.utc)
+    completed_2 = datetime(2026, 1, 2, 4, 5, 5, tzinfo=timezone.utc)
+    attempt_2_metadata = {
+        "validated_pin_id": "provider-pin-002",
+        "http_status": 503,
+        "provider_error_code": "UPSTREAM_503",
+        "request_id": "request-safe-002",
+        "correlation_id": "correlation-safe-002",
+        "access_token": "ATTEMPT_HISTORY_ACCESS_TOKEN_DO_NOT_SERIALIZE",
+        "refresh_token": "ATTEMPT_HISTORY_REFRESH_TOKEN_DO_NOT_SERIALIZE",
+        "Authorization": "Bearer ATTEMPT_HISTORY_SECRET",
+        "client_secret": "ATTEMPT_HISTORY_CLIENT_SECRET",
+        "raw_body": "RAW_PROVIDER_BODY_DO_NOT_SERIALIZE",
+        "raw_json": {"secret": "DO_NOT_SERIALIZE"},
+        "traceback": "TRACEBACK_DO_NOT_SERIALIZE",
+        "exception": "EXCEPTION_DO_NOT_SERIALIZE",
+        "arbitrary": "ARBITRARY_DO_NOT_SERIALIZE",
+    }
+    attempt_1_metadata = {
+        "http_status": 400,
+        "provider_error_code": "INVALID_REQUEST",
+        "request_id": "request-safe-001",
+        "access_token": "SECOND_ACCESS_TOKEN_DO_NOT_SERIALIZE",
+        "raw_body": "SECOND_RAW_BODY_DO_NOT_SERIALIZE",
+        "traceback": "SECOND_TRACEBACK_DO_NOT_SERIALIZE",
+    }
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestingSessionLocal() as db:
+            publication = PinPublication(
+                id="attempt-history-publication",
+                draft_id="attempt-history-draft",
+                revision_id=None,
+                creative_id="attempt-history-creative",
+                approval_id="attempt-history-approval",
+                source_image_id="attempt-history-source-image",
+                publication_fingerprint="q" * 64,
+                status=PublicationStatus.PUBLISH_UNKNOWN,
+                pinterest_pin_id="provider-pin-known-999",
+                error_code="PUBLISH_UNKNOWN",
+                title_snapshot="Attempt history title",
+                description_snapshot="Attempt history description",
+                alt_text_snapshot="Attempt history alt",
+                destination_url="https://diamondshelf.us/products/attempt-history",
+                utm_url="https://diamondshelf.us/products/attempt-history?utm_source=pinterest",
+                media_url_snapshot="https://cdn.example.test/attempt-history.jpg",
+            )
+            attempt_2 = PublicationAttempt(
+                id="attempt-history-2",
+                publication_id=publication.id,
+                attempt_number=2,
+                status="UNKNOWN",
+                request_fingerprint="2" * 64,
+                started_at=started_2,
+                completed_at=completed_2,
+                provider_pin_id="provider-pin-002",
+                error_code="PUBLISH_UNKNOWN",
+                safe_response_metadata=attempt_2_metadata,
+            )
+            attempt_1 = PublicationAttempt(
+                id="attempt-history-1",
+                publication_id=publication.id,
+                attempt_number=1,
+                status="FAILED",
+                request_fingerprint="1" * 64,
+                started_at=started_1,
+                completed_at=completed_1,
+                provider_pin_id=None,
+                error_code="PROVIDER_REJECTED",
+                safe_response_metadata=attempt_1_metadata,
+            )
+            db.add_all([publication, attempt_2, attempt_1])
+            db.commit()
+            assert db.query(PublicationAttempt).count() == 2
+            assert sanitize_metadata(attempt_2.safe_response_metadata) == {
+                "validated_pin_id": "provider-pin-002",
+                "http_status": 503,
+                "provider_error_code": "UPSTREAM_503",
+                "request_id": "request-safe-002",
+                "correlation_id": "correlation-safe-002",
+            }
+            initial_publication_status = publication.status
+            initial_publication_pin_id = publication.pinterest_pin_id
+            initial_publication_error_code = publication.error_code
+            initial_attempt_1_metadata = dict(attempt_1.safe_response_metadata)
+            initial_attempt_2_metadata = dict(attempt_2.safe_response_metadata)
+
+        with TestClient(app) as client:
+            login = client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "secret"},
+            )
+            assert login.status_code == 200
+            response = client.get("/api/publications/attempt-history-publication")
+
+        assert response.status_code == 200
+        body = response.json()
+        attempts = body["attempts"]
+        assert len(attempts) == 2
+        assert [attempt["attempt_number"] for attempt in attempts] == [1, 2]
+        expected_attempt_keys = {
+            "attempt_number",
+            "status",
+            "started_at",
+            "completed_at",
+            "provider_pin_id",
+            "error_code",
+            "safe_response_metadata",
+        }
+        assert set(attempts[0]) == expected_attempt_keys
+        assert set(attempts[1]) == expected_attempt_keys
+        assert attempts[0]["status"] == "FAILED"
+        assert attempts[0]["provider_pin_id"] is None
+        assert attempts[0]["error_code"] == "PROVIDER_REJECTED"
+        assert attempts[0]["safe_response_metadata"] == {
+            "http_status": 400,
+            "provider_error_code": "INVALID_REQUEST",
+            "request_id": "request-safe-001",
+        }
+        assert attempts[1]["status"] == "UNKNOWN"
+        assert attempts[1]["provider_pin_id"] == "provider-pin-002"
+        assert attempts[1]["error_code"] == "PUBLISH_UNKNOWN"
+        assert attempts[1]["safe_response_metadata"] == {
+            "validated_pin_id": "provider-pin-002",
+            "http_status": 503,
+            "provider_error_code": "UPSTREAM_503",
+            "request_id": "request-safe-002",
+            "correlation_id": "correlation-safe-002",
+        }
+        assert body["pinterest_pin_id"] == "provider-pin-known-999"
+
+        serialized = response.text
+        for forbidden in [
+            "ATTEMPT_HISTORY_ACCESS_TOKEN_DO_NOT_SERIALIZE",
+            "ATTEMPT_HISTORY_REFRESH_TOKEN_DO_NOT_SERIALIZE",
+            "ATTEMPT_HISTORY_SECRET",
+            "ATTEMPT_HISTORY_CLIENT_SECRET",
+            "RAW_PROVIDER_BODY_DO_NOT_SERIALIZE",
+            "TRACEBACK_DO_NOT_SERIALIZE",
+            "EXCEPTION_DO_NOT_SERIALIZE",
+            "ARBITRARY_DO_NOT_SERIALIZE",
+            "SECOND_ACCESS_TOKEN_DO_NOT_SERIALIZE",
+            "SECOND_RAW_BODY_DO_NOT_SERIALIZE",
+            "SECOND_TRACEBACK_DO_NOT_SERIALIZE",
+            "access_token",
+            "refresh_token",
+            "Authorization",
+            "client_secret",
+            "raw_body",
+            "raw_json",
+            "traceback",
+            "exception",
+            "request_fingerprint",
+        ]:
+            assert forbidden not in serialized
+        assert claim_call_count == 0
+        assert token_decrypt_call_count == 0
+        assert gateway_constructor_call_count == 0
+        assert provider_call_count == 0
+
+        with TestingSessionLocal() as db:
+            publication = db.get(PinPublication, "attempt-history-publication")
+            attempt_1 = db.get(PublicationAttempt, "attempt-history-1")
+            attempt_2 = db.get(PublicationAttempt, "attempt-history-2")
+            assert db.query(PublicationAttempt).count() == 2
+            assert publication.status == initial_publication_status
+            assert publication.pinterest_pin_id == initial_publication_pin_id
+            assert publication.error_code == initial_publication_error_code
+            assert attempt_1.safe_response_metadata == initial_attempt_1_metadata
+            assert attempt_2.safe_response_metadata == initial_attempt_2_metadata
+            assert attempt_1.attempt_number == 1
+            assert attempt_2.attempt_number == 2
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
