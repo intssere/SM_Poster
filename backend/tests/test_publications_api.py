@@ -133,3 +133,126 @@ def test_publications_api_authenticated_list_and_detail_allowed(monkeypatch):
     finally:
         app.dependency_overrides.pop(get_db, None)
         engine.dispose()
+
+
+def test_publication_create_rejects_server_owned_fields_without_side_effects(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.api.routes import publications as publications_route
+    from app.core import auth
+    from app.core.config import get_settings
+    from app.db.session import get_db
+    from app.main import app
+    from app.models.domain import Base, PinPublication, PublicationAttempt
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("APP_SECRET_KEY", "a" * 48)
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", auth.hash_password("secret"))
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5000")
+    monkeypatch.setenv("PUBLISHING_ENABLED", "false")
+    get_settings.cache_clear()
+
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    snapshot_call_count = 0
+
+    def forbidden_create_snapshot(*args, **kwargs):
+        nonlocal snapshot_call_count
+        snapshot_call_count += 1
+        raise AssertionError("create_snapshot must not run for schema-invalid publication requests")
+
+    monkeypatch.setattr(
+        publications_route.PublicationIdentityService,
+        "create_snapshot",
+        forbidden_create_snapshot,
+    )
+
+    forbidden_fields = {
+        "title": "CLIENT MUST NOT SET TITLE",
+        "description": "CLIENT MUST NOT SET DESCRIPTION",
+        "alt_text": "CLIENT MUST NOT SET ALT",
+        "media_url": "https://attacker.example/client.jpg",
+        "destination_url": "https://attacker.example/",
+        "utm_url": "https://attacker.example/?utm_source=client",
+        "status": "PUBLISHED",
+        "revision_id": "client-revision",
+        "creative_id": "client-creative",
+        "source_image_id": "client-image",
+        "publication_fingerprint": "f" * 64,
+        "fingerprint": "client-fingerprint",
+    }
+    base_payload = {
+        "approval_id": "approval-does-not-matter",
+        "pinterest_connection_id": "connection-does-not-matter",
+        "pinterest_board_id": "board-does-not-matter",
+    }
+    status_codes = {}
+    error_types = {}
+    error_locs = {}
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestingSessionLocal() as db:
+            assert db.query(PinPublication).count() == 0
+            assert db.query(PublicationAttempt).count() == 0
+
+        with TestClient(app) as client:
+            login = client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "secret"},
+            )
+            assert login.status_code == 200
+
+            for field, value in forbidden_fields.items():
+                payload = dict(base_payload)
+                payload[field] = value
+                response = client.post(
+                    "/api/publications",
+                    json=payload,
+                    headers={"Origin": "http://localhost:5000"},
+                )
+                status_codes[field] = response.status_code
+                assert response.status_code == 422
+                detail = response.json()["detail"]
+                matching_errors = [
+                    error
+                    for error in detail
+                    if error.get("type") == "extra_forbidden"
+                    and error.get("loc", [])[-1] == field
+                ]
+                assert matching_errors, detail
+                error_types[field] = matching_errors[0]["type"]
+                error_locs[field] = matching_errors[0]["loc"]
+                with TestingSessionLocal() as db:
+                    assert db.query(PinPublication).count() == 0
+                    assert db.query(PublicationAttempt).count() == 0
+
+        with TestingSessionLocal() as db:
+            assert db.query(PinPublication).count() == 0
+            assert db.query(PublicationAttempt).count() == 0
+        assert snapshot_call_count == 0
+        assert set(status_codes) == set(forbidden_fields)
+        assert all(code == 422 for code in status_codes.values())
+        assert set(error_types.values()) == {"extra_forbidden"}
+        assert all(loc[-1] == field for field, loc in error_locs.items())
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
