@@ -12,7 +12,7 @@ from app.models.domain import PinPublication, PublicationAttempt, PublicationSta
 from app.services.publication_scheduler import request_fingerprint_for
 from test_pin_proposals import add_review_creative, setup_service
 import asyncio
-from app.models.domain import PinterestConnection, PinterestBoard, PinApproval
+from app.models.domain import PinterestConnection, PinterestBoard, PinApproval, ProductImage
 from app.services.publication_identity import PublicationIdentityService
 from test_publication_identity import _prepared, _revision, _activate
 
@@ -187,6 +187,50 @@ def test_db_backed_publish_blocks_approval_creative_mismatch(monkeypatch):
     assert gateway.calls == 0
     assert persisted.status == PublicationStatus.PUBLISH_UNKNOWN and persisted_attempt.status == "UNKNOWN"
     assert persisted.error_code == persisted_attempt.error_code == "INVALID_APPROVAL"
+    assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None and persisted_attempt.safe_response_metadata == {}
+    db.close()
+
+def test_db_backed_publish_blocks_creative_source_image_mismatch(monkeypatch):
+    db, proposals, draft, creative = _prepared("creative-source-image-mismatch")
+    revision = _revision(db, draft, creative, 2); _activate(db, draft, revision)
+    creative.rendered_url = "https://cdn.example.test/source.png"; db.commit()
+    proposals.decide(draft.id, "APPROVED", reviewed_creative_id=creative.id)
+    approval = db.query(PinApproval).filter_by(draft_id=draft.id).one()
+    connection = PinterestConnection(external_user_id="user-1", access_token_ciphertext="enc-a", refresh_token_ciphertext="enc-r", granted_scopes=["pins:write"], status="CONNECTED")
+    db.add(connection); db.flush()
+    board = PinterestBoard(connection_id=connection.id, external_board_id="ext-board", name="Board", is_active=True, is_eligible=True)
+    db.add(board); db.commit(); db.refresh(board)
+    publication = PublicationIdentityService(proposals.session_factory).create_snapshot(approval_id=approval.id, board_id="", pinterest_connection_id=connection.id, pinterest_board_record_id=board.id, scheduled_for=None)
+    db = proposals.session_factory(); publication = db.get(PinPublication, publication.id); publication.status = PublicationStatus.PUBLISHING; db.commit(); db.refresh(publication)
+    original_publication_source_image_id = publication.source_image_id
+    original_publication_creative_id = publication.creative_id
+    original_fingerprint = request_fingerprint_for(publication)
+    attempt = PublicationAttempt(publication_id=publication.id, attempt_number=1, status="STARTED", request_fingerprint=original_fingerprint, safe_response_metadata={})
+    db.add(attempt); db.commit(); db.refresh(attempt)
+    assert attempt.request_fingerprint == request_fingerprint_for(publication)
+    creative = db.get(type(creative), creative.id)
+    original_image = db.get(ProductImage, creative.source_image_id)
+    alternate_image = ProductImage(product_id=original_image.product_id, shopify_media_id="gid://shopify/MediaImage/alternate-source", source_url="https://cdn.shopify.com/alternate-source.jpg", width=1200, height=1500, is_primary=False, editorial_eligible=True)
+    db.add(alternate_image); db.commit(); db.refresh(alternate_image)
+    creative.source_image_id = alternate_image.id
+    db.commit()
+    assert creative.draft_id == publication.draft_id
+    assert creative.source_image_id != publication.source_image_id
+    monkeypatch.setattr("app.services.pinterest_publisher.get_settings", lambda: type("S", (), {"publishing_enabled": True})())
+    class FakeGateway:
+        calls = 0
+        async def create_pin(self, payload): self.calls += 1; return {"id": "must-not-exist"}
+    gateway = FakeGateway()
+    with pytest.raises(RuntimeError, match="INVALID_CREATIVE"):
+        asyncio.run(__import__("app.services.pinterest_publisher", fromlist=["publish_once"]).publish_once(db, publication, gateway, attempt))
+    db.expire_all(); persisted = db.get(PinPublication, publication.id); persisted_attempt = db.get(PublicationAttempt, attempt.id); persisted_approval = db.get(PinApproval, approval.id); persisted_creative = db.get(type(creative), creative.id)
+    assert persisted.source_image_id == original_publication_source_image_id and persisted_creative.source_image_id == alternate_image.id
+    assert persisted.creative_id == original_publication_creative_id == persisted_approval.creative_id
+    assert persisted_creative.draft_id == persisted.draft_id
+    assert persisted_attempt.request_fingerprint == original_fingerprint == request_fingerprint_for(persisted)
+    assert gateway.calls == 0
+    assert persisted.status == PublicationStatus.PUBLISH_UNKNOWN and persisted_attempt.status == "UNKNOWN"
+    assert persisted.error_code == persisted_attempt.error_code == "INVALID_CREATIVE"
     assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None and persisted_attempt.safe_response_metadata == {}
     db.close()
 
