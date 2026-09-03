@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from app.services.pinterest_publisher import media_publishable
 
 def test_media_url_rejects_private_and_accepts_public():
@@ -10,7 +12,7 @@ import pytest
 from app.integrations.pinterest.gateway import PinterestAmbiguousFailure, PinterestDefinitiveRejection
 from app.services.pinterest_publisher import PublicationReconciliationError, sanitize_metadata
 from app.models.domain import PinPublication, PublicationAttempt, PublicationStatus
-from app.services.publication_scheduler import request_fingerprint_for
+from app.services.publication_scheduler import claim, due_publications, request_fingerprint_for, schedule
 from test_pin_proposals import add_review_creative, setup_service
 import asyncio
 from app.models.domain import PinterestConnection, PinterestBoard, PinApproval, ProductImage
@@ -706,6 +708,64 @@ def test_db_backed_definitive_rejection_reconciliation_commit_failure_raises_rec
     assert persisted.error_code is None and persisted_attempt.error_code is None
     assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None
     assert persisted.published_at is None and persisted_attempt.safe_response_metadata == {}
+    db.close()
+
+def test_db_backed_publish_unknown_cannot_be_automatically_retried(monkeypatch):
+    db, proposals, draft, creative = _prepared("publish-unknown-no-retry")
+    revision = _revision(db, draft, creative, 2); _activate(db, draft, revision)
+    creative.rendered_url = "https://cdn.example.test/source.png"; db.commit()
+    proposals.decide(draft.id, "APPROVED", reviewed_creative_id=creative.id)
+    approval = db.query(PinApproval).filter_by(draft_id=draft.id).one()
+    connection = PinterestConnection(external_user_id="user-1", access_token_ciphertext="enc-a", refresh_token_ciphertext="enc-r", granted_scopes=["pins:write"], status="CONNECTED")
+    db.add(connection); db.flush()
+    board = PinterestBoard(connection_id=connection.id, external_board_id="ext-board", name="Board", is_active=True, is_eligible=True)
+    db.add(board); db.commit(); db.refresh(board)
+    publication = PublicationIdentityService(proposals.session_factory).create_snapshot(approval_id=approval.id, board_id="", pinterest_connection_id=connection.id, pinterest_board_record_id=board.id, scheduled_for=None)
+    db = proposals.session_factory(); publication = db.get(PinPublication, publication.id)
+    publication.status = PublicationStatus.PUBLISHING
+    publication.scheduled_for = datetime.now(timezone.utc) - timedelta(minutes=5)
+    db.commit(); db.refresh(publication)
+    attempt = PublicationAttempt(publication_id=publication.id, attempt_number=1, status="STARTED", request_fingerprint=request_fingerprint_for(publication), safe_response_metadata={})
+    db.add(attempt); db.commit(); db.refresh(attempt)
+    connection = db.get(PinterestConnection, connection.id); board = db.get(PinterestBoard, board.id); approval = db.get(PinApproval, approval.id); creative = db.get(type(creative), creative.id)
+    assert publication.status == PublicationStatus.PUBLISHING and attempt.status == "STARTED" and attempt.publication_id == publication.id
+    assert attempt.request_fingerprint == request_fingerprint_for(publication)
+    assert connection.status == "CONNECTED" and "pins:write" in (connection.granted_scopes or [])
+    assert board.connection_id == connection.id and board.external_board_id == publication.pinterest_board_id_snapshot
+    assert board.is_active is True and board.is_eligible is True
+    assert approval.decision == "APPROVED" and approval.draft_id == publication.draft_id
+    assert approval.revision_id == publication.revision_id and approval.creative_id == publication.creative_id
+    assert creative.draft_id == publication.draft_id and creative.source_image_id == publication.source_image_id
+    assert media_publishable(publication.media_url_snapshot)
+    monkeypatch.setattr("app.services.pinterest_publisher.get_settings", lambda: type("S", (), {"publishing_enabled": True})())
+    class FakeGateway:
+        calls = 0
+        async def create_pin(self, payload):
+            self.calls += 1
+            raise PinterestAmbiguousFailure(code="PROVIDER_AMBIGUOUS", status_code=503)
+    gateway = FakeGateway()
+    with pytest.raises(RuntimeError, match="^PUBLISH_UNKNOWN$"):
+        asyncio.run(__import__("app.services.pinterest_publisher", fromlist=["publish_once"]).publish_once(db, publication, gateway, attempt))
+    db.expire_all(); persisted = db.get(PinPublication, publication.id); first_attempt = db.get(PublicationAttempt, attempt.id)
+    assert gateway.calls == 1
+    assert persisted.status == PublicationStatus.PUBLISH_UNKNOWN and first_attempt.status == "UNKNOWN"
+    assert persisted.error_code == first_attempt.error_code == "PUBLISH_UNKNOWN"
+    assert persisted.pinterest_pin_id is None and first_attempt.provider_pin_id is None
+    now = datetime.now(timezone.utc)
+    due_ids = {item.id for item in due_publications(db, now=now, limit=25)}
+    assert persisted.id not in due_ids
+    assert claim(db, persisted) is None
+    attempts = db.query(PublicationAttempt).filter_by(publication_id=persisted.id).order_by(PublicationAttempt.attempt_number).all()
+    assert [(item.attempt_number, item.status) for item in attempts] == [(1, "UNKNOWN")]
+    with pytest.raises(ValueError, match="^PUBLISH_UNKNOWN cannot be rescheduled$"):
+        schedule(db, persisted, now + timedelta(hours=1))
+    db.expire_all(); final_publication = db.get(PinPublication, publication.id)
+    final_attempts = db.query(PublicationAttempt).filter_by(publication_id=publication.id).order_by(PublicationAttempt.attempt_number).all()
+    assert gateway.calls == 1
+    assert final_publication.status == PublicationStatus.PUBLISH_UNKNOWN and final_publication.error_code == "PUBLISH_UNKNOWN"
+    assert [(item.attempt_number, item.status, item.error_code) for item in final_attempts] == [(1, "UNKNOWN", "PUBLISH_UNKNOWN")]
+    assert final_publication.pinterest_pin_id is None and final_attempts[0].provider_pin_id is None
+    assert final_attempts[0].safe_response_metadata == {}
     db.close()
 
 def test_db_backed_publish_blocks_request_fingerprint_mismatch(monkeypatch):
