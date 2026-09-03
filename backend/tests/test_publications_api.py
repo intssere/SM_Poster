@@ -256,3 +256,113 @@ def test_publication_create_rejects_server_owned_fields_without_side_effects(mon
     finally:
         app.dependency_overrides.pop(get_db, None)
         engine.dispose()
+
+
+def test_publication_create_origin_guard_blocks_missing_and_wrong_origin(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.api.routes import publications as publications_route
+    from app.core import auth
+    from app.core.config import get_settings
+    from app.db.session import get_db
+    from app.main import app
+    from app.models.domain import Base, PinPublication, PublicationAttempt
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("APP_SECRET_KEY", "a" * 48)
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", auth.hash_password("secret"))
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5000")
+    monkeypatch.setenv("PUBLISHING_ENABLED", "false")
+    get_settings.cache_clear()
+
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    snapshot_call_count = 0
+
+    def forbidden_create_snapshot(*args, **kwargs):
+        nonlocal snapshot_call_count
+        snapshot_call_count += 1
+        raise AssertionError("create_snapshot must not run before origin/destination validation")
+
+    monkeypatch.setattr(
+        publications_route.PublicationIdentityService,
+        "create_snapshot",
+        forbidden_create_snapshot,
+    )
+
+    payload = {
+        "approval_id": "origin-test-approval",
+        "pinterest_connection_id": "origin-test-connection",
+        "pinterest_board_id": "origin-test-board",
+    }
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestingSessionLocal() as db:
+            assert db.query(PinPublication).count() == 0
+            assert db.query(PublicationAttempt).count() == 0
+
+        with TestClient(app) as client:
+            login = client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "secret"},
+            )
+            assert login.status_code == 200
+            auth_status = client.get("/api/auth/status")
+            assert auth_status.status_code == 200
+            assert auth_status.json()["authenticated"] is True
+
+            missing_origin = client.post("/api/publications", json=payload)
+            assert missing_origin.status_code == 403
+            assert missing_origin.json() == {"detail": "Origin header is required."}
+            with TestingSessionLocal() as db:
+                assert db.query(PinPublication).count() == 0
+                assert db.query(PublicationAttempt).count() == 0
+
+            wrong_origin = client.post(
+                "/api/publications",
+                json=payload,
+                headers={"Origin": "https://evil.example"},
+            )
+            assert wrong_origin.status_code == 403
+            assert wrong_origin.json() == {"detail": "Origin is not allowed."}
+            with TestingSessionLocal() as db:
+                assert db.query(PinPublication).count() == 0
+                assert db.query(PublicationAttempt).count() == 0
+
+            allowed_origin = client.post(
+                "/api/publications",
+                json=payload,
+                headers={"Origin": "http://localhost:5000"},
+            )
+            assert allowed_origin.status_code == 422
+            assert allowed_origin.json()["detail"] == "Invalid Pinterest destination"
+            with TestingSessionLocal() as db:
+                assert db.query(PinPublication).count() == 0
+                assert db.query(PublicationAttempt).count() == 0
+
+        with TestingSessionLocal() as db:
+            assert db.query(PinPublication).count() == 0
+            assert db.query(PublicationAttempt).count() == 0
+        assert snapshot_call_count == 0
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
