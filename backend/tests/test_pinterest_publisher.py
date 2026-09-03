@@ -7,6 +7,7 @@ def test_media_url_rejects_private_and_accepts_public():
     assert media_publishable("https://cdn.example.test/a")
 
 import pytest
+from app.integrations.pinterest.gateway import PinterestDefinitiveRejection
 from app.services.pinterest_publisher import sanitize_metadata
 from app.models.domain import PinPublication, PublicationAttempt, PublicationStatus
 from app.services.publication_scheduler import request_fingerprint_for
@@ -298,6 +299,45 @@ def test_db_backed_publish_success_uses_real_execution_readiness(monkeypatch):
     assert gateway.calls == 1
     assert persisted.status == PublicationStatus.PUBLISHED and persisted.pinterest_pin_id == "pin123"
     assert persisted_attempt.status == "SUCCEEDED" and persisted_attempt.provider_pin_id == "pin123"
+    db.close()
+
+def test_db_backed_publish_classifies_definitive_provider_rejection(monkeypatch):
+    db, proposals, draft, creative = _prepared("definitive-provider-rejection")
+    revision = _revision(db, draft, creative, 2); _activate(db, draft, revision)
+    creative.rendered_url = "https://cdn.example.test/source.png"; db.commit()
+    proposals.decide(draft.id, "APPROVED", reviewed_creative_id=creative.id)
+    approval = db.query(PinApproval).filter_by(draft_id=draft.id).one()
+    connection = PinterestConnection(external_user_id="user-1", access_token_ciphertext="enc-a", refresh_token_ciphertext="enc-r", granted_scopes=["pins:write"], status="CONNECTED")
+    db.add(connection); db.flush()
+    board = PinterestBoard(connection_id=connection.id, external_board_id="ext-board", name="Board", is_active=True, is_eligible=True)
+    db.add(board); db.commit(); db.refresh(board)
+    publication = PublicationIdentityService(proposals.session_factory).create_snapshot(approval_id=approval.id, board_id="", pinterest_connection_id=connection.id, pinterest_board_record_id=board.id, scheduled_for=None)
+    db = proposals.session_factory(); publication = db.get(PinPublication, publication.id); publication.status = PublicationStatus.PUBLISHING; db.commit(); db.refresh(publication)
+    attempt = PublicationAttempt(publication_id=publication.id, attempt_number=1, status="STARTED", request_fingerprint=request_fingerprint_for(publication), safe_response_metadata={})
+    db.add(attempt); db.commit(); db.refresh(attempt)
+    connection = db.get(PinterestConnection, connection.id); board = db.get(PinterestBoard, board.id); approval = db.get(PinApproval, approval.id); creative = db.get(type(creative), creative.id)
+    assert attempt.request_fingerprint == request_fingerprint_for(publication)
+    assert connection.status == "CONNECTED" and "pins:write" in (connection.granted_scopes or [])
+    assert board.connection_id == connection.id and board.external_board_id == publication.pinterest_board_id_snapshot
+    assert board.is_active is True and board.is_eligible is True
+    assert approval.decision == "APPROVED" and approval.draft_id == publication.draft_id
+    assert approval.revision_id == publication.revision_id and approval.creative_id == publication.creative_id
+    assert creative.source_image_id == publication.source_image_id
+    assert media_publishable(publication.media_url_snapshot)
+    monkeypatch.setattr("app.services.pinterest_publisher.get_settings", lambda: type("S", (), {"publishing_enabled": True})())
+    class FakeGateway:
+        calls = 0
+        async def create_pin(self, payload):
+            self.calls += 1
+            raise PinterestDefinitiveRejection(code="PROVIDER_REJECTED", status_code=400)
+    gateway = FakeGateway()
+    with pytest.raises(RuntimeError, match="^PROVIDER_REJECTED$"):
+        asyncio.run(__import__("app.services.pinterest_publisher", fromlist=["publish_once"]).publish_once(db, publication, gateway, attempt))
+    db.expire_all(); persisted = db.get(PinPublication, publication.id); persisted_attempt = db.get(PublicationAttempt, attempt.id)
+    assert gateway.calls == 1
+    assert persisted.status == PublicationStatus.PUBLISH_FAILED and persisted_attempt.status == "FAILED"
+    assert persisted.error_code == persisted_attempt.error_code == "PROVIDER_REJECTED"
+    assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None and persisted_attempt.safe_response_metadata == {}
     db.close()
 
 def test_db_backed_publish_blocks_request_fingerprint_mismatch(monkeypatch):
