@@ -366,3 +366,318 @@ def test_publication_create_origin_guard_blocks_missing_and_wrong_origin(monkeyp
     finally:
         app.dependency_overrides.pop(get_db, None)
         engine.dispose()
+
+
+def test_publication_create_derives_exact_approved_snapshot_server_side(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.core import auth
+    from app.core.config import get_settings
+    from app.db.session import get_db
+    from app.integrations.pinterest import gateway as gateway_module
+    from app.main import app
+    from app.models.domain import (
+        Base,
+        ContentAngle,
+        ContentRevision,
+        CreativeTemplate,
+        DraftStatus,
+        PinApproval,
+        PinConcept,
+        PinCreative,
+        PinDraft,
+        PinPublication,
+        PinterestBoard,
+        PinterestConnection,
+        Product,
+        ProductImage,
+        PublicationAttempt,
+        Store,
+    )
+    from app.services.fingerprints import publication_identity_fingerprint
+    from app.services import pinterest_oauth
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("APP_SECRET_KEY", "a" * 48)
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", auth.hash_password("secret"))
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5000")
+    monkeypatch.setenv("PUBLISHING_ENABLED", "false")
+    get_settings.cache_clear()
+
+    token_decrypt_call_count = 0
+    provider_call_count = 0
+
+    def forbidden_decrypt_token(*args, **kwargs):
+        nonlocal token_decrypt_call_count
+        token_decrypt_call_count += 1
+        raise AssertionError("publication creation must not decrypt Pinterest tokens")
+
+    async def forbidden_create_pin(*args, **kwargs):
+        nonlocal provider_call_count
+        provider_call_count += 1
+        raise AssertionError("publication creation must not call the Pinterest gateway")
+
+    monkeypatch.setattr(pinterest_oauth, "decrypt_token", forbidden_decrypt_token)
+    monkeypatch.setattr(gateway_module.PinterestV5Gateway, "create_pin", forbidden_create_pin)
+
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+    )
+
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestingSessionLocal() as db:
+            assert db.query(PinPublication).count() == 0
+            assert db.query(PublicationAttempt).count() == 0
+
+            store = Store(id="store-create-test", name="Diamond Shelf", shop_domain="diamondshelf.test")
+            product = Product(
+                id="product-create-test",
+                store_id=store.id,
+                shopify_product_id="gid://shopify/Product/create-success",
+                handle="approved-product",
+                title="Approved Product",
+                vendor="Approved Brand",
+                product_url="https://diamondshelf.us/products/approved-product",
+            )
+            product_image = ProductImage(
+                id="image-create-test",
+                product_id=product.id,
+                source_url="https://cdn.shopify.com/s/files/approved-product-source.jpg",
+                alt_text="Authentic approved product image",
+                width=1200,
+                height=1500,
+                is_primary=True,
+                editorial_eligible=True,
+            )
+            angle = ContentAngle(
+                id="angle-create-test",
+                key="approved_create_test",
+                name="Approved Create Test",
+            )
+            concept = PinConcept(
+                id="concept-create-test",
+                store_id=store.id,
+                product_id=product.id,
+                content_angle_id=angle.id,
+                fingerprint="c" * 64,
+            )
+            draft = PinDraft(
+                id="draft-create-test",
+                concept_id=concept.id,
+                version=1,
+                title="OLD DRAFT TITLE - MUST NOT BE SNAPSHOTTED",
+                description="OLD DRAFT DESCRIPTION - MUST NOT BE SNAPSHOTTED",
+                alt_text="OLD DRAFT ALT - MUST NOT BE SNAPSHOTTED",
+                destination_url="https://diamondshelf.us/products/old-draft",
+                utm_url="https://diamondshelf.us/products/old-draft?utm_source=pinterest",
+                text_fingerprint="d" * 64,
+                status=DraftStatus.READY_FOR_REVIEW,
+            )
+            template = CreativeTemplate(
+                id="template-create-test",
+                key="approved-template",
+                version=7,
+                name="Approved Template",
+                renderer="satori",
+            )
+            creative = PinCreative(
+                id="creative-create-test",
+                draft_id=draft.id,
+                template_id=template.id,
+                source_image_id=product_image.id,
+                rendered_url="https://cdn.example.test/approved-rendered-pin.jpg",
+                creative_fingerprint="e" * 64,
+                render_status="RENDERED",
+            )
+            revision = ContentRevision(
+                id="revision-create-test",
+                draft_id=draft.id,
+                version=2,
+                revision_kind="COPY",
+                status="REVIEW",
+                headline="Approved revision headline",
+                title="APPROVED REVISION TITLE",
+                description="APPROVED REVISION DESCRIPTION",
+                alt_text="APPROVED REVISION ALT",
+                cta="Shop now",
+                content_angle="Approved Create Test",
+                content_angle_key="approved_create_test",
+                creative_template="Approved Template",
+                creative_template_key="approved-template",
+                destination_url="https://diamondshelf.us/products/approved-product",
+                utm_url="https://diamondshelf.us/products/approved-product?utm_source=pinterest&utm_medium=organic",
+                keywords=[],
+                facts_used={},
+                warnings=[],
+                missing_facts=[],
+                unsupported_claims=[],
+                provenance={"source": "test_fixture"},
+                text_fingerprint="r" * 64,
+                creative_fingerprint=creative.creative_fingerprint,
+                creative_id=creative.id,
+                source_image_id=product_image.id,
+                provider_mode="disabled",
+                generation_mode="deterministic_fixture",
+                reason="publication_api_success_test",
+            )
+            approval = PinApproval(
+                id="approval-create-test",
+                draft_id=draft.id,
+                revision_id=revision.id,
+                creative_id=creative.id,
+                approved_version_id=revision.id,
+                decision="APPROVED",
+                decided_by="publication_api_success_test",
+            )
+            connection = PinterestConnection(
+                id="connection-create-test",
+                external_user_id="pinterest-user-create-test",
+                granted_scopes=["user_accounts:read", "boards:read", "pins:read"],
+                access_token_ciphertext="TEST_ACCESS_CIPHERTEXT_DO_NOT_SERIALIZE",
+                refresh_token_ciphertext="TEST_REFRESH_CIPHERTEXT_DO_NOT_SERIALIZE",
+                status="CONNECTED",
+            )
+            board = PinterestBoard(
+                id="board-create-test",
+                connection_id=connection.id,
+                external_board_id="external-approved-board-123",
+                name="Approved Test Board",
+                is_active=True,
+                is_eligible=True,
+            )
+            db.add_all(
+                [
+                    store,
+                    product,
+                    product_image,
+                    angle,
+                    concept,
+                    draft,
+                    template,
+                    creative,
+                    revision,
+                    approval,
+                    connection,
+                    board,
+                ]
+            )
+            db.commit()
+
+        with TestClient(app) as client:
+            login = client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "secret"},
+            )
+            assert login.status_code == 200
+            auth_status = client.get("/api/auth/status")
+            assert auth_status.status_code == 200
+            assert auth_status.json()["authenticated"] is True
+
+            response = client.post(
+                "/api/publications",
+                headers={"Origin": "http://localhost:5000"},
+                json={
+                    "approval_id": "approval-create-test",
+                    "pinterest_connection_id": "connection-create-test",
+                    "pinterest_board_id": "board-create-test",
+                },
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "APPROVED"
+        assert body["approval_id"] == "approval-create-test"
+        assert body["revision_id"] == "revision-create-test"
+        assert body["creative_id"] == "creative-create-test"
+        assert body["pinterest_connection_id"] == "connection-create-test"
+        assert body["pinterest_board_record_id"] == "board-create-test"
+        assert body["pinterest_board_id"] == "external-approved-board-123"
+        assert body["title"] == "APPROVED REVISION TITLE"
+        assert body["description"] == "APPROVED REVISION DESCRIPTION"
+        assert body["alt_text"] == "APPROVED REVISION ALT"
+        assert body["destination_url"] == "https://diamondshelf.us/products/approved-product"
+        assert body["utm_url"] == "https://diamondshelf.us/products/approved-product?utm_source=pinterest&utm_medium=organic"
+        assert body["media_url"] == "https://cdn.example.test/approved-rendered-pin.jpg"
+        serialized_body = repr(body)
+        assert "OLD DRAFT TITLE - MUST NOT BE SNAPSHOTTED" not in serialized_body
+        assert "OLD DRAFT DESCRIPTION - MUST NOT BE SNAPSHOTTED" not in serialized_body
+        assert "OLD DRAFT ALT - MUST NOT BE SNAPSHOTTED" not in serialized_body
+        assert body["live_publishing_enabled"] is False
+        assert body["publishing_readiness_reason"] == "PUBLISHING_DISABLED"
+
+        with TestingSessionLocal() as db:
+            publications = db.query(PinPublication).all()
+            assert len(publications) == 1
+            publication = publications[0]
+            expected_fingerprint = publication_identity_fingerprint(
+                draft_id="draft-create-test",
+                revision_id="revision-create-test",
+                creative_id="creative-create-test",
+                source_image_id="image-create-test",
+                board_id=None,
+                integration_account_id=None,
+                destination_url="https://diamondshelf.us/products/approved-product",
+                utm_url="https://diamondshelf.us/products/approved-product?utm_source=pinterest&utm_medium=organic",
+                pinterest_connection_id="connection-create-test",
+                pinterest_board_record_id="board-create-test",
+                pinterest_board_id_snapshot="external-approved-board-123",
+            )
+            assert publication.draft_id == "draft-create-test"
+            assert publication.revision_id == "revision-create-test"
+            assert publication.creative_id == "creative-create-test"
+            assert publication.approval_id == "approval-create-test"
+            assert publication.source_image_id == "image-create-test"
+            assert publication.media_url_snapshot == "https://cdn.example.test/approved-rendered-pin.jpg"
+            assert publication.template_id == "template-create-test"
+            assert publication.template_key == "approved-template"
+            assert publication.template_version == 7
+            assert publication.creative_fingerprint == "e" * 64
+            assert publication.text_fingerprint == "r" * 64
+            assert publication.pinterest_connection_id == "connection-create-test"
+            assert publication.pinterest_board_record_id == "board-create-test"
+            assert publication.pinterest_board_id_snapshot == "external-approved-board-123"
+            assert publication.pinterest_board_id == "external-approved-board-123"
+            assert publication.board_id is None
+            assert publication.publication_fingerprint == expected_fingerprint
+            assert len(publication.publication_fingerprint) == 64
+            assert publication.pinterest_pin_id is None
+            assert publication.published_at is None
+            assert db.query(PublicationAttempt).count() == 0
+
+        serialized_response = response.text + repr(body)
+        assert "TEST_ACCESS_CIPHERTEXT_DO_NOT_SERIALIZE" not in serialized_response
+        assert "TEST_REFRESH_CIPHERTEXT_DO_NOT_SERIALIZE" not in serialized_response
+        assert "access_token" not in serialized_response
+        assert "refresh_token" not in serialized_response
+        assert "client_secret" not in serialized_response
+        assert "Authorization" not in serialized_response
+        assert "Bearer" not in serialized_response
+        assert "pins:write" not in ["user_accounts:read", "boards:read", "pins:read"]
+        assert "boards:write" not in ["user_accounts:read", "boards:read", "pins:read"]
+        assert token_decrypt_call_count == 0
+        assert provider_call_count == 0
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
