@@ -135,6 +135,282 @@ def test_publications_api_authenticated_list_and_detail_allowed(monkeypatch):
         engine.dispose()
 
 
+def test_publication_ready_is_reported_without_dispatch(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.core import auth
+    from app.core.config import get_settings
+    from app.db.session import get_db
+    from app.integrations.pinterest import gateway as gateway_module
+    from app.main import app
+    from app.models.domain import (
+        Base,
+        PinApproval,
+        PinCreative,
+        PinPublication,
+        PinterestBoard,
+        PinterestConnection,
+        PublicationAttempt,
+        PublicationStatus,
+    )
+    from app.services import pinterest_oauth, publication_scheduler
+    from app.services.pinterest_publisher import (
+        media_publishable,
+        preflight_publish_readiness,
+        publication_readiness,
+    )
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("APP_SECRET_KEY", "a" * 48)
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", auth.hash_password("secret"))
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5000")
+    monkeypatch.setenv("PUBLISHING_ENABLED", "true")
+    get_settings.cache_clear()
+    assert get_settings().publishing_enabled is True
+
+    claim_call_count = 0
+    token_decrypt_call_count = 0
+    gateway_constructor_call_count = 0
+    provider_call_count = 0
+
+    def forbidden_claim(*args, **kwargs):
+        nonlocal claim_call_count
+        claim_call_count += 1
+        raise AssertionError("readiness representation must not claim publications")
+
+    def forbidden_decrypt_token(*args, **kwargs):
+        nonlocal token_decrypt_call_count
+        token_decrypt_call_count += 1
+        raise AssertionError("readiness representation must not decrypt tokens")
+
+    class ForbiddenGateway:
+        def __init__(self, *args, **kwargs):
+            nonlocal gateway_constructor_call_count
+            gateway_constructor_call_count += 1
+            raise AssertionError("readiness representation must not construct a gateway")
+
+        async def create_pin(self, *args, **kwargs):
+            nonlocal provider_call_count
+            provider_call_count += 1
+            raise AssertionError("readiness representation must not call provider create_pin")
+
+    monkeypatch.setattr(publication_scheduler, "claim", forbidden_claim)
+    monkeypatch.setattr(pinterest_oauth, "decrypt_token", forbidden_decrypt_token)
+    monkeypatch.setattr(gateway_module, "PinterestV5Gateway", ForbiddenGateway)
+
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+    )
+
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    def same_persisted_instant(value, expected):
+        assert value is not None
+        if value.tzinfo is not None and value.utcoffset() is not None:
+            assert value.astimezone(timezone.utc) == expected
+        else:
+            assert value == expected.replace(tzinfo=None)
+
+    scheduled_for = datetime.now(timezone.utc) - timedelta(minutes=10)
+    granted_scopes = ["user_accounts:read", "boards:read", "pins:read", "pins:write"]
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestingSessionLocal() as db:
+            connection = PinterestConnection(
+                id="ready-read-connection",
+                external_user_id="ready-read-user",
+                granted_scopes=granted_scopes,
+                access_token_ciphertext="READY_READ_ACCESS_CIPHERTEXT_DO_NOT_USE",
+                refresh_token_ciphertext="READY_READ_REFRESH_CIPHERTEXT_DO_NOT_USE",
+                status="CONNECTED",
+            )
+            board = PinterestBoard(
+                id="ready-read-board",
+                connection_id=connection.id,
+                external_board_id="ready-read-external-board",
+                name="Ready Read Board",
+                is_active=True,
+                is_eligible=True,
+            )
+            creative = PinCreative(
+                id="ready-read-creative",
+                draft_id="ready-read-draft",
+                template_id="ready-read-template",
+                source_image_id="ready-read-source-image",
+                rendered_url="https://cdn.example.test/ready-read-rendered.jpg",
+                creative_fingerprint="y" * 64,
+                render_status="RENDERED",
+            )
+            approval = PinApproval(
+                id="ready-read-approval",
+                draft_id="ready-read-draft",
+                revision_id=None,
+                creative_id=creative.id,
+                approved_version_id="original",
+                decision="APPROVED",
+                decided_by="ready_read_api_test",
+            )
+            publication = PinPublication(
+                id="ready-read-publication",
+                draft_id="ready-read-draft",
+                revision_id=None,
+                creative_id=creative.id,
+                approval_id=approval.id,
+                source_image_id=creative.source_image_id,
+                pinterest_connection_id=connection.id,
+                pinterest_board_record_id=board.id,
+                pinterest_board_id_snapshot=board.external_board_id,
+                pinterest_board_id=board.external_board_id,
+                publication_fingerprint="j" * 64,
+                status=PublicationStatus.SCHEDULED,
+                scheduled_for=scheduled_for,
+                title_snapshot="Ready read title",
+                description_snapshot="Ready read description",
+                alt_text_snapshot="Ready read alt",
+                destination_url="https://diamondshelf.us/products/ready-read",
+                utm_url="https://diamondshelf.us/products/ready-read?utm_source=pinterest",
+                media_url_snapshot="https://cdn.example.test/ready-read-rendered.jpg",
+            )
+            db.add_all([connection, board, creative, approval, publication])
+            db.commit()
+            db.refresh(publication)
+
+            assert publication.status == PublicationStatus.SCHEDULED
+            same_persisted_instant(publication.scheduled_for, scheduled_for)
+            assert connection.status == "CONNECTED"
+            assert "pins:write" in connection.granted_scopes
+            assert "boards:write" not in connection.granted_scopes
+            assert board.connection_id == connection.id
+            assert board.is_active is True
+            assert board.is_eligible is True
+            assert board.external_board_id == publication.pinterest_board_id_snapshot
+            assert approval.decision == "APPROVED"
+            assert approval.draft_id == publication.draft_id
+            assert approval.revision_id == publication.revision_id
+            assert approval.creative_id == publication.creative_id
+            assert creative.draft_id == publication.draft_id
+            assert creative.source_image_id == publication.source_image_id
+            assert media_publishable(publication.media_url_snapshot) is True
+            assert db.query(PublicationAttempt).count() == 0
+            assert publication_readiness(db, publication) == "READY"
+            ready, reason = preflight_publish_readiness(db, publication)
+            assert ready is True
+            assert reason is None
+            assert db.query(PublicationAttempt).count() == 0
+
+            initial_status = publication.status
+            initial_scheduled_for = publication.scheduled_for
+            initial_attempt_started_at = publication.attempt_started_at
+            initial_error_code = publication.error_code
+            initial_pinterest_pin_id = publication.pinterest_pin_id
+            initial_published_at = publication.published_at
+            initial_publication_fingerprint = publication.publication_fingerprint
+            initial_approval_decision = approval.decision
+            initial_approval_draft_id = approval.draft_id
+            initial_approval_revision_id = approval.revision_id
+            initial_approval_creative_id = approval.creative_id
+            initial_creative_draft_id = creative.draft_id
+            initial_creative_source_image_id = creative.source_image_id
+
+        with TestClient(app) as client:
+            login = client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "secret"},
+            )
+            assert login.status_code == 200
+            detail_response = client.get("/api/publications/ready-read-publication")
+            list_response = client.get("/api/publications")
+
+        assert detail_response.status_code == 200
+        detail = detail_response.json()
+        assert detail["id"] == "ready-read-publication"
+        assert detail["status"] == "SCHEDULED"
+        assert detail["live_publishing_enabled"] is True
+        assert detail["publishing_readiness_reason"] == "READY"
+        assert detail["pinterest_connection_id"] == "ready-read-connection"
+        assert detail["pinterest_board_record_id"] == "ready-read-board"
+        assert detail["pinterest_board_id"] == "ready-read-external-board"
+        assert detail["creative_id"] == "ready-read-creative"
+        assert detail["approval_id"] == "ready-read-approval"
+        assert detail["title"] == "Ready read title"
+        assert detail["description"] == "Ready read description"
+        assert detail["media_url"] == "https://cdn.example.test/ready-read-rendered.jpg"
+        assert detail["attempts"] == []
+        assert detail["pinterest_pin_id"] is None
+        assert detail["published_at"] is None
+        assert detail["error_code"] is None
+
+        assert list_response.status_code == 200
+        matches = [row for row in list_response.json() if row["id"] == "ready-read-publication"]
+        assert len(matches) == 1
+        listed = matches[0]
+        assert listed["live_publishing_enabled"] is True
+        assert listed["publishing_readiness_reason"] == "READY"
+        assert listed["status"] == "SCHEDULED"
+        assert listed["pinterest_connection_id"] == "ready-read-connection"
+        assert listed["pinterest_board_record_id"] == "ready-read-board"
+        assert listed["pinterest_board_id"] == "ready-read-external-board"
+        assert listed["creative_id"] == "ready-read-creative"
+        assert listed["approval_id"] == "ready-read-approval"
+
+        serialized = detail_response.text + list_response.text
+        assert "READY_READ_ACCESS_CIPHERTEXT_DO_NOT_USE" not in serialized
+        assert "READY_READ_REFRESH_CIPHERTEXT_DO_NOT_USE" not in serialized
+        assert "access_token" not in serialized
+        assert "refresh_token" not in serialized
+        assert "Authorization" not in serialized
+        assert "Bearer" not in serialized
+        assert "client_secret" not in serialized
+        assert claim_call_count == 0
+        assert token_decrypt_call_count == 0
+        assert gateway_constructor_call_count == 0
+        assert provider_call_count == 0
+
+        with TestingSessionLocal() as db:
+            publication = db.get(PinPublication, "ready-read-publication")
+            approval = db.get(PinApproval, "ready-read-approval")
+            creative = db.get(PinCreative, "ready-read-creative")
+            assert publication.status == initial_status == PublicationStatus.SCHEDULED
+            same_persisted_instant(publication.scheduled_for, scheduled_for)
+            same_persisted_instant(initial_scheduled_for, scheduled_for)
+            assert publication.attempt_started_at == initial_attempt_started_at
+            assert publication.error_code == initial_error_code
+            assert publication.pinterest_pin_id == initial_pinterest_pin_id
+            assert publication.published_at == initial_published_at
+            assert publication.publication_fingerprint == initial_publication_fingerprint
+            assert approval.decision == initial_approval_decision == "APPROVED"
+            assert approval.draft_id == initial_approval_draft_id == publication.draft_id
+            assert approval.revision_id == initial_approval_revision_id == publication.revision_id
+            assert approval.creative_id == initial_approval_creative_id == publication.creative_id
+            assert creative.draft_id == initial_creative_draft_id == publication.draft_id
+            assert creative.source_image_id == initial_creative_source_image_id == publication.source_image_id
+            assert db.query(PublicationAttempt).count() == 0
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
+
+
 def test_publication_create_rejects_server_owned_fields_without_side_effects(monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
