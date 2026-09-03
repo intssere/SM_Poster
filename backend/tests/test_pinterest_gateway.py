@@ -325,3 +325,80 @@ def test_create_pin_transport_error_is_ambiguous_without_retry_or_leaks(monkeypa
     assert "RAW_TRANSPORT_DETAIL_DO_NOT_LEAK" not in exception_text
     assert "Authorization" not in exception_text
     assert "Bearer" not in exception_text
+
+
+def test_create_pin_success_with_malformed_json_is_ambiguous_without_retry_or_leaks(monkeypatch):
+    http_client_constructions = []
+    post_calls = []
+    json_call_count = 0
+
+    class FakeResponse:
+        status_code = 201
+        text = "MALFORMED_PROVIDER_RAW_RESPONSE"
+
+        def json(self):
+            nonlocal json_call_count
+            json_call_count += 1
+            raise ValueError("RAW_MALFORMED_SUCCESS_BODY_DO_NOT_LEAK")
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def post(self, url, *, headers, json):
+            post_calls.append({"url": url, "headers": headers, "json": json})
+            return FakeResponse()
+
+    def fake_async_client(*args, **kwargs):
+        http_client_constructions.append((args, kwargs))
+        return FakeAsyncClient()
+
+    monkeypatch.setattr(gateway_module.httpx, "AsyncClient", fake_async_client)
+    gateway = PinterestV5Gateway(
+        access_token="test-secret-token",
+        publishing_enabled=True,
+    )
+    payload = PinterestPinPayload(
+        board_id="board123",
+        title="Test Pin",
+        description="Test description",
+        link="https://diamondshelf.us/products/example",
+        image_url="https://cdn.example.test/example.jpg",
+        alt_text="Example product image",
+    )
+
+    with pytest.raises(PinterestAmbiguousFailure) as raised:
+        asyncio.run(gateway.create_pin(payload))
+
+    assert raised.value.code == "PROVIDER_AMBIGUOUS"
+    assert raised.value.status_code is None
+    assert str(raised.value) == "PROVIDER_AMBIGUOUS"
+    assert len(http_client_constructions) == 1
+    assert len(post_calls) == 1
+    assert json_call_count == 1
+    request = post_calls[0]
+    assert request["url"] == "https://api.pinterest.com/v5/pins"
+    assert request["headers"] == {
+        "Authorization": "Bearer test-secret-token",
+        "Content-Type": "application/json",
+    }
+    assert request["json"] == {
+        "board_id": "board123",
+        "title": "Test Pin",
+        "description": "Test description",
+        "link": "https://diamondshelf.us/products/example",
+        "media_source": {
+            "source_type": "image_url",
+            "url": "https://cdn.example.test/example.jpg",
+        },
+        "alt_text": "Example product image",
+    }
+    exception_text = str(raised.value)
+    assert "test-secret-token" not in exception_text
+    assert "RAW_MALFORMED_SUCCESS_BODY_DO_NOT_LEAK" not in exception_text
+    assert "MALFORMED_PROVIDER_RAW_RESPONSE" not in exception_text
+    assert "Authorization" not in exception_text
+    assert "Bearer" not in exception_text
