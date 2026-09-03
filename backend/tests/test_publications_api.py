@@ -681,3 +681,212 @@ def test_publication_create_derives_exact_approved_snapshot_server_side(monkeypa
     finally:
         app.dependency_overrides.pop(get_db, None)
         engine.dispose()
+
+
+def test_publication_api_schedule_reschedule_cancel_lifecycle(monkeypatch):
+    from datetime import datetime, timezone
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.api.routes import publications as publications_route
+    from app.core import auth
+    from app.core.config import get_settings
+    from app.db.session import get_db
+    from app.integrations.pinterest import gateway as gateway_module
+    from app.main import app
+    from app.models.domain import Base, PinPublication, PublicationAttempt, PublicationStatus
+    from app.services import pinterest_oauth
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("APP_SECRET_KEY", "a" * 48)
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", auth.hash_password("secret"))
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5000")
+    monkeypatch.setenv("PUBLISHING_ENABLED", "false")
+    get_settings.cache_clear()
+
+    token_decrypt_call_count = 0
+    provider_call_count = 0
+    create_snapshot_call_count = 0
+
+    def forbidden_decrypt_token(*args, **kwargs):
+        nonlocal token_decrypt_call_count
+        token_decrypt_call_count += 1
+        raise AssertionError("scheduler API must not decrypt Pinterest tokens")
+
+    async def forbidden_create_pin(*args, **kwargs):
+        nonlocal provider_call_count
+        provider_call_count += 1
+        raise AssertionError("scheduler API must not call the Pinterest gateway")
+
+    def forbidden_create_snapshot(*args, **kwargs):
+        nonlocal create_snapshot_call_count
+        create_snapshot_call_count += 1
+        raise AssertionError("scheduler API must not create publication snapshots")
+
+    monkeypatch.setattr(pinterest_oauth, "decrypt_token", forbidden_decrypt_token)
+    monkeypatch.setattr(gateway_module.PinterestV5Gateway, "create_pin", forbidden_create_pin)
+    monkeypatch.setattr(
+        publications_route.PublicationIdentityService,
+        "create_snapshot",
+        forbidden_create_snapshot,
+    )
+
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+    )
+
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    def parse_utc(value):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def assert_persisted_wall_clock(value, expected):
+        assert value is not None
+        if value.tzinfo is not None and value.utcoffset() is not None:
+            assert value.astimezone(timezone.utc) == expected.replace(tzinfo=timezone.utc)
+        else:
+            assert value == expected
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestingSessionLocal() as db:
+            db.add(
+                PinPublication(
+                    id="api-schedule-publication",
+                    draft_id="api-schedule-draft",
+                    creative_id="api-schedule-creative",
+                    publication_fingerprint="s" * 64,
+                    status=PublicationStatus.APPROVED,
+                    scheduled_for=None,
+                    title_snapshot="API schedule title",
+                    description_snapshot="API schedule description",
+                    alt_text_snapshot="API schedule alt",
+                    destination_url="https://diamondshelf.us/products/api-schedule",
+                    media_url_snapshot="https://cdn.example.test/api-schedule.jpg",
+                )
+            )
+            db.commit()
+            assert db.query(PinPublication).count() == 1
+            assert db.query(PublicationAttempt).count() == 0
+
+        with TestClient(app) as client:
+            login = client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "secret"},
+            )
+            assert login.status_code == 200
+
+            naive_schedule = client.post(
+                "/api/publications/api-schedule-publication/schedule",
+                headers={"Origin": "http://localhost:5000"},
+                json={"scheduled_for": "2030-01-15T14:30:00"},
+            )
+            assert naive_schedule.status_code == 422
+            assert naive_schedule.json()["detail"] == "scheduled_for must include timezone"
+            with TestingSessionLocal() as db:
+                publication = db.get(PinPublication, "api-schedule-publication")
+                assert publication.status == PublicationStatus.APPROVED
+                assert publication.scheduled_for is None
+                assert db.query(PublicationAttempt).count() == 0
+
+            first_schedule = client.post(
+                "/api/publications/api-schedule-publication/schedule",
+                headers={"Origin": "http://localhost:5000"},
+                json={"scheduled_for": "2030-01-15T14:30:00+05:00"},
+            )
+            assert first_schedule.status_code == 200
+            first_body = first_schedule.json()
+            first_expected = datetime(2030, 1, 15, 9, 30, tzinfo=timezone.utc)
+            assert first_body["id"] == "api-schedule-publication"
+            assert first_body["status"] == "SCHEDULED"
+            assert first_body["live_publishing_enabled"] is False
+            assert first_body["publishing_readiness_reason"] == "PUBLISHING_DISABLED"
+            assert first_body["attempts"] == []
+            assert parse_utc(first_body["scheduled_for"]) == first_expected
+            with TestingSessionLocal() as db:
+                publication = db.get(PinPublication, "api-schedule-publication")
+                assert_persisted_wall_clock(
+                    publication.scheduled_for,
+                    datetime(2030, 1, 15, 9, 30),
+                )
+                assert db.query(PublicationAttempt).count() == 0
+
+            second_schedule = client.post(
+                "/api/publications/api-schedule-publication/schedule",
+                headers={"Origin": "http://localhost:5000"},
+                json={"scheduled_for": "2030-01-16T01:15:00-04:00"},
+            )
+            assert second_schedule.status_code == 200
+            second_body = second_schedule.json()
+            second_expected = datetime(2030, 1, 16, 5, 15, tzinfo=timezone.utc)
+            assert second_body["status"] == "SCHEDULED"
+            assert parse_utc(second_body["scheduled_for"]) == second_expected
+            with TestingSessionLocal() as db:
+                publication = db.get(PinPublication, "api-schedule-publication")
+                assert_persisted_wall_clock(
+                    publication.scheduled_for,
+                    datetime(2030, 1, 16, 5, 15),
+                )
+                assert db.query(PublicationAttempt).count() == 0
+
+            cancel_response = client.post(
+                "/api/publications/api-schedule-publication/cancel",
+                headers={"Origin": "http://localhost:5000"},
+            )
+            assert cancel_response.status_code == 200
+            cancel_body = cancel_response.json()
+            assert cancel_body["id"] == "api-schedule-publication"
+            assert cancel_body["status"] == "CANCELLED"
+            assert cancel_body["scheduled_for"] is None
+            assert cancel_body["live_publishing_enabled"] is False
+            assert cancel_body["publishing_readiness_reason"] == "PUBLISHING_DISABLED"
+            with TestingSessionLocal() as db:
+                publication = db.get(PinPublication, "api-schedule-publication")
+                assert publication.status == PublicationStatus.CANCELLED
+                assert publication.scheduled_for is None
+                assert db.query(PublicationAttempt).count() == 0
+
+            terminal_schedule = client.post(
+                "/api/publications/api-schedule-publication/schedule",
+                headers={"Origin": "http://localhost:5000"},
+                json={"scheduled_for": "2030-01-17T12:00:00+00:00"},
+            )
+            assert terminal_schedule.status_code == 409
+            assert terminal_schedule.json()["detail"] == "Invalid publication transition: CANCELLED -> SCHEDULED"
+
+        with TestingSessionLocal() as db:
+            publication = db.get(PinPublication, "api-schedule-publication")
+            assert db.query(PinPublication).count() == 1
+            assert publication.status == PublicationStatus.CANCELLED
+            assert publication.scheduled_for is None
+            assert publication.pinterest_pin_id is None
+            assert publication.published_at is None
+            assert db.query(PublicationAttempt).count() == 0
+        assert token_decrypt_call_count == 0
+        assert provider_call_count == 0
+        assert create_snapshot_call_count == 0
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
