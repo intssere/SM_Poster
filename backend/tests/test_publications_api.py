@@ -1044,3 +1044,187 @@ def test_publication_publish_disabled_fails_before_claim_attempt_token_or_provid
     finally:
         app.dependency_overrides.pop(get_db, None)
         engine.dispose()
+
+
+def test_publication_publish_scope_preflight_blocks_before_claim_attempt_token_or_provider(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.core import auth
+    from app.core.config import get_settings
+    from app.db.session import get_db
+    from app.integrations.pinterest import gateway as gateway_module
+    from app.main import app
+    from app.models.domain import (
+        Base,
+        PinPublication,
+        PinterestBoard,
+        PinterestConnection,
+        PublicationAttempt,
+        PublicationStatus,
+    )
+    from app.services import pinterest_oauth, publication_scheduler
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("APP_SECRET_KEY", "a" * 48)
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", auth.hash_password("secret"))
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5000")
+    monkeypatch.setenv("PUBLISHING_ENABLED", "true")
+    get_settings.cache_clear()
+    assert get_settings().publishing_enabled is True
+
+    claim_call_count = 0
+    token_decrypt_call_count = 0
+    gateway_constructor_call_count = 0
+    provider_call_count = 0
+
+    def forbidden_claim(*args, **kwargs):
+        nonlocal claim_call_count
+        claim_call_count += 1
+        raise AssertionError("scope preflight failure must not claim scheduled publications")
+
+    def forbidden_decrypt_token(*args, **kwargs):
+        nonlocal token_decrypt_call_count
+        token_decrypt_call_count += 1
+        raise AssertionError("scope preflight failure must not decrypt Pinterest tokens")
+
+    class ForbiddenGateway:
+        def __init__(self, *args, **kwargs):
+            nonlocal gateway_constructor_call_count
+            gateway_constructor_call_count += 1
+            raise AssertionError("scope preflight failure must not construct a Pinterest gateway")
+
+        async def create_pin(self, *args, **kwargs):
+            nonlocal provider_call_count
+            provider_call_count += 1
+            raise AssertionError("scope preflight failure must not call provider create_pin")
+
+    monkeypatch.setattr(publication_scheduler, "claim", forbidden_claim)
+    monkeypatch.setattr(pinterest_oauth, "decrypt_token", forbidden_decrypt_token)
+    monkeypatch.setattr(gateway_module, "PinterestV5Gateway", ForbiddenGateway)
+
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+    )
+
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    def same_persisted_instant(value, expected):
+        assert value is not None
+        if value.tzinfo is not None and value.utcoffset() is not None:
+            assert value.astimezone(timezone.utc) == expected
+        else:
+            assert value == expected.replace(tzinfo=None)
+
+    scheduled_for = datetime.now(timezone.utc) - timedelta(minutes=10)
+    granted_scopes = ["user_accounts:read", "boards:read", "pins:read"]
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestingSessionLocal() as db:
+            connection = PinterestConnection(
+                id="publish-scope-connection",
+                external_user_id="publish-scope-user",
+                granted_scopes=granted_scopes,
+                access_token_ciphertext="TEST_SCOPE_ACCESS_CIPHERTEXT",
+                refresh_token_ciphertext="TEST_SCOPE_REFRESH_CIPHERTEXT",
+                status="CONNECTED",
+            )
+            board = PinterestBoard(
+                id="publish-scope-board",
+                connection_id=connection.id,
+                external_board_id="publish-scope-external-board",
+                name="Publish Scope Board",
+                is_active=True,
+                is_eligible=True,
+            )
+            publication = PinPublication(
+                id="publish-scope-publication",
+                draft_id="publish-scope-draft",
+                creative_id="publish-scope-creative",
+                pinterest_connection_id=connection.id,
+                pinterest_board_record_id=board.id,
+                pinterest_board_id_snapshot=board.external_board_id,
+                pinterest_board_id=board.external_board_id,
+                publication_fingerprint="q" * 64,
+                status=PublicationStatus.SCHEDULED,
+                scheduled_for=scheduled_for,
+                title_snapshot="Publish scope title",
+                description_snapshot="Publish scope description",
+                alt_text_snapshot="Publish scope alt",
+                destination_url="https://diamondshelf.us/products/publish-scope",
+                media_url_snapshot="https://cdn.example.test/publish-scope.jpg",
+            )
+            db.add_all([connection, board, publication])
+            db.commit()
+            db.refresh(publication)
+            assert connection.status == "CONNECTED"
+            assert connection.granted_scopes == granted_scopes
+            assert "pins:write" not in connection.granted_scopes
+            assert "boards:write" not in connection.granted_scopes
+            assert board.is_active is True
+            assert board.is_eligible is True
+            assert db.query(PinPublication).count() == 1
+            assert db.query(PublicationAttempt).count() == 0
+            initial_status = publication.status
+            initial_scheduled_for = publication.scheduled_for
+            initial_attempt_started_at = publication.attempt_started_at
+            initial_error_code = publication.error_code
+            initial_pinterest_pin_id = publication.pinterest_pin_id
+            initial_published_at = publication.published_at
+
+        with TestClient(app) as client:
+            login = client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "secret"},
+            )
+            assert login.status_code == 200
+            response = client.post(
+                "/api/publications/publish-scope-publication/publish",
+                headers={"Origin": "http://localhost:5000"},
+            )
+
+        assert response.status_code == 409
+        assert response.json() == {"detail": "PUBLISHING_SCOPE_REQUIRED"}
+        assert claim_call_count == 0
+        assert token_decrypt_call_count == 0
+        assert gateway_constructor_call_count == 0
+        assert provider_call_count == 0
+
+        with TestingSessionLocal() as db:
+            publication = db.get(PinPublication, "publish-scope-publication")
+            connection = db.get(PinterestConnection, "publish-scope-connection")
+            assert connection.status == "CONNECTED"
+            assert connection.granted_scopes == granted_scopes
+            assert "pins:write" not in connection.granted_scopes
+            assert "boards:write" not in connection.granted_scopes
+            assert publication.status == initial_status == PublicationStatus.SCHEDULED
+            same_persisted_instant(publication.scheduled_for, scheduled_for)
+            same_persisted_instant(initial_scheduled_for, scheduled_for)
+            assert publication.attempt_started_at == initial_attempt_started_at
+            assert publication.error_code == initial_error_code
+            assert publication.pinterest_pin_id == initial_pinterest_pin_id
+            assert publication.published_at == initial_published_at
+            assert db.query(PublicationAttempt).count() == 0
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
