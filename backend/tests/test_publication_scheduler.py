@@ -162,3 +162,60 @@ def test_due_publications_filters_orders_and_limits_deterministically():
     attempts = db.query(PublicationAttempt).filter(PublicationAttempt.publication_id.in_(seeded_ids)).all()
     assert attempts == []
     db.close()
+
+def test_publish_failed_explicit_reschedule_then_claim_creates_attempt_two():
+    from app.services.publication_scheduler import claim, request_fingerprint_for, schedule
+
+    db, _, _ = setup_service()
+    publication = PinPublication(
+        draft_id="retry-draft",
+        creative_id="retry-creative",
+        publication_fingerprint="r" * 64,
+        status=PublicationStatus.PUBLISH_FAILED,
+        title_snapshot="Retry title",
+        description_snapshot="Retry description",
+        destination_url="https://example.test/retry",
+        media_url_snapshot="https://cdn.example.test/retry.png",
+    )
+    db.add(publication); db.commit(); db.refresh(publication)
+    attempt_1 = PublicationAttempt(
+        publication_id=publication.id,
+        attempt_number=1,
+        status="FAILED",
+        request_fingerprint=request_fingerprint_for(publication),
+        error_code="PROVIDER_REJECTED",
+        safe_response_metadata={},
+    )
+    db.add(attempt_1); db.commit(); db.refresh(attempt_1)
+    initial_attempts = db.query(PublicationAttempt).filter_by(publication_id=publication.id).order_by(PublicationAttempt.attempt_number).all()
+    assert publication.status == PublicationStatus.PUBLISH_FAILED
+    assert [(item.attempt_number, item.status) for item in initial_attempts] == [(1, "FAILED")]
+
+    retry_time_1 = datetime(2020, 1, 15, 11, 50, 0, tzinfo=timezone.utc)
+    schedule(db, publication, retry_time_1)
+    attempts_after_first_schedule = db.query(PublicationAttempt).filter_by(publication_id=publication.id).order_by(PublicationAttempt.attempt_number).all()
+    assert publication.status == PublicationStatus.SCHEDULED
+    assert publication.scheduled_for == retry_time_1.astimezone(timezone.utc)
+    assert [(item.attempt_number, item.status) for item in attempts_after_first_schedule] == [(1, "FAILED")]
+
+    retry_time_2 = datetime(2020, 1, 15, 11, 55, 0, tzinfo=timezone.utc)
+    schedule(db, publication, retry_time_2)
+    attempts_before_claim = db.query(PublicationAttempt).filter_by(publication_id=publication.id).order_by(PublicationAttempt.attempt_number).all()
+    assert publication.status == PublicationStatus.SCHEDULED
+    assert publication.scheduled_for == retry_time_2.astimezone(timezone.utc)
+    assert len(attempts_before_claim) == 1
+    assert attempts_before_claim[0].attempt_number == 1
+    assert attempts_before_claim[0].status == "FAILED" and attempts_before_claim[0].error_code == "PROVIDER_REJECTED"
+
+    attempt_2 = claim(db, publication)
+    assert attempt_2 is not None
+    assert attempt_2.attempt_number == 2 and attempt_2.status == "STARTED"
+    assert attempt_2.publication_id == publication.id
+    assert attempt_2.request_fingerprint and attempt_2.request_fingerprint == request_fingerprint_for(publication)
+    db.refresh(publication)
+    assert publication.status == PublicationStatus.PUBLISHING
+    final_attempts = db.query(PublicationAttempt).filter_by(publication_id=publication.id).order_by(PublicationAttempt.attempt_number).all()
+    assert [(item.attempt_number, item.status) for item in final_attempts] == [(1, "FAILED"), (2, "STARTED")]
+    assert final_attempts[0].error_code == "PROVIDER_REJECTED"
+    assert all(item.attempt_number != 3 for item in final_attempts)
+    db.close()
