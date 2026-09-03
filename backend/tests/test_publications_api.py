@@ -135,6 +135,239 @@ def test_publications_api_authenticated_list_and_detail_allowed(monkeypatch):
         engine.dispose()
 
 
+def test_publication_reconciliation_error_is_not_swallowed_by_api_route(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    import pytest
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.core import auth
+    from app.core.config import get_settings
+    from app.db.session import get_db
+    from app.integrations.pinterest import gateway as gateway_module
+    from app.main import app
+    from app.models.domain import (
+        Base,
+        PinApproval,
+        PinCreative,
+        PinPublication,
+        PinterestBoard,
+        PinterestConnection,
+        PublicationAttempt,
+        PublicationStatus,
+    )
+    from app.services import pinterest_oauth, pinterest_publisher
+    from app.services.pinterest_publisher import (
+        PublicationReconciliationError,
+        preflight_publish_readiness,
+        publication_readiness,
+    )
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("APP_SECRET_KEY", "a" * 48)
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", auth.hash_password("secret"))
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5000")
+    monkeypatch.setenv("PUBLISHING_ENABLED", "true")
+    get_settings.cache_clear()
+    assert get_settings().publishing_enabled is True
+
+    token_decrypt_call_count = 0
+    gateway_constructor_call_count = 0
+    real_create_pin_call_count = 0
+    fake_publish_once_call_count = 0
+
+    def fake_decrypt_token(value):
+        nonlocal token_decrypt_call_count
+        token_decrypt_call_count += 1
+        assert value == "RECONCILIATION_ERROR_ACCESS_CIPHERTEXT_DO_NOT_USE"
+        return "reconciliation-error-test-token"
+
+    class InertGateway:
+        def __init__(self, *args, **kwargs):
+            nonlocal gateway_constructor_call_count
+            gateway_constructor_call_count += 1
+            assert kwargs["access_token"] == "reconciliation-error-test-token"
+            assert kwargs["publishing_enabled"] is True
+
+        async def create_pin(self, *args, **kwargs):
+            nonlocal real_create_pin_call_count
+            real_create_pin_call_count += 1
+            raise AssertionError("fake publish_once should raise before provider create_pin")
+
+    async def fake_publish_once(db, publication, gateway, attempt):
+        nonlocal fake_publish_once_call_count
+        fake_publish_once_call_count += 1
+        raise PublicationReconciliationError("Publication reconciliation could not be persisted")
+
+    monkeypatch.setattr(pinterest_oauth, "decrypt_token", fake_decrypt_token)
+    monkeypatch.setattr(gateway_module, "PinterestV5Gateway", InertGateway)
+    monkeypatch.setattr(pinterest_publisher, "publish_once", fake_publish_once)
+
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+    )
+
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    scheduled_for = datetime.now(timezone.utc) - timedelta(minutes=10)
+    granted_scopes = ["user_accounts:read", "boards:read", "pins:read", "pins:write"]
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestingSessionLocal() as db:
+            connection = PinterestConnection(
+                id="reconciliation-error-connection",
+                external_user_id="reconciliation-error-user",
+                granted_scopes=granted_scopes,
+                access_token_ciphertext="RECONCILIATION_ERROR_ACCESS_CIPHERTEXT_DO_NOT_USE",
+                refresh_token_ciphertext="RECONCILIATION_ERROR_REFRESH_CIPHERTEXT_DO_NOT_USE",
+                status="CONNECTED",
+            )
+            board = PinterestBoard(
+                id="reconciliation-error-board",
+                connection_id=connection.id,
+                external_board_id="reconciliation-error-external-board",
+                name="Reconciliation Error Board",
+                is_active=True,
+                is_eligible=True,
+            )
+            creative = PinCreative(
+                id="reconciliation-error-creative",
+                draft_id="reconciliation-error-draft",
+                template_id="reconciliation-error-template",
+                source_image_id="reconciliation-error-source-image",
+                rendered_url="https://cdn.example.test/reconciliation-error.jpg",
+                creative_fingerprint="r" * 64,
+                render_status="RENDERED",
+            )
+            approval = PinApproval(
+                id="reconciliation-error-approval",
+                draft_id="reconciliation-error-draft",
+                revision_id=None,
+                creative_id=creative.id,
+                approved_version_id="original",
+                decision="APPROVED",
+                decided_by="reconciliation_error_api_test",
+            )
+            publication = PinPublication(
+                id="reconciliation-error-publication",
+                draft_id="reconciliation-error-draft",
+                revision_id=None,
+                creative_id=creative.id,
+                approval_id=approval.id,
+                source_image_id=creative.source_image_id,
+                pinterest_connection_id=connection.id,
+                pinterest_board_record_id=board.id,
+                pinterest_board_id_snapshot=board.external_board_id,
+                pinterest_board_id=board.external_board_id,
+                publication_fingerprint="r" * 64,
+                status=PublicationStatus.SCHEDULED,
+                scheduled_for=scheduled_for,
+                title_snapshot="Reconciliation error title",
+                description_snapshot="Reconciliation error description",
+                alt_text_snapshot="Reconciliation error alt",
+                destination_url="https://diamondshelf.us/products/reconciliation-error",
+                utm_url="https://diamondshelf.us/products/reconciliation-error?utm_source=pinterest",
+                media_url_snapshot="https://cdn.example.test/reconciliation-error.jpg",
+            )
+            db.add_all([connection, board, creative, approval, publication])
+            db.commit()
+            db.refresh(publication)
+            assert connection.status == "CONNECTED"
+            assert "pins:write" in connection.granted_scopes
+            assert "boards:write" not in connection.granted_scopes
+            assert board.connection_id == connection.id
+            assert board.is_active is True
+            assert board.is_eligible is True
+            assert board.external_board_id == publication.pinterest_board_id_snapshot
+            assert approval.decision == "APPROVED"
+            assert approval.draft_id == publication.draft_id
+            assert approval.revision_id == publication.revision_id
+            assert approval.creative_id == publication.creative_id
+            assert creative.draft_id == publication.draft_id
+            assert creative.source_image_id == publication.source_image_id
+            assert publication_readiness(db, publication) == "READY"
+            ready, reason = preflight_publish_readiness(db, publication)
+            assert ready is True
+            assert reason is None
+            assert db.query(PublicationAttempt).count() == 0
+
+        response = None
+        caught = None
+        with TestClient(app) as client:
+            login = client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "secret"},
+            )
+            assert login.status_code == 200
+            try:
+                response = client.post(
+                    "/api/publications/reconciliation-error-publication/publish",
+                    headers={"Origin": "http://localhost:5000"},
+                )
+            except PublicationReconciliationError as exc:
+                caught = exc
+
+        with TestingSessionLocal() as db:
+            publication = db.get(PinPublication, "reconciliation-error-publication")
+            attempts = db.scalars(
+                select(PublicationAttempt).where(
+                    PublicationAttempt.publication_id == "reconciliation-error-publication"
+                )
+            ).all()
+            assert publication.status == PublicationStatus.PUBLISHING
+            assert len(attempts) == 1
+            attempt = attempts[0]
+            assert attempt.attempt_number == 1
+            assert attempt.status == "STARTED"
+            assert attempt.publication_id == "reconciliation-error-publication"
+            assert attempt.request_fingerprint
+
+        assert token_decrypt_call_count == 1
+        assert gateway_constructor_call_count == 1
+        assert fake_publish_once_call_count == 1
+        assert real_create_pin_call_count == 0
+
+        if caught is not None:
+            assert str(caught) == "Publication reconciliation could not be persisted"
+            return
+
+        assert response is not None
+        assert "RECONCILIATION_ERROR_ACCESS_CIPHERTEXT_DO_NOT_USE" not in response.text
+        assert "RECONCILIATION_ERROR_REFRESH_CIPHERTEXT_DO_NOT_USE" not in response.text
+        assert "reconciliation-error-test-token" not in response.text
+        assert "access_token" not in response.text
+        assert "refresh_token" not in response.text
+        assert "Authorization" not in response.text
+        assert "Bearer" not in response.text
+        assert "client_secret" not in response.text
+        pytest.fail(
+            "PublicationReconciliationError was swallowed by the API route: "
+            f"status={response.status_code}, body={response.json()}"
+        )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
+
+
 def test_publication_ready_is_reported_without_dispatch(monkeypatch):
     from datetime import datetime, timedelta, timezone
 

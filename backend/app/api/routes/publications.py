@@ -7,7 +7,7 @@ from app.db.session import get_db
 from app.models.domain import PinPublication, PinApproval, PinterestBoard, PinterestConnection, PublicationStatus, PublicationAttempt
 from app.services.publication_identity import PublicationIdentityService, PublicationIdentityError
 from app.services.publication_scheduler import schedule, cancel, due_publications, claim
-from app.services.pinterest_publisher import publishing_ready, publication_readiness, preflight_publish_readiness, execution_publish_readiness, finalize_post_claim_unknown, sanitize_metadata
+from app.services.pinterest_publisher import publishing_ready, publication_readiness, preflight_publish_readiness, execution_publish_readiness, finalize_post_claim_unknown, sanitize_metadata, PublicationReconciliationError
 
 router = APIRouter(prefix="/publications", tags=["publications"])
 
@@ -100,6 +100,7 @@ async def publish(publication_id: str, db: Session = Depends(get_db)):
             raise HTTPException(502, "Pinterest publication setup failed") from None
         await publish_once(db, row, gateway, attempt)
     except HTTPException: raise
+    except PublicationReconciliationError: raise
     except Exception:
         raise HTTPException(502, "Pinterest publication failed") from None
     return _dto(db, row)
