@@ -1,7 +1,10 @@
 from datetime import datetime, timezone, timedelta
 import pytest
-from app.models.domain import PublicationStatus
-from app.models.domain import PinPublication
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from app.db.base import Base
+from app.models.domain import PinPublication, PublicationAttempt, PublicationStatus
 from test_pin_proposals import setup_service
 from app.services.publication_scheduler import due_publications
 
@@ -44,3 +47,64 @@ def test_db_backed_due_claim_creates_single_started_attempt():
     assert attempt.request_fingerprint == request_fingerprint_for(p)
     assert claim(db, p) is None
     db.close()
+
+def test_file_backed_independent_sessions_allow_only_one_claim(tmp_path):
+    from app.services.publication_scheduler import claim, request_fingerprint_for
+
+    database_path = tmp_path / "scheduler-cas.sqlite"
+    engine = create_engine(f"sqlite+pysqlite:///{database_path.as_posix()}")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    seed = SessionLocal()
+    publication = PinPublication(
+        draft_id="scheduler-cas-draft",
+        creative_id="scheduler-cas-creative",
+        publication_fingerprint="c" * 64,
+        status=PublicationStatus.SCHEDULED,
+        scheduled_for=datetime.now(timezone.utc) - timedelta(minutes=1),
+        title_snapshot="CAS title",
+        description_snapshot="CAS description",
+        destination_url="https://example.test/cas",
+        media_url_snapshot="https://cdn.example.test/cas.png",
+    )
+    seed.add(publication); seed.commit()
+    publication_id = publication.id
+    seed.close()
+    session_a = SessionLocal(); session_b = SessionLocal(); session_c = None
+    try:
+        publication_a = session_a.get(PinPublication, publication_id)
+        publication_b = session_b.get(PinPublication, publication_id)
+        assert session_a is not session_b and publication_a is not publication_b
+        assert publication_a.status == PublicationStatus.SCHEDULED
+        assert publication_b.status == PublicationStatus.SCHEDULED
+        session_b.commit()
+        assert publication_b.status == PublicationStatus.SCHEDULED
+
+        attempt_a = claim(session_a, publication_a)
+        assert attempt_a is not None
+        assert attempt_a.attempt_number == 1 and attempt_a.status == "STARTED"
+        assert attempt_a.request_fingerprint
+        session_a.refresh(publication_a)
+        assert attempt_a.request_fingerprint == request_fingerprint_for(publication_a)
+        assert publication_a.status == PublicationStatus.PUBLISHING
+
+        assert publication_b.status == PublicationStatus.SCHEDULED
+        attempt_b = claim(session_b, publication_b)
+        assert attempt_b is None
+        session_b.rollback()
+
+        session_c = SessionLocal()
+        assert session_a is not session_c and session_b is not session_c
+        publication_c = session_c.get(PinPublication, publication_id)
+        attempts = session_c.query(PublicationAttempt).filter_by(publication_id=publication_id).order_by(PublicationAttempt.attempt_number).all()
+        assert publication_c.status == PublicationStatus.PUBLISHING
+        assert len(attempts) == 1
+        assert attempts[0].publication_id == publication_id
+        assert attempts[0].attempt_number == 1 and attempts[0].status == "STARTED"
+        assert attempts[0].request_fingerprint
+        assert attempts[0].request_fingerprint == request_fingerprint_for(publication_c)
+    finally:
+        session_a.close(); session_b.close()
+        if session_c is not None:
+            session_c.close()
+        engine.dispose()
