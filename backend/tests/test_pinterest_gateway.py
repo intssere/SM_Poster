@@ -402,3 +402,82 @@ def test_create_pin_success_with_malformed_json_is_ambiguous_without_retry_or_le
     assert "MALFORMED_PROVIDER_RAW_RESPONSE" not in exception_text
     assert "Authorization" not in exception_text
     assert "Bearer" not in exception_text
+
+
+def test_create_pin_valid_success_returns_provider_result_unchanged(monkeypatch):
+    http_client_constructions = []
+    post_calls = []
+    json_call_count = 0
+    provider_result = {
+        "id": "987654321012345678",
+        "title": "Provider Test Pin",
+        "link": "https://diamondshelf.us/products/example",
+        "board_id": "board123",
+        "extra_provider_field": {
+            "preserve": True,
+        },
+    }
+
+    class FakeResponse:
+        status_code = 201
+
+        def json(self):
+            nonlocal json_call_count
+            json_call_count += 1
+            return provider_result
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def post(self, url, *, headers, json):
+            post_calls.append({"url": url, "headers": headers, "json": json})
+            return FakeResponse()
+
+    def fake_async_client(*args, **kwargs):
+        http_client_constructions.append((args, kwargs))
+        return FakeAsyncClient()
+
+    monkeypatch.setattr(gateway_module.httpx, "AsyncClient", fake_async_client)
+    gateway = PinterestV5Gateway(
+        access_token="test-secret-token",
+        publishing_enabled=True,
+    )
+    payload = PinterestPinPayload(
+        board_id="board123",
+        title="Test Pin",
+        description="Test description",
+        link="https://diamondshelf.us/products/example",
+        image_url="https://cdn.example.test/example.jpg",
+        alt_text="Example product image",
+    )
+
+    result = asyncio.run(gateway.create_pin(payload))
+
+    assert result == provider_result
+    assert result is provider_result
+    assert FakeResponse.status_code == 201
+    assert len(http_client_constructions) == 1
+    assert len(post_calls) == 1
+    assert json_call_count == 1
+    request = post_calls[0]
+    assert request["url"] == "https://api.pinterest.com/v5/pins"
+    assert request["headers"] == {
+        "Authorization": "Bearer test-secret-token",
+        "Content-Type": "application/json",
+    }
+    assert request["json"] == {
+        "board_id": "board123",
+        "title": "Test Pin",
+        "description": "Test description",
+        "link": "https://diamondshelf.us/products/example",
+        "media_source": {
+            "source_type": "image_url",
+            "url": "https://cdn.example.test/example.jpg",
+        },
+        "alt_text": "Example product image",
+    }
+    assert "test-secret-token" not in repr(result)
