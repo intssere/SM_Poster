@@ -219,3 +219,69 @@ def test_publish_failed_explicit_reschedule_then_claim_creates_attempt_two():
     assert final_attempts[0].error_code == "PROVIDER_REJECTED"
     assert all(item.attempt_number != 3 for item in final_attempts)
     db.close()
+
+def test_cancel_approved_and_scheduled_publications_is_terminal_and_creates_no_attempts():
+    from app.services.publication_scheduler import cancel, claim, schedule
+
+    db, _, _ = setup_service()
+    now = datetime(2030, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+    approved_publication = PinPublication(
+        id="cancellation-approved",
+        draft_id="cancel-approved-draft",
+        creative_id="cancel-approved-creative",
+        publication_fingerprint="u" * 64,
+        status=PublicationStatus.APPROVED,
+        scheduled_for=None,
+        title_snapshot="Approved cancellation",
+        description_snapshot="Approved cancellation description",
+        destination_url="https://example.test/cancel-approved",
+        media_url_snapshot="https://cdn.example.test/cancel-approved.png",
+    )
+    scheduled_publication = PinPublication(
+        id="cancellation-scheduled",
+        draft_id="cancel-scheduled-draft",
+        creative_id="cancel-scheduled-creative",
+        publication_fingerprint="v" * 64,
+        status=PublicationStatus.SCHEDULED,
+        scheduled_for=now - timedelta(minutes=5),
+        title_snapshot="Scheduled cancellation",
+        description_snapshot="Scheduled cancellation description",
+        destination_url="https://example.test/cancel-scheduled",
+        media_url_snapshot="https://cdn.example.test/cancel-scheduled.png",
+    )
+    db.add_all([approved_publication, scheduled_publication]); db.commit()
+    publication_ids = {approved_publication.id, scheduled_publication.id}
+    pre_cancel_due_ids = {publication.id for publication in due_publications(db, now=now, limit=25)}
+    assert scheduled_publication.id in pre_cancel_due_ids
+    assert approved_publication.id not in pre_cancel_due_ids
+    assert db.query(PublicationAttempt).filter(PublicationAttempt.publication_id.in_(publication_ids)).count() == 0
+
+    approved_result = cancel(db, approved_publication)
+    db.refresh(approved_publication)
+    assert approved_result is approved_publication
+    assert approved_publication.status == PublicationStatus.CANCELLED and approved_publication.scheduled_for is None
+
+    scheduled_result = cancel(db, scheduled_publication)
+    db.refresh(scheduled_publication)
+    assert scheduled_result is scheduled_publication
+    assert scheduled_publication.status == PublicationStatus.CANCELLED and scheduled_publication.scheduled_for is None
+
+    post_cancel_due_ids = {publication.id for publication in due_publications(db, now=now, limit=25)}
+    assert scheduled_publication.id not in post_cancel_due_ids
+    assert approved_publication.id not in post_cancel_due_ids
+    assert claim(db, scheduled_publication) is None
+    assert claim(db, approved_publication) is None
+    assert db.query(PublicationAttempt).filter(PublicationAttempt.publication_id.in_(publication_ids)).count() == 0
+
+    future_time = now + timedelta(hours=1)
+    with pytest.raises(ValueError, match="^Invalid publication transition: CANCELLED -> SCHEDULED$"):
+        schedule(db, scheduled_publication, future_time)
+    with pytest.raises(ValueError, match="^Invalid publication transition: CANCELLED -> SCHEDULED$"):
+        schedule(db, approved_publication, future_time)
+    db.expire_all()
+    final_approved = db.get(PinPublication, approved_publication.id)
+    final_scheduled = db.get(PinPublication, scheduled_publication.id)
+    assert final_approved.status == PublicationStatus.CANCELLED and final_scheduled.status == PublicationStatus.CANCELLED
+    assert final_approved.scheduled_for is None and final_scheduled.scheduled_for is None
+    assert db.query(PublicationAttempt).filter(PublicationAttempt.publication_id.in_(publication_ids)).count() == 0
+    db.close()
