@@ -47,12 +47,19 @@ The response is classified as `PUBLISHED`, `PUBLISH_FAILED`, or
 persisted and raw bodies, headers, tokens, fingerprints, and secrets are never
 serialized.
 
-The pilot has two checks. A PRE-CLAIM check runs before token decryption where
-practical, gateway construction, `atomic_authorized_claim`, authorization
-consumption, publication transition, or attempt creation. A disabled or
-mismatched pilot causes zero provider calls and leaves the publication
-`SCHEDULED`. A POST-CLAIM recheck runs after the atomic claim and post-claim
-validation, immediately before gateway construction and the network POST.
+The certified dispatch sequence is: (1) active Task #39 authorization, (2)
+authorization/readiness validation, (3) Task #40 PRE-CLAIM exact pilot check,
+(4) provider readiness, (5) load connection, (6) decrypt token, (7) construct
+`PinterestV5Gateway`, (8) `atomic_authorized_claim`, (9) refresh publication,
+authorization, and attempt, (10) Task #39 post-claim validation, (11) Task #40
+POST-CLAIM exact pilot recheck, (12) `publish_once()`, and (13) the
+`PinterestV5Gateway` provider network boundary. PRE-CLAIM validation is before
+provider readiness, decryption, gateway construction, claim, authorization
+consumption, and attempt creation. Decryption and gateway construction happen
+after PRE-CLAIM and before the claim; construction performs no provider HTTP.
+POST-CLAIM validation is after the claim and immediately before
+`publish_once()`/provider execution. A disabled or mismatched pilot causes zero
+provider calls and leaves the publication `SCHEDULED`.
 
 ## Proposed two-key pilot gate
 

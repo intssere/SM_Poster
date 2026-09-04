@@ -76,6 +76,32 @@ Validated Pin ID yields `PUBLISHED`; definitive rejection yields
 `PUBLISH_UNKNOWN` and STOP for reconciliation. Local persistence uncertainty is
 `PUBLISHED_STATE_PERSISTENCE_UNKNOWN` and also requires reconciliation.
 
+## Required post-write verification
+
+After a validated provider Pin ID is persisted, verify through an approved
+Pinterest/provider read path if available: the ID matches, the live Pin exists
+on the exact intended board, the approved creative/media and title/description
+match the certified snapshot, alt text matches where exposed, the destination
+and exact UTM URL are preserved, no duplicate Pin exists, the publication is
+`PUBLISHED`, exactly one attempt exists, and safe audit evidence is captured.
+If any verification is uncertain, STOP and do not perform a second write; use
+the existing reconciliation procedure.
+
+## Pilot evidence checklist
+
+Before Gate A: protected defaults, intended business connection identified,
+read-only current scope, and explicit Gate A approval. After Gate A: intended
+connection verified, all read scopes present, actual `pins:write` persisted,
+`boards:write` absent, request flag returned false, and no Pin created.
+Before Gate B: complete candidate dossier, zero prior attempts, quality PASS,
+`SAFE_TO_CONTINUE` duplicate result, exact board/account and creative/source,
+exact destination/UTM, active unexpired authorization, exact pilot bindings,
+and explicit Gate B approval. After one attempt: outcome and any Pin-ID/live
+verification recorded, reconciliation status captured when needed, flags false,
+bindings cleared, no second attempt, and no automatic retry. Never record token
+values, ciphertext, Authorization headers, OAuth secrets, or raw provider
+bodies as evidence.
+
 After the first attempt, set publishing and pilot flags false, clear candidate
 bindings, make no second Pin, and run no worker or retry. Preserve write scope
 only if explicitly intended; otherwise use the documented read-only reconnect.
