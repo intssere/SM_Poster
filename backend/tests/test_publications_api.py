@@ -174,6 +174,39 @@ def test_unknown_publication_cancel_requires_reconciliation(monkeypatch):
         app.dependency_overrides.pop(get_db, None); engine.dispose()
 
 
+def test_provider_confirm_reconciliation_api_persists_event(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from app.core import auth
+    from app.core.config import get_settings
+    from app.db.session import get_db
+    from app.models.domain import Base, PinPublication, PublicationStatus, PublicationReconciliationEvent
+    from fastapi.testclient import TestClient
+    from test_manual_dispatch_authorization import _ready_publication
+    monkeypatch.setenv("APP_ENV", "development"); monkeypatch.setenv("AUTH_DISABLED", "false"); monkeypatch.setenv("APP_SECRET_KEY", "a" * 48); monkeypatch.setenv("ADMIN_USERNAME", "admin"); monkeypatch.setenv("ADMIN_PASSWORD_HASH", auth.hash_password("secret")); monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5000"); get_settings.cache_clear()
+    engine = create_engine("sqlite+pysqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool); Base.metadata.create_all(engine); SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    with SessionLocal() as db:
+        publication = _ready_publication(db, status=PublicationStatus.PUBLISH_UNKNOWN); pid = publication.id
+    def override_get_db():
+        db = SessionLocal()
+        try: yield db
+        finally: db.close()
+    from app.main import app
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestClient(app) as client:
+            assert client.post("/api/auth/login", json={"username": "admin", "password": "secret"}).status_code == 200
+            response = client.post(f"/api/publications/{pid}/reconcile", json={"action": "PROVIDER_PIN_CONFIRMED", "confirmed": True, "provider_pin_id": "pin-123"}, headers={"Origin": "http://localhost:5000"})
+            assert response.status_code == 200
+        with SessionLocal() as db:
+            row = db.get(PinPublication, pid); event = db.query(PublicationReconciliationEvent).filter_by(publication_id=pid).one()
+            assert row.status == PublicationStatus.PUBLISHED and row.pinterest_pin_id == "pin-123" and row.published_at is not None
+            assert (event.actor, event.action, event.previous_status, event.new_status, event.provider_pin_id) == ("admin", "PROVIDER_PIN_CONFIRMED", "PUBLISH_UNKNOWN", "PUBLISHED", "pin-123")
+    finally:
+        app.dependency_overrides.pop(get_db, None); engine.dispose()
+
+
 def test_publish_route_requires_task39_authorization_and_delegates(monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
