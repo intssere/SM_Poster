@@ -17,6 +17,7 @@ from app.core.config import get_settings
 from app.models.domain import (
     PinApproval,
     PinCreative,
+    AuditLog,
     PinPublication,
     PinterestBoard,
     PinterestConnection,
@@ -117,6 +118,9 @@ def revoke_authorization(
     authorization.status = "REVOKED"
     authorization.revoked_at = normalize_persisted_utc(now or _now())
     authorization.revoke_reason = reason[:255]
+    # Actor is supplied by the authenticated API layer; retain a safe audit.
+    if getattr(authorization, "_revoke_actor", None):
+        db.add(AuditLog(actor=authorization._revoke_actor, action="PUBLICATION_DISPATCH_AUTHORIZATION_REVOKED", entity_type="PublicationDispatchAuthorization", entity_id=authorization.id, metadata_json={"authorization_id": authorization.id}))
     db.commit()
     return authorization
 
