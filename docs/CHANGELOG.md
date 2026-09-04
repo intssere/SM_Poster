@@ -28,8 +28,11 @@
 - Kept Pinterest writes, publishing, scheduling workers, and analytics disabled.
 - PR #15 merged; Issue #14 closed.
 
-## Unreleased — Task #38 Publisher + Scheduler Foundation v1
+## Task #38 — Publisher + Scheduler Foundation v1 — MERGED
 
+- PR #18 merged; Issue #17 closed.
+- Merge commit: `010e238c2750be8c85efa4d4c83b9aed48f3192e`.
+- Alembic head: `0014`.
 - Added migration `0014` for publication scheduler/publisher foundations.
 - Added provider-independent immutable publication snapshots with PinterestConnection and PinterestBoard binding.
 - Added immutable approved content, creative, source-image, external board, title, description, alt text, destination/UTM, and media snapshots.
@@ -42,6 +45,8 @@
 - Added safe attempt metadata sanitization and API DTOs that hide request fingerprints and raw provider data.
 - Preserved typed `PublicationReconciliationError` through the API boundary.
 - Added authenticated publication API coverage and hardened Publications/Scheduler frontend management.
-- Focused acceptance baseline: publication API 17, gateway 7, publisher 37, scheduler 11, combined 72, with 1 existing warning.
+- Release matrix: PASS.
+- Focused Task #38: 72 passed, 1 warning.
+- Full backend: 347 passed, 2 warnings.
 - Frontend `npm run build`, `tsc -b`, and `vite build` passed.
-- Publishing remains disabled; this is not final release certification.
+- Task #38 release certification passed and the certified tree was merged. Live publishing remains disabled by policy and requires a separate future authorization.

@@ -4,15 +4,16 @@ Diamond Shelf Social Studio (`intssere/SM_Poster`) turns trusted Shopify catalog
 
 ## Current baseline
 
-- Authoritative Task #38 main baseline: `4242b80e6626886b528641749beeb64cf7e4ea62`
-- Main baseline tree: `ac35cffe2f58c1d47deac578e43cabe12189e519`
-- Main Alembic head: `0013`
+- Authoritative current main: `010e238c2750be8c85efa4d4c83b9aed48f3192e`
+- Current main tree: `48335065aad89272b791362c4d8d56f238944b5e`
+- Current main Alembic head: `0014`
 - Task #38 branch: `task-38-publisher-scheduler-foundation-v1`
-- Task #38 PRE-MERGE branch Alembic head: `0014`
-- Code/frontend checkpoint entering documentation closure: `8c14903deac4978e36d9a65d62122d84d374978e`
-- Checkpoint tree: `8ca7b7aa438cd1c6fd038e734a4ad24cdd5e4d53`
+- Task #38 certified branch SHA: `92614f876f10947c6c37c7f9bef056b07eefbb21`
+- Certified and merged tree: `48335065aad89272b791362c4d8d56f238944b5e`
+- PR #18: MERGED
+- Issue #17: CLOSED
 
-This SHA is the synchronized code/frontend checkpoint entering documentation closure. Do not place the documentation commit SHA inside this document; use the commit evidence after this pass as the next starting point for final release certification.
+Historical Task #38 starting baseline: main `4242b80e6626886b528641749beeb64cf7e4ea62`, tree `ac35cffe2f58c1d47deac578e43cabe12189e519`, Alembic `0013`. Do not confuse that starting point with the current merged main state above.
 
 ## Task status
 
@@ -20,9 +21,7 @@ This SHA is the synchronized code/frontend checkpoint entering documentation clo
 - Task #35: COMPLETE / merged
 - Task #36: COMPLETE / merged
 - Task #37: COMPLETE / merged
-- Task #38: PRE-MERGE
-
-Task #38 has not been claimed as merged, PR_READY, or release certified. Do not create a Task #38 PR until the final release matrix and independent branch-vs-main audit are green and explicitly authorized.
+- Task #38: COMPLETE / merged
 
 ## Non-negotiable rules
 
@@ -48,17 +47,26 @@ Protected repository state remains `PUBLISHING_ENABLED=false`. Live OAuth reques
 
 `PUBLISH_UNKNOWN` is never automatically retried. `PublicationReconciliationError` remains distinguishable through the API boundary.
 
-## Focused verification history
+## Task #38 release certification
 
 - Publication API: 17 passed
 - Pinterest gateway: 7 passed
 - Pinterest publisher: 37 passed
 - Publication scheduler: 11 passed
 - Combined focused foundation: 72 passed
-- Existing warning count: 1
+- Focused foundation warning count: 1
+- Migration 0014: PASS
+- Task #34 regressions: 8 passed
+- Task #35 regressions: 12 passed
+- Task #36 regressions: 30 passed
+- Task #37 regressions: 59 passed
+- Full backend: 347 passed, 0 failures, 0 errors, 2 warnings
+- Python compile: PASS
+- Task #38 import verification: PASS (`TASK38_IMPORT_OK`)
+- Alembic: sole head `0014`; `0014` directly follows `0013`
 - Frontend: `npm run build` passed (`tsc -b` and `vite build`)
 
-This is not the final full release matrix.
+`RELEASE_MATRIX=PASS`. The final release matrix executed against Task #38 branch SHA `92614f876f10947c6c37c7f9bef056b07eefbb21` with tree `48335065aad89272b791362c4d8d56f238944b5e`. Merge commit `010e238c2750be8c85efa4d4c83b9aed48f3192e` has the same tree, so the content merged to `main` is exactly the certified tree.
 
 ## Repository/test state versus runtime state
 
@@ -70,11 +78,8 @@ Latest carried-forward runtime snapshot, historical and not freshly queried: 4 c
 
 Before any future live publishing phase, apply the canonical gate in `docs/DECISIONS.md`: title/description relevance and limits, alt text, canonical URL/UTMs, eligible board/topic relevance, authentic provenance, public HTTPS media, vertical creative quality, Shopify metadata consistency, Open Graph / Schema.org / Rich Pin compatibility, unsupported-claim and keyword-stuffing rejection, duplicate Pin spam prevention, and topic/product-tag field review.
 
-## Remaining release steps
+## Next implementation stage
 
-1. Final release-certification matrix
-2. Independent branch-vs-main audit
-3. PR_READY authorization
-4. PR creation
-5. Independent PR review
-6. Explicit human merge authorization
+Task #39 is the recommended next stage: Pinterest Live Publishing Readiness + Manual Dispatch v1. It requires separate authorization and must not immediately enable ordinary live publishing.
+
+Before any future live provider write, require write-scope authorization review, provider-access review, Pinterest SEO + Metadata + Creative Quality gate, public Pinterest-fetchable HTTPS media, duplicate prevention, final publication preview, explicit operator confirmation, safe `PUBLISH_UNKNOWN` reconciliation, runbook/incident handling, and controlled single-Pin validation. Do not introduce an autonomous worker as the immediate next step.
