@@ -7,7 +7,12 @@ from cryptography.fernet import Fernet
 from app.core.config import get_settings
 from app.models.domain import PinterestConnection
 
-SCOPES = ("user_accounts:read", "boards:read", "pins:read")
+READ_SCOPES = ("user_accounts:read", "boards:read", "pins:read")
+SCOPES = READ_SCOPES
+
+def requested_scopes(settings=None) -> tuple[str, ...]:
+    settings = settings or get_settings()
+    return READ_SCOPES + (("pins:write",) if settings.pinterest_write_scope_enabled else ())
 
 def _fernet() -> Fernet:
     key = get_settings().pinterest_token_encryption_key
@@ -24,7 +29,7 @@ def new_state() -> tuple[str, str]:
 def authorization_url(state: str) -> str:
     s = get_settings()
     if not s.pinterest_client_id or not s.pinterest_redirect_uri: raise RuntimeError("Pinterest OAuth is not configured")
-    return "https://www.pinterest.com/oauth/?" + urlencode({"client_id": s.pinterest_client_id, "redirect_uri": s.pinterest_redirect_uri, "response_type": "code", "scope": " ".join(SCOPES), "state": state})
+    return "https://www.pinterest.com/oauth/?" + urlencode({"client_id": s.pinterest_client_id, "redirect_uri": s.pinterest_redirect_uri, "response_type": "code", "scope": " ".join(requested_scopes(s)), "state": state})
 
 class PinterestClient:
     def __init__(self, client: httpx.AsyncClient | None = None): self.client = client
@@ -69,7 +74,7 @@ async def refresh_connection(db, connection: PinterestConnection, client: Pinter
         payload = await (client or PinterestClient()).refresh_token(current_refresh)
         scopes = payload.get("scope", connection.granted_scopes)
         scopes = scopes.split() if isinstance(scopes, str) else list(scopes or [])
-        if not payload.get("access_token") or not set(SCOPES).issubset(scopes): raise RuntimeError("Pinterest token refresh did not grant required access")
+        if "boards:write" in scopes or not payload.get("access_token") or not set(READ_SCOPES).issubset(scopes): raise RuntimeError("Pinterest token refresh did not grant required access")
         now = datetime.now(timezone.utc)
         new_access = encrypt_token(payload["access_token"])
         new_refresh = encrypt_token(payload["refresh_token"]) if payload.get("refresh_token") else old["refresh_token_ciphertext"]

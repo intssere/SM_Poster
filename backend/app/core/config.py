@@ -15,6 +15,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("APP_SECRET_KEY", "SESSION_SECRET"),
     )
     publishing_enabled: bool = False
+    pinterest_write_scope_enabled: bool = False
+    pinterest_single_pin_pilot_enabled: bool = False
+    pinterest_single_pin_pilot_publication_id: str = ""
+    pinterest_single_pin_pilot_publication_fingerprint: str = ""
+    pinterest_single_pin_pilot_request_fingerprint: str = ""
     auth_disabled: bool = False
     admin_username: str | None = Field(default=None, validation_alias=AliasChoices("ADMIN_USERNAME", "AUTH_ADMIN_USERNAME"))
     admin_password_hash: str | None = Field(default=None, validation_alias=AliasChoices("ADMIN_PASSWORD_HASH", "AUTH_ADMIN_PASSWORD_HASH"))

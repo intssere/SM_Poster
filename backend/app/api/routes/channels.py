@@ -11,7 +11,7 @@ from app.db.session import get_db
 from app.core.config import get_settings
 from app.models.domain import PinterestOAuthState, PinterestConnection, PinterestBoard, PinterestBoardSection
 from app.services.pinterest_boards import sync_boards
-from app.services.pinterest_oauth import authorization_url, new_state, PinterestClient, encrypt_token, SCOPES
+from app.services.pinterest_oauth import authorization_url, new_state, PinterestClient, encrypt_token, READ_SCOPES
 
 from app.services.social_channels import channel_capability_payload
 
@@ -99,7 +99,7 @@ async def pinterest_callback(code: str | None = Query(default=None), state: str 
         if not isinstance(tokens, dict): raise RuntimeError("invalid token payload")
         scopes = tokens.get("scope", "")
         scopes = scopes.split() if isinstance(scopes, str) else list(scopes or [])
-        if not tokens.get("access_token") or not tokens.get("refresh_token") or not set(SCOPES).issubset(scopes): raise RuntimeError("Pinterest authorization did not grant required access")
+        if "boards:write" in scopes or not tokens.get("access_token") or not tokens.get("refresh_token") or not set(READ_SCOPES).issubset(scopes): raise RuntimeError("Pinterest authorization did not grant required access")
         account = await PinterestClient().user_account(tokens["access_token"])
         if not isinstance(account, dict): raise RuntimeError("invalid account payload")
         external_id = account.get("id")

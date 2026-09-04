@@ -25,6 +25,7 @@ from app.services.publication_dispatch_authorization import (
 from app.services.publication_scheduler import request_fingerprint_for
 from app.services.pinterest_oauth import decrypt_token
 from app.services.pinterest_publisher import PublicationReconciliationError, publish_once, normalize_persisted_utc
+from app.services.pinterest_single_pin_pilot import validate_pilot_candidate, validate_post_claim_pilot
 
 
 class ManualDispatchError(RuntimeError):
@@ -52,6 +53,10 @@ async def dispatch_publication(
         raise ManualDispatchError("PUBLISHING_DISABLED")
     if provider["status"] == "PUBLISHING_SCOPE_REQUIRED":
         raise ManualDispatchError("PUBLISHING_SCOPE_REQUIRED")
+
+    pilot_ok, pilot_reason = validate_pilot_candidate(db, publication)
+    if not pilot_ok:
+        raise ManualDispatchError(pilot_reason)
 
     connection = db.get(PinterestConnection, publication.pinterest_connection_id)
     if not connection or not connection.access_token_ciphertext:
@@ -86,6 +91,20 @@ async def dispatch_publication(
             db.rollback()
             raise PublicationReconciliationError("Publication reconciliation could not be persisted") from None
         raise ManualDispatchError("TASK39_POST_CLAIM_REVALIDATION_FAILED")
+
+    pilot_ok, pilot_reason = validate_post_claim_pilot(db, publication, attempt)
+    if not pilot_ok:
+        attempt.status = "FAILED"
+        attempt.error_code = pilot_reason
+        attempt.completed_at = now
+        publication.status = PublicationStatus.PUBLISH_FAILED
+        publication.error_code = pilot_reason
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise PublicationReconciliationError("Publication reconciliation could not be persisted") from None
+        raise ManualDispatchError(pilot_reason)
 
     return await publish_once(db, publication, gateway, attempt)
 
