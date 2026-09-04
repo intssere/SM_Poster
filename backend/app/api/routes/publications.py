@@ -1,13 +1,20 @@
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.db.session import get_db
-from app.models.domain import PinPublication, PinApproval, PinterestBoard, PinterestConnection, PublicationStatus, PublicationAttempt
+from app.models.domain import PinPublication, PinApproval, PinterestBoard, PinterestConnection, PublicationStatus, PublicationAttempt, PublicationDispatchAuthorization
 from app.services.publication_identity import PublicationIdentityService, PublicationIdentityError
-from app.services.publication_scheduler import schedule, cancel, due_publications, claim
-from app.services.pinterest_publisher import publishing_ready, publication_readiness, preflight_publish_readiness, execution_publish_readiness, finalize_post_claim_unknown, sanitize_metadata, PublicationReconciliationError
+from app.services.publication_scheduler import schedule, cancel, due_publications
+from app.services.pinterest_publisher import publication_readiness, sanitize_metadata, PublicationReconciliationError
+from app.services.pinterest_publisher import preflight_publish_readiness, execution_publish_readiness, finalize_post_claim_unknown
+from app.services.manual_publication_dispatch import ManualDispatchError
+from app.services import manual_publication_dispatch
+from app.services.publication_preview import build_preview
+from app.services.publication_dispatch_authorization import create_authorization, revoke_authorization, CONFIRMATION_TEXT_VERSION, DispatchAuthorizationError
+from app.services.publication_reconciliation import reconcile, ReconciliationError
+from app.core.auth import current_user
 
 router = APIRouter(prefix="/publications", tags=["publications"])
 
@@ -21,6 +28,23 @@ class PublicationCreate(BaseModel):
 class ScheduleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     scheduled_for: datetime
+
+class DispatchAuthorizationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmed: bool
+    confirmation_text_version: str
+
+class RevokeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    authorization_id: str
+    reason: str = Field(min_length=1, max_length=255)
+
+class ReconcileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str
+    confirmed: bool
+    provider_pin_id: str | None = None
+    reason: str | None = Field(default=None, max_length=500)
 
 def _dto(db, row):
     from app.core.config import get_settings
@@ -66,6 +90,8 @@ def reschedule(publication_id: str, payload: ScheduleRequest, db: Session = Depe
 def cancel_publication(publication_id: str, db: Session = Depends(get_db)):
     row = db.get(PinPublication, publication_id)
     if not row: raise HTTPException(404, "Publication not found")
+    if row.status == PublicationStatus.PUBLISH_UNKNOWN:
+        raise HTTPException(409, "PUBLISH_UNKNOWN_REQUIRES_RECONCILIATION")
     try: return _dto(db, cancel(db, row))
     except ValueError as exc: raise HTTPException(409, str(exc))
 
@@ -73,34 +99,61 @@ def cancel_publication(publication_id: str, db: Session = Depends(get_db)):
 async def publish(publication_id: str, db: Session = Depends(get_db)):
     row = db.get(PinPublication, publication_id)
     if not row: raise HTTPException(404, "Publication not found")
-    from app.core.config import get_settings
-    if not get_settings().publishing_enabled:
-        raise HTTPException(409, "Publishing is disabled")
-    from app.services.publication_scheduler import claim
-    from app.services.pinterest_oauth import decrypt_token
-    from app.integrations.pinterest.gateway import PinterestV5Gateway
-    from app.services.pinterest_publisher import publish_once
-    ready, reason = preflight_publish_readiness(db, row)
-    if not ready: raise HTTPException(409, reason)
-    connection = db.get(PinterestConnection, row.pinterest_connection_id)
     try:
-        attempt = claim(db, row)
-        if not attempt: raise HTTPException(409, "Publication is not due or already claimed")
-        ready, reason = execution_publish_readiness(db, row, attempt)
-        if not ready:
-            finalize_post_claim_unknown(db, row, attempt, reason)
-            raise HTTPException(409, reason)
-        try:
-            if not connection or not connection.access_token_ciphertext:
-                raise RuntimeError("TOKEN_UNAVAILABLE_AFTER_CLAIM")
-            token = decrypt_token(connection.access_token_ciphertext)
-            gateway = PinterestV5Gateway(access_token=token, publishing_enabled=True)
-        except Exception:
-            finalize_post_claim_unknown(db, row, attempt, "TOKEN_DECRYPT_FAILED")
-            raise HTTPException(502, "Pinterest publication setup failed") from None
-        await publish_once(db, row, gateway, attempt)
+        await manual_publication_dispatch.dispatch_publication(db, row)
+    except ManualDispatchError as exc:
+        detail = str(exc)
+        if detail == "TOKEN_DECRYPT_FAILED":
+            raise HTTPException(502, detail) from None
+        raise HTTPException(409, detail) from None
     except HTTPException: raise
     except PublicationReconciliationError: raise
     except Exception:
         raise HTTPException(502, "Pinterest publication failed") from None
+    return _dto(db, row)
+
+def _get(publication_id, db):
+    row = db.get(PinPublication, publication_id)
+    if not row: raise HTTPException(404, "Publication not found")
+    return row
+
+@router.get("/{publication_id}/preview")
+def preview(publication_id: str, db: Session = Depends(get_db)):
+    return build_preview(db, _get(publication_id, db))
+
+@router.get("/{publication_id}/dispatch-readiness")
+def dispatch_readiness(publication_id: str, db: Session = Depends(get_db)):
+    row = _get(publication_id, db)
+    from app.services.publication_dispatch_authorization import readiness_result
+    return readiness_result(db, row)
+
+@router.post("/{publication_id}/dispatch-authorization")
+def authorize(publication_id: str, request: Request, payload: DispatchAuthorizationRequest, db: Session = Depends(get_db)):
+    if not payload.confirmed: raise HTTPException(422, "CONFIRMATION_REQUIRED")
+    if payload.confirmation_text_version != CONFIRMATION_TEXT_VERSION: raise HTTPException(422, "INVALID_CONFIRMATION_TEXT_VERSION")
+    actor = current_user(request)
+    if not actor: raise HTTPException(401, "Authentication required")
+    try: auth = create_authorization(db, _get(publication_id, db), actor=actor)
+    except DispatchAuthorizationError as exc: raise HTTPException(409, str(exc)) from None
+    except Exception: raise HTTPException(500, "Authorization could not be created") from None
+    return {"id": auth.id, "status": auth.status, "authorized_by": auth.authorized_by, "authorized_at": auth.authorized_at, "expires_at": auth.expires_at, "confirmation_text_version": auth.confirmation_text_version}
+
+@router.post("/{publication_id}/dispatch-authorization/revoke")
+def revoke(publication_id: str, request: Request, payload: RevokeRequest, db: Session = Depends(get_db)):
+    actor = current_user(request)
+    if not actor: raise HTTPException(401, "Authentication required")
+    row = _get(publication_id, db)
+    auth = db.get(PublicationDispatchAuthorization, payload.authorization_id)
+    if not auth or auth.publication_id != row.id: raise HTTPException(404, "Authorization not found")
+    try: revoke_authorization(db, auth, actor=actor, reason=payload.reason)
+    except DispatchAuthorizationError as exc: raise HTTPException(409, str(exc)) from None
+    except Exception: raise HTTPException(500, "Authorization could not be revoked") from None
+    return {"id": auth.id, "status": auth.status}
+
+@router.post("/{publication_id}/reconcile")
+def reconcile_route(publication_id: str, payload: ReconcileRequest, request: Request, db: Session = Depends(get_db)):
+    actor = current_user(request)
+    if not actor: raise HTTPException(401, "Authentication required")
+    try: row = reconcile(db, publication_id, actor=actor, **payload.model_dump())
+    except ReconciliationError as exc: raise HTTPException(409, str(exc)) from None
     return _dto(db, row)

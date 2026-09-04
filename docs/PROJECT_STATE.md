@@ -4,9 +4,9 @@ Diamond Shelf Social Studio is an internal Shopify-catalog-to-editorial-content 
 
 ## Baselines
 
-- Authoritative current `main`: `010e238c2750be8c85efa4d4c83b9aed48f3192e`
-- Current main tree: `48335065aad89272b791362c4d8d56f238944b5e`
-- Current main Alembic head: `0014`
+- Authoritative current `main` for Task #39 audit continuity: `4b508a610cb1005fba4e7495d377341177d90be6`
+- Current main tree: `23a9f3d61f5dcf1748ede054d3dd9f8b0f7640ba`
+- Current main Alembic head: `0014`; Task #39 branch head: `0015`
 - Task #38 starting main baseline: `4242b80e6626886b528641749beeb64cf7e4ea62`
 - Task #38 starting tree: `ac35cffe2f58c1d47deac578e43cabe12189e519`
 - Task #38 starting Alembic head: `0013`
@@ -81,3 +81,8 @@ Re-query the deployed PostgreSQL database before relying on runtime counts opera
 - Frontend: `npm run build` passed (`tsc -b` and `vite build`)
 
 `RELEASE_MATRIX=PASS`. The final release matrix executed against Task #38 branch SHA `92614f876f10947c6c37c7f9bef056b07eefbb21` with tree `48335065aad89272b791362c4d8d56f238944b5e`. Merge commit `010e238c2750be8c85efa4d4c83b9aed48f3192e` has the same tree, so the content merged to `main` is exactly the certified tree.
+### Task #39 Phase 3B
+
+Frontend operator preview/readiness surfaces server-derived state. Manual authorization is distinct from live provider readiness; publishing remains disabled.
+
+Task #39 Phase 3B is PRE-MERGE remediation for Issue #20. The release contract is PINTEREST_QUALITY_V1, fifteen-minute authorization TTL, one ACTIVE authorization, single-use consumption, immutable snapshot binding, duplicate protection, and explicit PUBLISH_UNKNOWN reconciliation. Publishing is `PUBLISHING_ENABLED=false`; live OAuth scopes remain `user_accounts:read`, `boards:read`, and `pins:read`, with no Pinterest writes, autonomous worker, analytics ingestion, or new OpenAI behavior. Operator procedures and the not-yet-authorized single-Pin pilot are documented separately. Runtime counts remain historical and were not freshly queried.

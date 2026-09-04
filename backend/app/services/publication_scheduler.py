@@ -8,7 +8,7 @@ from app.services.fingerprints import _sha256
 MAX_DISPATCH_BATCH = 25
 
 def request_fingerprint(publication):
-    return _sha256({"publication_fingerprint": publication.publication_fingerprint, "board_id": publication.pinterest_board_id_snapshot, "title": publication.title_snapshot, "description": publication.description_snapshot, "alt_text": publication.alt_text_snapshot, "destination_url": publication.destination_url, "media_url": publication.media_url_snapshot})
+    return _sha256({"publication_fingerprint": publication.publication_fingerprint, "board_id": publication.pinterest_board_id_snapshot, "title": publication.title_snapshot, "description": publication.description_snapshot, "alt_text": publication.alt_text_snapshot, "link_url": publication.utm_url, "media_url": publication.media_url_snapshot})
 
 def due_publications(db, *, now=None, limit=MAX_DISPATCH_BATCH):
     if limit < 1 or limit > MAX_DISPATCH_BATCH:

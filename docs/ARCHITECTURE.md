@@ -37,12 +37,12 @@ APPROVED -> SCHEDULED -> CANCELLED
 SCHEDULED -> PUBLISHING -> CANCELLED
 PUBLISHING -> PUBLISHED | PUBLISH_FAILED | PUBLISH_UNKNOWN
 PUBLISH_FAILED -> SCHEDULED (explicit human/admin reschedule only) | CANCELLED
-PUBLISH_UNKNOWN -> PUBLISHED (explicit/manual reconciliation only) | CANCELLED
+PUBLISH_UNKNOWN -> PUBLISHED only through PROVIDER_PIN_CONFIRMED reconciliation; PUBLISH_UNKNOWN -> CANCELLED only through CANCELLED_UNKNOWN reconciliation. The ordinary cancel route is prohibited.
 PUBLISHED terminal
 CANCELLED terminal
 ```
 
-`PUBLISH_UNKNOWN` is never automatically retried.
+`PUBLISH_UNKNOWN` is never automatically retried. The ordinary `POST /api/publications/{id}/cancel` route is prohibited for this state; it may transition to `PUBLISHED` only through `PROVIDER_PIN_CONFIRMED` reconciliation or to `CANCELLED` only through `CANCELLED_UNKNOWN` reconciliation.
 
 ## Readiness and provider gates
 
@@ -75,3 +75,8 @@ Attempt metadata is allowlisted to `validated_pin_id`, `http_status`, `provider_
 Task #36 provides read-only OAuth with encrypted credentials and one-time hashed state. Task #37 provides read-only board/section snapshots, connection-level successful sync time, strict provider metadata validation, five-minute token refresh preflight, and local-only eligibility/routing. Task #38 binds new publications to real PinterestConnection and PinterestBoard identities without enabling live writes.
 
 Protected state keeps `PUBLISHING_ENABLED=false` and live OAuth scopes exactly `user_accounts:read`, `boards:read`, and `pins:read`.
+
+Phase 3B remediation keeps preview, quality, readiness, authorization and reconciliation server-derived. The browser sends only confirmation/version, authorization ID plus bounded reason, or explicit reconciliation action; it never sends snapshots, fingerprints, credentials, or provider tokens. PUBLISH_UNKNOWN has no generic cancel/retry path.
+### Operator controls
+
+Phase 3B uses server-derived publication preview/readiness and explicit authorization/reconciliation APIs; the frontend never handles provider credentials or invokes publish directly.

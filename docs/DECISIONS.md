@@ -14,7 +14,7 @@ Publication snapshots are provider-independent audit records, not joins to mutab
 
 ## Publication state machine
 
-`APPROVED -> SCHEDULED -> CANCELLED`; `SCHEDULED -> PUBLISHING -> CANCELLED`; `PUBLISHING -> PUBLISHED | PUBLISH_FAILED | PUBLISH_UNKNOWN`; `PUBLISH_FAILED -> SCHEDULED` only by explicit human/admin reschedule or `CANCELLED`; `PUBLISH_UNKNOWN -> PUBLISHED` only by explicit/manual reconciliation or `CANCELLED`. `PUBLISHED` and `CANCELLED` are terminal. `PUBLISH_UNKNOWN` is never automatically retried.
+`APPROVED -> SCHEDULED -> CANCELLED`; `SCHEDULED -> PUBLISHING -> CANCELLED`; `PUBLISHING -> PUBLISHED | PUBLISH_FAILED | PUBLISH_UNKNOWN`; `PUBLISH_FAILED -> SCHEDULED` only by explicit human/admin reschedule or `CANCELLED`; `PUBLISH_UNKNOWN -> PUBLISHED` only through `PROVIDER_PIN_CONFIRMED` reconciliation or `PUBLISH_UNKNOWN -> CANCELLED` only through `CANCELLED_UNKNOWN` reconciliation. The ordinary cancel route is prohibited for `PUBLISH_UNKNOWN`; it is never automatically retried. `PUBLISHED` and `CANCELLED` are terminal.
 
 ## Scheduling and concurrency policy
 
@@ -61,3 +61,8 @@ Before any separately authorized live publishing phase, each candidate Pin must 
 - supported Pinterest topic/product-tag fields evaluated before future enablement rather than silently omitted
 
 This is a future live-publishing release gate. It does not enable provider writes now.
+### Phase 3B safety decision
+
+No frontend Publish Now action is exposed. PUBLISH_UNKNOWN requires explicit human reconciliation and is never automatically retried.
+
+Phase 3B remediation: authorization requires the exact server confirmation text/version, revocation requires a human reason, and PUBLISH_UNKNOWN is handled only through explicit provider confirmation or CANCELLED_UNKNOWN. Authorization is not live publishing; the single-Pin pilot remains separately authorized and unexecuted.

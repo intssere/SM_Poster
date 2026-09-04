@@ -24,10 +24,15 @@ Before any separately authorized live publishing phase, the canonical release ga
 
 ## Future phases
 
-The recommended next stage is Task #39 — Pinterest Live Publishing Readiness + Manual Dispatch v1. Task #39 does not mean immediately enabling live publishing; it should prepare a controlled manual live-publishing path with separate authorization.
+Task #39 is the current PRE-MERGE implementation and independent-certification task (Issue #20 OPEN). The next separately authorized dependency after it is Controlled Pinterest Write Enablement + Single-Pin Pilot; it is not authorized now and must not be implied by the current branch.
 
 Required future readiness gates include Pinterest SEO + Metadata + Creative Quality validation, public Pinterest-fetchable HTTPS media, write-scope authorization review, provider-access review, duplicate prevention, final publication preview, explicit operator confirmation, safe `PUBLISH_UNKNOWN` reconciliation, runbook/incident handling, and controlled single-Pin validation.
 
 Do not introduce an autonomous worker as the immediate next step.
 
 Analytics ingestion remains a later separate phase. No later phase is enabled by Task #38.
+
+Task #39 Phase 3B remains PRE-MERGE remediation under independent certification. The operator UI provides server-derived preview/readiness, explicit dispatch authorization and revocation, sanitized history, and PUBLISH_UNKNOWN reconciliation without enabling provider writes. The next separately authorized dependency is Controlled Pinterest Write Enablement + Single-Pin Pilot.
+### Task #39 Phase 3B
+
+Operator experience and runbook are complete; next separately authorized stage is controlled Pinterest write enablement and a single-Pin pilot.

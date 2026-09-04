@@ -48,6 +48,26 @@ def test_db_backed_due_claim_creates_single_started_attempt():
     assert claim(db, p) is None
     db.close()
 
+def test_request_fingerprint_binds_utm_url_as_provider_link():
+    from app.services.publication_scheduler import request_fingerprint_for
+    publication = PinPublication(
+        draft_id="fingerprint-draft",
+        creative_id="fingerprint-creative",
+        publication_fingerprint="f" * 64,
+        pinterest_board_id_snapshot="board",
+        title_snapshot="Title",
+        description_snapshot="Description",
+        alt_text_snapshot="Alt",
+        destination_url="https://diamondshelf.us/products/item",
+        utm_url="https://diamondshelf.us/products/item?utm_source=pinterest",
+        media_url_snapshot="https://cdn.shopify.com/image.jpg",
+    )
+    original = request_fingerprint_for(publication)
+    publication.destination_url = "https://diamondshelf.us/products/item?ignored=1"
+    assert request_fingerprint_for(publication) == original
+    publication.utm_url = "https://diamondshelf.us/products/item?utm_source=pinterest&utm_campaign=changed"
+    assert request_fingerprint_for(publication) != original
+
 def test_file_backed_independent_sessions_allow_only_one_claim(tmp_path):
     from app.services.publication_scheduler import claim, request_fingerprint_for
 

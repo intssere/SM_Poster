@@ -1,200 +1,30 @@
 import { useEffect, useState } from 'react'
 
-type Attempt = {
-  attempt_number: number
-  status: string
-  started_at?: string | null
-  completed_at?: string | null
-  provider_pin_id?: string | null
-  error_code?: string | null
-  safe_response_metadata?: Record<string, unknown>
+type Attempt = { attempt_number: number; status: string; started_at?: string | null; completed_at?: string | null; provider_pin_id?: string | null; error_code?: string | null; safe_response_metadata?: Record<string, unknown> }
+type ChecklistItem = { code: string; passed: boolean; status?: string }
+type QualityCheck = { code: string; severity?: string; passed: boolean; message?: string; safe_details?: unknown }
+type Quality = { status?: string; policy_version?: string; checks?: QualityCheck[] }
+type ReconciliationEvent = { action?: string; actor?: string; previous_status?: string; new_status?: string; provider_pin_id?: string | null; reason?: string | null; created_at?: string }
+type Preview = {
+  publication_id?: string; status?: string; approval_id?: string | null; revision_id?: string | null; draft_id?: string | null; creative_id?: string | null; source_image_id?: string | null; template_id?: string | null; template_key?: string | null; template_version?: string | number | null; pinterest_connection_id?: string | null; pinterest_board_record_id?: string | null; external_board_id?: string | null; board_name?: string | null; title?: string | null; description?: string | null; alt_text?: string | null; destination_url?: string | null; utm_url?: string | null; media_url?: string | null; scheduled_for?: string | null; published_at?: string | null; pinterest_pin_id?: string | null; quality?: Quality; duplicate?: { status?: string }; manual_readiness?: { status?: string; ready?: boolean }; provider_readiness?: { status?: string; live_provider_write_enabled?: boolean }; authorization?: { status?: string; authorization_id?: string | null; expires_at?: string | null }; attempts?: Attempt[]; reconciliation?: ReconciliationEvent[]; checklist?: ChecklistItem[]; confirmation_prompt?: string; confirmation_text_version?: string; live_publishing_enabled?: boolean
 }
-
-type Publication = {
-  id: string
-  status: string
-  revision_id?: string | null
-  creative_id?: string | null
-  approval_id?: string | null
-  pinterest_connection_id?: string | null
-  pinterest_board_record_id?: string | null
-  pinterest_board_id?: string | null
-  scheduled_for?: string | null
-  published_at?: string | null
-  pinterest_pin_id?: string | null
-  error_code?: string | null
-  scheduler_foundation_available?: boolean
-  live_publishing_enabled?: boolean
-  publishing_readiness_reason?: string | null
-  attempts?: Attempt[]
-}
+type Publication = { id: string; status: string; revision_id?: string | null; creative_id?: string | null; approval_id?: string | null; pinterest_connection_id?: string | null; pinterest_board_record_id?: string | null; pinterest_board_id?: string | null; scheduled_for?: string | null; published_at?: string | null; pinterest_pin_id?: string | null; error_code?: string | null; scheduler_foundation_available?: boolean; live_publishing_enabled?: boolean; publishing_readiness_reason?: string | null; attempts?: Attempt[]; title?: string | null; description?: string | null; alt_text?: string | null; destination_url?: string | null; utm_url?: string | null; media_url?: string | null }
 
 const scheduleableStatuses = new Set(['APPROVED', 'SCHEDULED', 'PUBLISH_FAILED'])
-const cancellableStatuses = new Set(['APPROVED', 'SCHEDULED', 'PUBLISH_FAILED', 'PUBLISH_UNKNOWN'])
+const cancellableStatuses = new Set(['APPROVED', 'SCHEDULED', 'PUBLISH_FAILED'])
 
-async function readApiError(response: Response): Promise<string> {
-  try {
-    const body = await response.json()
-    if (typeof body?.detail === 'string') return body.detail
-  } catch {
-    // Keep the fallback bounded; never dump arbitrary HTML or raw bodies.
-  }
-  return `Request failed (${response.status})`
-}
-
-function toScheduledIso(value: string): string | null {
-  if (!value) return null
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return null
-  return parsed.toISOString()
-}
-
-function scheduleLabel(status: string): string {
-  return status === 'APPROVED' ? 'Schedule' : 'Reschedule'
-}
+async function readApiError(response: Response): Promise<string> { try { const body: unknown = await response.json(); if (typeof body === 'object' && body !== null && 'detail' in body) { const detail = (body as { detail?: unknown }).detail; if (typeof detail === 'string') return detail } } catch { /* bounded fallback */ } return `Request failed (${response.status})` }
+function toScheduledIso(value: string): string | null { if (!value) return null; const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString() }
 
 export function PublicationsPage() {
-  const [rows, setRows] = useState<Publication[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [scheduleValues, setScheduleValues] = useState<Record<string, string>>({})
-  const [busyId, setBusyId] = useState<string | null>(null)
-
-  const load = async () => {
-    try {
-      const response = await fetch('/api/publications', { credentials: 'include' })
-      if (!response.ok) throw new Error(await readApiError(response))
-      setRows(await response.json())
-      setError(null)
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Request failed')
-    }
-  }
-
-  useEffect(() => {
-    void load()
-  }, [])
-
-  const mutate = async (id: string, action: 'schedule' | 'cancel', body?: object) => {
-    setError(null)
-    setBusyId(id)
-    try {
-      const response = await fetch(`/api/publications/${id}/${action}`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: body ? { 'Content-Type': 'application/json' } : undefined,
-        body: body ? JSON.stringify(body) : undefined,
-      })
-      if (!response.ok) throw new Error(await readApiError(response))
-      await load()
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Request failed')
-    } finally {
-      setBusyId(null)
-    }
-  }
-
-  const schedulePublication = async (row: Publication) => {
-    const value = scheduleValues[row.id] || ''
-    const scheduledFor = toScheduledIso(value)
-    if (!scheduledFor) {
-      setError('Choose a valid scheduled time.')
-      return
-    }
-    await mutate(row.id, 'schedule', { scheduled_for: scheduledFor })
-  }
-
-  const schedulerKnown = rows.length === 0 || rows.some((row) => row.scheduler_foundation_available)
-  const publishingEnabled = rows.some((row) => row.live_publishing_enabled)
-
-  return (
-    <section>
-      <header>
-        <div>
-          <p className="eyebrow">PUBLICATIONS / SCHEDULER</p>
-          <h2>Publication queue</h2>
-          <p>
-            Scheduler foundation: {schedulerKnown ? 'available' : 'ready'} · Live publishing:{' '}
-            {publishingEnabled ? 'enabled' : 'disabled'}
-          </p>
-        </div>
-      </header>
-
-      {error && (
-        <section className="panel">
-          <strong>{error}</strong>
-        </section>
-      )}
-
-      {rows.length === 0 && (
-        <section className="panel">
-          <p>No publications are queued yet.</p>
-        </section>
-      )}
-
-      {rows.map((row) => {
-        const canSchedule = scheduleableStatuses.has(row.status)
-        const canCancel = cancellableStatuses.has(row.status)
-        const value = scheduleValues[row.id] || ''
-        return (
-          <article className="panel" key={row.id}>
-            <h3>{row.id}</h3>
-            <p>
-              Status: {row.status} · Readiness: {row.publishing_readiness_reason || '—'}
-            </p>
-            <p>
-              Revision: {row.revision_id || 'original'} · Creative: {row.creative_id || '—'} ·
-              Approval: {row.approval_id || '—'}
-            </p>
-            <p>
-              Connection: {row.pinterest_connection_id || '—'} · Board record:{' '}
-              {row.pinterest_board_record_id || '—'} · Board: {row.pinterest_board_id || '—'}
-            </p>
-            <p>
-              Scheduled: {row.scheduled_for || '—'} · Published: {row.published_at || '—'} · Pin:{' '}
-              {row.pinterest_pin_id || '—'}
-            </p>
-            <p>
-              Scheduler foundation: {row.scheduler_foundation_available ? 'available' : 'unavailable'} ·
-              Live publishing: {row.live_publishing_enabled ? 'enabled' : 'disabled'}
-            </p>
-            {row.error_code && <p>Safe error: {row.error_code}</p>}
-
-            {canSchedule && (
-              <>
-                <input
-                  type="datetime-local"
-                  value={value}
-                  onChange={(event) =>
-                    setScheduleValues((current) => ({
-                      ...current,
-                      [row.id]: event.target.value,
-                    }))
-                  }
-                  aria-label={`Scheduled time for ${row.id}`}
-                />
-                <button disabled={!value || busyId === row.id} onClick={() => void schedulePublication(row)}>
-                  {scheduleLabel(row.status)}
-                </button>
-              </>
-            )}
-
-            {canCancel && (
-              <button disabled={busyId === row.id} onClick={() => void mutate(row.id, 'cancel')}>
-                Cancel
-              </button>
-            )}
-
-            {row.attempts?.map((attempt) => (
-              <p key={attempt.attempt_number}>
-                Attempt #{attempt.attempt_number}: {attempt.status} · started {attempt.started_at || '—'} ·
-                completed {attempt.completed_at || '—'} · {attempt.provider_pin_id || '—'} ·{' '}
-                {attempt.error_code || '—'}{' '}
-                {attempt.safe_response_metadata && JSON.stringify(attempt.safe_response_metadata)}
-              </p>
-            ))}
-          </article>
-        )
-      })}
-    </section>
-  )
+  const [rows, setRows] = useState<Publication[]>([]); const [error, setError] = useState<string | null>(null); const [scheduleValues, setScheduleValues] = useState<Record<string, string>>({}); const [busyId, setBusyId] = useState<string | null>(null); const [previews, setPreviews] = useState<Record<string, Preview>>({}); const [confirmed, setConfirmed] = useState<Record<string, boolean>>({}); const [pinIds, setPinIds] = useState<Record<string, string>>({}); const [reasons, setReasons] = useState<Record<string, string>>({})
+  const load = async () => { try { const response = await fetch('/api/publications', { credentials: 'include' }); if (!response.ok) throw new Error(await readApiError(response)); setRows((await response.json()) as Publication[]); setError(null) } catch (exc) { setError(exc instanceof Error ? exc.message : 'Request failed') } }
+  useEffect(() => { void load() }, [])
+  const mutate = async (id: string, action: 'schedule' | 'cancel', body?: object) => { setBusyId(id); setError(null); try { const response = await fetch(`/api/publications/${id}/${action}`, { method: 'POST', credentials: 'include', headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined }); if (!response.ok) throw new Error(await readApiError(response)); await load() } catch (exc) { setError(exc instanceof Error ? exc.message : 'Request failed') } finally { setBusyId(null) } }
+  const loadPreview = async (id: string) => { try { const response = await fetch(`/api/publications/${id}/preview`, { credentials: 'include' }); if (!response.ok) throw new Error(await readApiError(response)); const preview = (await response.json()) as Preview; setPreviews((current) => ({ ...current, [id]: preview })) } catch (exc) { setError(exc instanceof Error ? exc.message : 'Preview request failed') } }
+  const authorize = async (row: Publication, preview: Preview) => { if (!confirmed[row.id] || !preview.confirmation_text_version) return; setBusyId(row.id); try { const response = await fetch(`/api/publications/${row.id}/dispatch-authorization`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmed: true, confirmation_text_version: preview.confirmation_text_version }) }); if (!response.ok) throw new Error(await readApiError(response)); setConfirmed((current) => ({ ...current, [row.id]: false })); await loadPreview(row.id); await load() } catch (exc) { setError(exc instanceof Error ? exc.message : 'Authorization failed') } finally { setBusyId(null) } }
+  const revoke = async (row: Publication, preview: Preview) => { const authorizationId = preview.authorization?.authorization_id; const reason = reasons[row.id] || ''; if (!authorizationId || !reason.trim()) { setError('Enter a reason before revoking authorization.'); return } setBusyId(row.id); try { const response = await fetch(`/api/publications/${row.id}/dispatch-authorization/revoke`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ authorization_id: authorizationId, reason }) }); if (!response.ok) throw new Error(await readApiError(response)); await loadPreview(row.id) } catch (exc) { setError(exc instanceof Error ? exc.message : 'Revocation failed') } finally { setBusyId(null) } }
+  const reconcile = async (row: Publication, action: 'PROVIDER_PIN_CONFIRMED' | 'CANCELLED_UNKNOWN') => { const pin = (pinIds[row.id] || '').trim(); const reason = (reasons[row.id] || '').trim(); if ((action === 'PROVIDER_PIN_CONFIRMED' && !pin) || (action === 'CANCELLED_UNKNOWN' && !reason)) { setError(action === 'PROVIDER_PIN_CONFIRMED' ? 'Enter a verified provider Pin ID.' : 'Enter a cancellation reason.'); return } if (!window.confirm(action === 'CANCELLED_UNKNOWN' ? 'Confirm cancellation of this unknown outcome. This means NO RETRY.' : 'Confirm the provider Pin ID was independently verified.')) return; const body = action === 'PROVIDER_PIN_CONFIRMED' ? { action, confirmed: true, provider_pin_id: pin } : { action, confirmed: true, reason }; setBusyId(row.id); try { const response = await fetch(`/api/publications/${row.id}/reconcile`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); if (!response.ok) throw new Error(await readApiError(response)); await loadPreview(row.id); await load() } catch (exc) { setError(exc instanceof Error ? exc.message : 'Reconciliation failed') } finally { setBusyId(null) } }
+  const schedulerKnown = rows.length === 0 || rows.some((row) => row.scheduler_foundation_available); const publishingEnabled = rows.some((row) => row.live_publishing_enabled)
+  return <section><header><p className="eyebrow">PUBLICATIONS / SCHEDULER</p><h2>Publication queue</h2><p>Scheduler foundation: {schedulerKnown ? 'available' : 'ready'} · Live publishing: {publishingEnabled ? 'enabled' : 'disabled'}</p></header>{error && <section className="panel"><strong>{error}</strong></section>}{rows.length === 0 && <section className="panel"><p>No publications are queued yet.</p></section>}{rows.map((row) => { const preview = previews[row.id]; const auth = preview?.authorization; const reauthEligible = Boolean(preview && preview.quality?.status === 'PASS' && preview.duplicate?.status === 'SAFE_TO_CONTINUE' && preview.manual_readiness?.ready && ['AUTHORIZATION_REQUIRED', 'AUTHORIZATION_EXPIRED', 'AUTHORIZATION_REVOKED'].includes(auth?.status || 'AUTHORIZATION_REQUIRED')); const canSchedule = scheduleableStatuses.has(row.status); const canCancel = cancellableStatuses.has(row.status); const value = scheduleValues[row.id] || ''; return <article className="panel" key={row.id}><h3>{row.id}</h3><p>Status: {row.status} · Readiness: {row.publishing_readiness_reason || '—'}</p><p>Live provider writes: {row.live_publishing_enabled ? 'enabled' : 'PUBLISHING_DISABLED'}</p><button onClick={() => void loadPreview(row.id)} disabled={busyId === row.id}>View final preview</button>{preview && <section className="panel"><h4>Final immutable preview</h4><p>Approved content: {preview.title || row.title || '—'}</p><p>Description: {preview.description || row.description || '—'}</p><p>Alt text: {preview.alt_text || row.alt_text || '—'}</p><p>Canonical destination: {preview.destination_url || row.destination_url || '—'}</p><p>UTM URL: {preview.utm_url || row.utm_url || '—'}</p><p>Media: {preview.media_url || row.media_url || '—'}</p>{preview.media_url && <img src={preview.media_url} alt={preview.alt_text || 'Approved publication'} style={{ maxWidth: '320px' }} />}<p>Approval: {preview.approval_id || '—'} · Revision: {preview.revision_id || 'original'} · Creative: {preview.creative_id || '—'} · Source image: {preview.source_image_id || '—'}</p><p>Template: {preview.template_key || preview.template_id || '—'} v{preview.template_version || '—'}</p><p>Connection: {preview.pinterest_connection_id || '—'} · Board: {preview.board_name || '—'} ({preview.external_board_id || '—'})</p><p>Scheduled: {preview.scheduled_for || row.scheduled_for || '—'} · Published: {preview.published_at || row.published_at || '—'} · Pin: {preview.pinterest_pin_id || row.pinterest_pin_id || '—'}</p><p>Quality: {preview.quality?.status || '—'} (policy {preview.quality?.policy_version || '—'}) · Duplicate: {preview.duplicate?.status || '—'} · Manual: {preview.manual_readiness?.status || '—'} · Provider: {preview.provider_readiness?.status || '—'}</p>{preview.quality?.checks?.map((check) => <p key={check.code}>Quality {check.code}: {check.severity || 'INFO'} · {check.passed ? 'PASS' : 'FAIL'} · {check.message || '—'} {check.safe_details ? JSON.stringify(check.safe_details) : ''}</p>)}{preview.checklist?.map((item) => <p key={item.code}>{item.code}: {item.passed ? 'PASS' : item.status || 'FAIL'}</p>)}<p>Authorization: {auth?.status || 'AUTHORIZATION_REQUIRED'}{auth?.expires_at ? ` (expires ${auth.expires_at})` : ''}</p>{reauthEligible && <div><p>{preview.confirmation_prompt || 'Review the exact approved publication before authorizing future manual dispatch.'}</p><p>Confirmation version: {preview.confirmation_text_version || '—'}</p><label><input type="checkbox" checked={Boolean(confirmed[row.id])} onChange={(event) => setConfirmed((current) => ({ ...current, [row.id]: event.target.checked }))} /> I confirm this exact approved publication was reviewed.</label><button disabled={!confirmed[row.id] || busyId === row.id} onClick={() => void authorize(row, preview)}>Authorize future manual dispatch</button></div>}{auth?.status === 'ACTIVE' && <div><input value={reasons[row.id] || ''} onChange={(event) => setReasons((current) => ({ ...current, [row.id]: event.target.value }))} placeholder="Reason for revocation" /><button disabled={busyId === row.id} onClick={() => void revoke(row, preview)}>Revoke authorization</button></div>}{row.status === 'PUBLISH_UNKNOWN' && <div><h4>Reconciliation required</h4><p>This outcome is unknown. CANCELLED_UNKNOWN means NO RETRY.</p><input value={pinIds[row.id] || ''} onChange={(event) => setPinIds((current) => ({ ...current, [row.id]: event.target.value }))} placeholder="Verified provider Pin ID" /><button disabled={!pinIds[row.id]?.trim() || busyId === row.id} onClick={() => void reconcile(row, 'PROVIDER_PIN_CONFIRMED')}>Provider Pin confirmed</button><input value={reasons[row.id] || ''} onChange={(event) => setReasons((current) => ({ ...current, [row.id]: event.target.value }))} placeholder="Cancellation reason" /><button disabled={!reasons[row.id]?.trim() || busyId === row.id} onClick={() => void reconcile(row, 'CANCELLED_UNKNOWN')}>Cancel unknown outcome</button></div>}{preview.attempts?.map((attempt) => <p key={attempt.attempt_number}>Attempt #{attempt.attempt_number}: {attempt.status} · {attempt.started_at || '—'} → {attempt.completed_at || '—'} · Pin {attempt.provider_pin_id || '—'} · {attempt.error_code || '—'} {attempt.safe_response_metadata ? JSON.stringify(attempt.safe_response_metadata) : ''}</p>)}{preview.reconciliation?.map((event, index) => <p key={`${event.action || 'event'}-${index}`}>Reconciliation: {event.action || '—'} · {event.actor || '—'} · {event.previous_status || '—'} → {event.new_status || '—'} · Pin {event.provider_pin_id || '—'} · {event.reason || '—'} · {event.created_at || '—'}</p>)}</section>}<p>Revision: {row.revision_id || 'original'} · Creative: {row.creative_id || '—'} · Approval: {row.approval_id || '—'}</p><p>Connection: {row.pinterest_connection_id || '—'} · Board record: {row.pinterest_board_record_id || '—'} · Board: {row.pinterest_board_id || '—'}</p>{row.error_code && <p>Safe error: {row.error_code}</p>}{canSchedule && <><input type="datetime-local" value={value} onChange={(event) => setScheduleValues((current) => ({ ...current, [row.id]: event.target.value }))} /><button disabled={!value || busyId === row.id} onClick={() => { const scheduledFor = toScheduledIso(value); if (scheduledFor) void mutate(row.id, 'schedule', { scheduled_for: scheduledFor }); else setError('Choose a valid scheduled time.') }}>{row.status === 'APPROVED' ? 'Schedule' : 'Reschedule'}</button></>}{canCancel && <button disabled={busyId === row.id} onClick={() => void mutate(row.id, 'cancel')}>Cancel</button>}</article> })}</section>
 }

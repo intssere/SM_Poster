@@ -18,7 +18,7 @@ Publication snapshots reject incomplete provenance, duplicate fingerprints, iden
 
 No provider call may occur when gates fail. Provider execution requires complete immutable snapshot, exact approval identity, exact creative/source-media identity, connected PinterestConnection, matching active/eligible PinterestBoard, unchanged external board snapshot, `PUBLISHING_ENABLED=true`, already-granted `pins:write`, public Pinterest-fetchable HTTPS media, and matching request/attempt fingerprint.
 
-`PUBLISH_UNKNOWN` is never automatically retried. Automatic scheduling/publishing is prohibited; explicit human scheduling is allowed. No autonomous scheduler/background worker exists in Task #38.
+`PUBLISH_UNKNOWN` is never automatically retried. The ordinary cancel route is prohibited for this state; only `PROVIDER_PIN_CONFIRMED` or `CANCELLED_UNKNOWN` reconciliation may resolve it. Automatic scheduling/publishing is prohibited; explicit human scheduling is allowed. No autonomous scheduler/background worker exists in Task #38.
 
 ## Attempts and provider outcome safety
 
@@ -45,3 +45,8 @@ Branded products, bottles, packages, and logos must come from authentic persiste
 ## Pinterest read foundations
 
 Task #36 OAuth uses one-time hashed state records, server-side code exchange, encrypted tokens, and read-only scopes. Task #37 board sync validates provider metadata before persistence; malformed containers or values fail closed without silent stringification/truncation. Board sync uses a five-minute token-expiry preflight and one bounded refresh. Refresh failures preserve inventory and sync timestamps, with no background refresh or provider retry loop.
+### Phase 3B controls
+
+Provider credentials remain server-side; the UI does not store tokens or invoke provider writes. Publishing is disabled and PUBLISH_UNKNOWN cannot be retried.
+
+Phase 3B controls are server-derived. The UI sends only confirmation/version, authorization ID plus bounded reason, or explicit reconciliation payloads; it does not render fingerprints, raw provider bodies, headers, ciphertext, tokens, or secrets, and generic cancellation is unavailable for PUBLISH_UNKNOWN.

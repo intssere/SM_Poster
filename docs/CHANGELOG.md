@@ -50,3 +50,8 @@
 - Full backend: 347 passed, 2 warnings.
 - Frontend `npm run build`, `tsc -b`, and `vite build` passed.
 - Task #38 release certification passed and the certified tree was merged. Live publishing remains disabled by policy and requires a separate future authorization.
+## Task #39 Phase 3B
+
+- Added server-derived publication preview/readiness operator surfaces and explicit reconciliation messaging.
+- Added explicit dispatch authorization/version confirmation, deliberate revocation, sanitized attempt/reconciliation history, and a PUBLISH_UNKNOWN-only reconciliation workflow. Publishing remains disabled.
+- Added operator runbook and single-Pin pilot readiness documentation.
