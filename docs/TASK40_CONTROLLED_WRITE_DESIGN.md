@@ -37,9 +37,12 @@ The response is classified as `PUBLISHED`, `PUBLISH_FAILED`, or
 persisted and raw bodies, headers, tokens, fingerprints, and secrets are never
 serialized.
 
-The Task #40 pilot gate belongs immediately before provider execution, inside
-the trusted manual-dispatch orchestration, after all existing post-claim gates
-and before gateway construction/POST.
+The pilot has two checks. A PRE-CLAIM check runs before token decryption where
+practical, gateway construction, `atomic_authorized_claim`, authorization
+consumption, publication transition, or attempt creation. A disabled or
+mismatched pilot causes zero provider calls and leaves the publication
+`SCHEDULED`. A POST-CLAIM recheck runs after the atomic claim and post-claim
+validation, immediately before gateway construction and the network POST.
 
 ## Proposed two-key pilot gate
 
@@ -52,40 +55,39 @@ duplicate, destination, media, authorization, or attempt checks.
 
 ## Exact candidate binding
 
-Reuse the existing `PublicationDispatchAuthorization` snapshot binding rather
-than creating a second approval system. Immediately before dispatch, resolve
-the publication and verify the authorization is ACTIVE, unexpired, single-use,
-and bound to the unchanged publication fingerprint, exact
-`pinterest_connection_id`, board record ID and external board ID, creative ID
-and fingerprint, source image ID, and UTM destination. Re-run quality PASS,
-duplicate SAFE_TO_CONTINUE, exact approval/revision/creative identity,
-connected active/eligible board, public HTTPS media, no known Pin ID, and
-non-PUBLISHED/non-PUBLISH_UNKNOWN state. The actor is derived from the
-authenticated server session. The browser supplies none of these trusted
-values.
+Reuse the existing `PublicationDispatchAuthorization` snapshot binding. It
+stores `publication_id`, `publication_fingerprint`, quality/readiness/duplicate
+snapshots, actor, TTL, and single-use status; it has no dedicated connection,
+board, creative, source-image, UTM, title, description, or media columns. Those
+values are bound indirectly by the publication fingerprint and recomputation.
+Add a server-only exact allowlist of pilot publication ID, publication
+fingerprint, and `request_fingerprint_for(publication)`, empty by default. The
+browser route ID is only an untrusted selector; every configured value must
+match or the request makes zero mutation and zero provider calls. The
+publication fingerprint binds draft/revision-or-original/creative/source image,
+destination identities, destination URL and UTM; request fingerprint also
+binds external board, title, description, alt text, UTM, and media URL.
 
 ## OAuth write-scope design (future Gate A only)
 
-When a separately authorized server-side write-scope setting is false, OAuth
-requests remain exactly the current three read scopes. A future, default-false
-`PINTEREST_WRITE_SCOPE_ENABLED` may add only `pins:write` when Gate A is
-approved; `boards:write` is permanently excluded. The callback must persist
-the provider-granted scopes, prove `pins:write` was actually granted, and keep
-credentials encrypted. Reconnection/upgrade is explicit, reversible by
-revocation and reconnection, and never browser-controlled. This design does
-not implement that setting or perform a reconnect.
+Define `READ_SCOPES = ("user_accounts:read", "boards:read", "pins:read")` and a
+server-only `requested_scopes(settings)` helper. With the write gate false,
+requested scopes are exactly READ_SCOPES; with Gate A true they add only
+`pins:write`. `boards:write` is never allowed. Callback validation always
+requires READ_SCOPES, persists actual granted scopes, and proves pins:write
+only during Gate A. Refresh always requires READ_SCOPES and never
+re-escalates. Requested scopes are distinct from already-granted persisted
+scopes; disabling the request gate does not remove an existing grant.
 
 ## One-write and concurrency enforcement
 
-The first valid invocation consumes the single-use authorization and claims the
-publication via the existing transactional CAS, then creates one STARTED
-attempt. A second invocation sees consumed authorization, a non-schedulable
-state, an existing attempt/known Pin, or a duplicate and makes zero provider
-calls. Concurrent sessions contend on the same row/unique authorization and
-attempt invariants; only one transaction can claim. `PUBLISH_UNKNOWN` and
-`PUBLISHED_STATE_PERSISTENCE_UNKNOWN` stop further writes and require explicit
-reconciliation. A pilot-specific audit binding, if later needed, must be
-validated in the same transaction and cannot create a second publisher.
+For Gate B the candidate must have ZERO existing PublicationAttempt rows. Any
+prior FAILED, UNKNOWN, SUCCEEDED, or persistence-uncertain attempt yields
+`PILOT_ALREADY_ATTEMPTED` and zero provider calls. The pre-claim check enforces
+this before authorization consumption. Existing transactional CAS ensures
+concurrent first requests have at most one winner; the loser makes zero
+provider calls. Rescheduling or reauthorization cannot create a second pilot
+POST after the first attempt.
 
 ## Route decision
 
@@ -123,8 +125,9 @@ quality PASS, duplicate SAFE_TO_CONTINUE, public media, exact UTM destination,
 ACTIVE unexpired dispatch authorization, and no prior Pin/unknown/published
 state are proven. The pilot flag and global publishing flag are temporarily
 enabled by separate authorization, no autonomous worker or retry exists, and
-incident/runbook evidence is ready. Gate B permits exactly one mocked-first,
-then controlled live `POST /v5/pins`.
+incident/runbook evidence is ready. Gate B authorizes exactly ONE live provider
+create-Pin request. All mocked tests must already pass before Gate B; test
+activity is not part of the Gate B authorization itself.
 
 ## Post-pilot shutdown
 
@@ -153,14 +156,59 @@ No database migration is required for Phase 0. Existing
 immutable publication snapshot records provide the required binding, TTL,
 single-use, audit, and outcome durability. Alembic remains `0015`.
 
-## Threat analysis and unresolved questions
+## Complete pre-provider checklist
 
-Threats include browser-supplied trusted IDs, replay/double-submit, concurrent
-claims, stale approvals, token leakage, ambiguous provider outcomes, and an
-operator accidentally leaving a write flag enabled. Server-derived binding,
-transactional CAS/uniqueness, encrypted credentials, allowlisted metadata,
-two-key gating, and mandatory reconciliation mitigate these risks. Before any
-future Gate A/B approval, confirm the exact Pinterest account identity,
-provider Pin verification procedure, token revocation SLA, and operational
-ownership for a one-Pin incident. These are unresolved design questions, not
-permissions to execute them.
+Immediately before the provider POST, require: both runtime keys true; exact
+configured pilot publication, publication fingerprint, and request fingerprint;
+zero prior attempts before the first claim; valid unexpired authorization
+consumed by the atomic claim; unchanged authorization snapshots; quality PASS;
+duplicate SAFE_TO_CONTINUE; manual readiness; publication PUBLISHING and
+attempt STARTED with the exact request fingerprint; exact CONNECTED connection;
+matching board record/external ID that is active and eligible; persisted
+`pins:write` with `boards:write` absent; public HTTPS media; provider title,
+description, and alt limits; canonical destination and exact UTM; no Pin ID and
+no PUBLISH_UNKNOWN blocker. Re-evaluate the exact pilot binding immediately
+before the network call.
+
+## Post-pilot token recommendation
+
+Immediately set both execution keys false, disable write-scope requests, run no
+worker, and perform no retry. Prefer revoking/reconnecting the token back to
+read-only after evidence capture. Retain a write-scoped token temporarily only
+with documented operational justification and every server execution gate
+false; requested scopes and persisted grants remain distinct.
+
+## Threat analysis
+
+- Accidental broad publishing — exact candidate allowlist plus two-key gate.
+- Wrong route ID — route ID is an untrusted selector and must match config.
+- Pilot boolean without binding — empty/mismatched configured fingerprints fail.
+- Scope escalation or Gate A flag changes — server-only settings, READ_SCOPES
+  always required, `boards:write` impossible, no automatic re-escalation.
+- Unexpected grants — persist actual scopes and verify explicitly at Gate A.
+- Double click/parallel dispatch — single-use authorization, CAS claim, unique
+  attempt, and zero-prior-attempt pilot rule.
+- Retry after FAILED/UNKNOWN/persistence uncertainty — prior-attempt blocker
+  and explicit reconciliation-only unknown state.
+- Stale approval/creative/board/UTM/media — immutable snapshot and complete
+  post-claim identity/readiness revalidation.
+- Token/raw-body leakage — encrypted server credentials and allowlisted safe
+  metadata only.
+- Configuration left enabled — immediate shutdown procedure and two keys.
+- Write-scoped token retained — preferred revoke/reconnect to read-only.
+- Future autonomous worker — explicitly prohibited and requires a new task.
+
+## Recommended Phase 1 implementation order
+
+1. Add default-false configuration fields.
+2. Separate `READ_SCOPES` from `requested_scopes`.
+3. Implement the exact pilot-binding helper.
+4. Add the pre-claim pilot guard.
+5. Defer credential decryption and gateway construction.
+6. Add the zero-prior-attempt hard blocker.
+7. Preserve the atomic authorized claim.
+8. Add the post-claim pilot-binding recheck.
+9. Add comprehensive mocked tests.
+10. Update the runbook and continuity documentation.
+11. Run full regression certification.
+12. Stop before Gate A; no live OAuth or provider write occurs in Phase 1.
