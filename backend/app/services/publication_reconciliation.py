@@ -5,7 +5,8 @@ from sqlalchemy import select, update
 from app.models.domain import PinPublication, PublicationAttempt, PublicationReconciliationEvent, PublicationStatus, AuditLog
 
 class ReconciliationError(RuntimeError): pass
-_PIN = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
+MAX_PROVIDER_PIN_ID_LENGTH = 80
+_PIN = re.compile(rf"^[A-Za-z0-9._:-]{{1,{MAX_PROVIDER_PIN_ID_LENGTH}}}$")
 
 def _validate_reason(reason: str | None, *, required: bool = False) -> str | None:
     if reason is None:
@@ -32,6 +33,7 @@ def reconcile(db, publication_id: str, *, actor: str, action: str, confirmed: bo
     if len(known) > 1: raise ReconciliationError("CONFLICTING_KNOWN_PROVIDER_PIN_IDS")
     if action == "PROVIDER_PIN_CONFIRMED":
         pin = _pin(provider_pin_id)
+        reason = _validate_reason(reason)
         if known and pin not in known: raise ReconciliationError("KNOWN_PROVIDER_PIN_MISMATCH")
         other = db.scalar(select(PinPublication).where(PinPublication.pinterest_pin_id == pin, PinPublication.id != publication_id))
         if other: raise ReconciliationError("PROVIDER_PIN_ID_ALREADY_ASSIGNED")

@@ -14,6 +14,9 @@ def test_provider_pin_ids_reject_unsafe_values(value):
 
 def test_provider_pin_ids_accept_token_style_values():
     assert _pin("Pin-01_v2.example:abc") == "Pin-01_v2.example:abc"
+    assert len(_pin("a" * 80)) == 80
+    with pytest.raises(ReconciliationError, match="INVALID_PROVIDER_PIN_ID"):
+        _pin("a" * 81)
 
 
 def test_reconcile_rejects_confirmation_and_unsupported_action():
@@ -58,4 +61,15 @@ def test_conflicting_known_pin_ids_fail_closed_without_event():
     db.commit()
     with pytest.raises(ReconciliationError, match="CONFLICTING_KNOWN_PROVIDER_PIN_IDS"):
         reconcile(db, publication.id, actor="admin@example.test", action="PROVIDER_PIN_CONFIRMED", confirmed=True, provider_pin_id="pin-a")
+    assert db.query(PublicationReconciliationEvent).count() == 0
+
+
+def test_invalid_reason_is_rejected_before_state_transition():
+    db = _db()
+    publication = _ready_publication(db, status=PublicationStatus.PUBLISH_UNKNOWN)
+    with pytest.raises(ReconciliationError, match="INVALID_REASON"):
+        reconcile(db, publication.id, actor="admin@example.test", action="PROVIDER_PIN_CONFIRMED", confirmed=True, provider_pin_id="pin-123", reason="bad\x7freason")
+    db.refresh(publication)
+    assert publication.status == PublicationStatus.PUBLISH_UNKNOWN
+    assert publication.pinterest_pin_id is None
     assert db.query(PublicationReconciliationEvent).count() == 0

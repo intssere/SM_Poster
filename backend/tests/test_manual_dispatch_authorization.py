@@ -502,6 +502,20 @@ def test_provider_readiness_requires_connected_connection_even_with_pins_write(m
     }
 
 
+def test_revoke_authorization_rolls_back_on_commit_failure():
+    from app.services.publication_dispatch_authorization import revoke_authorization
+    class DB:
+        def __init__(self): self.rolled = False
+        def add(self, obj): pass
+        def commit(self): raise RuntimeError("db failure")
+        def rollback(self): self.rolled = True
+    db = DB()
+    auth = _authorization(_publication(_db()), suffix="rollback")
+    with pytest.raises(RuntimeError):
+        revoke_authorization(db, auth, actor="admin", reason="operator")
+    assert db.rolled
+
+
 def test_two_session_authorization_creation_race_is_bounded(tmp_path, monkeypatch):
     from app.services import publication_dispatch_authorization as auth_service
 

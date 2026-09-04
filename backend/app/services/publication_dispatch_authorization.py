@@ -124,7 +124,11 @@ def revoke_authorization(
     authorization.revoked_at = normalize_persisted_utc(now or _now())
     authorization.revoke_reason = reason[:255]
     db.add(AuditLog(actor=actor, action="PUBLICATION_DISPATCH_AUTHORIZATION_REVOKED", entity_type="PublicationDispatchAuthorization", entity_id=authorization.id, metadata_json={"authorization_id": authorization.id}))
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return authorization
 
 
