@@ -27,7 +27,7 @@ def test_pilot_requires_exact_server_binding(monkeypatch):
     monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(pub, pilot=False))
     assert validate_pilot_candidate(db, pub) == (False, "PILOT_DISABLED")
     monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(pub, enabled=False))
-    assert validate_pilot_candidate(db, pub) == (False, "PUBLISHING_DISABLED")
+    assert validate_pilot_candidate(db, pub) == (False, "PILOT_DISABLED")
 
 def test_pilot_rejects_any_prior_attempt(monkeypatch):
     db = _db(); pub = _publication(db)

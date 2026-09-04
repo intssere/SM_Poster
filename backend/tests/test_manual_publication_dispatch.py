@@ -117,7 +117,7 @@ def test_dispatch_disabled_preserves_active_authorization_and_creates_no_attempt
     auth = create_authorization(db, publication, actor="admin@example.test")
     monkeypatch.setattr(auth_service, "get_settings", lambda: _settings(False, publication))
     monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(False, publication))
-    with pytest.raises(ManualDispatchError, match="PUBLISHING_DISABLED"):
+    with pytest.raises(ManualDispatchError, match="PILOT_DISABLED"):
         import asyncio
 
         asyncio.run(dispatch_publication(db, publication))
@@ -376,6 +376,48 @@ def test_dispatch_pilot_preclaim_failures_are_zero_mutation(monkeypatch, mode, e
     assert db.get(PinPublication, publication.id).status == PublicationStatus.SCHEDULED
     assert db.get(type(auth), auth.id).status == "ACTIVE"
     assert db.query(PublicationAttempt).filter_by(publication_id=publication.id).count() == 0
+    engine.dispose()
+
+@pytest.mark.parametrize("field", ["publication_id", "publication_fingerprint", "request_fingerprint"])
+def test_dispatch_pilot_incomplete_binding_is_zero_mutation(monkeypatch, field):
+    from app.services import pinterest_single_pin_pilot as pilot_service
+    SessionLocal, engine = _db(); db = SessionLocal(); publication = _ready_publication(db); auth = create_authorization(db, publication, actor="admin@example.test")
+    values = {"publication_id": publication.id, "publication_fingerprint": publication.publication_fingerprint, "request_fingerprint": request_fingerprint_for(publication)}; values[field] = ""
+    monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(True, publication, **values))
+    decrypt_calls=[]; gateway_calls=[]
+    class Gateway:
+        def __init__(self, *a, **kw): gateway_calls.append(1)
+    import asyncio
+    with pytest.raises(ManualDispatchError, match="PILOT_BINDING_INCOMPLETE"):
+        asyncio.run(dispatch_publication(db, publication, decrypt=lambda _: decrypt_calls.append(1), gateway_factory=Gateway))
+    assert decrypt_calls == [] and gateway_calls == [] and db.query(PublicationAttempt).count() == 0
+    assert publication.status == PublicationStatus.SCHEDULED and auth.status == "ACTIVE"
+    engine.dispose()
+
+@pytest.mark.parametrize("status", ["STARTED", "FAILED", "UNKNOWN", "SUCCEEDED"])
+def test_dispatch_prior_attempt_blocks_pilot_before_provider(monkeypatch, status):
+    from app.services import pinterest_single_pin_pilot as pilot_service
+    SessionLocal, engine = _db(); db = SessionLocal(); publication = _ready_publication(db); auth = create_authorization(db, publication, actor="admin@example.test")
+    db.add(PublicationAttempt(publication_id=publication.id, attempt_number=1, status=status, request_fingerprint="prior")); db.commit()
+    monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(True, publication))
+    calls=[]
+    import asyncio
+    with pytest.raises(ManualDispatchError, match="PILOT_ALREADY_ATTEMPTED"):
+        asyncio.run(dispatch_publication(db, publication, decrypt=lambda _: calls.append("decrypt"), gateway_factory=lambda **_: calls.append("gateway")))
+    assert calls == [] and db.query(PublicationAttempt).filter_by(publication_id=publication.id).count() == 1 and auth.status == "ACTIVE"
+    engine.dispose()
+
+def test_dispatch_gateway_constructor_failure_is_bounded_before_claim(monkeypatch):
+    from app.services import pinterest_single_pin_pilot as pilot_service
+    from app.services import publication_dispatch_authorization as auth_service
+    SessionLocal, engine = _db(); db = SessionLocal(); publication = _ready_publication(db); auth = create_authorization(db, publication, actor="admin@example.test")
+    monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(True, publication))
+    monkeypatch.setattr(auth_service, "get_settings", lambda: _settings(True, publication))
+    import asyncio
+    def broken(**kwargs): raise RuntimeError("gateway secret")
+    with pytest.raises(ManualDispatchError, match="TOKEN_DECRYPT_FAILED"):
+        asyncio.run(dispatch_publication(db, publication, decrypt=lambda _: "token", gateway_factory=broken))
+    assert publication.status == PublicationStatus.SCHEDULED and auth.status == "ACTIVE" and db.query(PublicationAttempt).count() == 0
     engine.dispose()
 
 
