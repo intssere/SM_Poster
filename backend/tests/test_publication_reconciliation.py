@@ -118,3 +118,24 @@ def test_duplicate_pin_on_another_attempt_is_rejected():
     with pytest.raises(ReconciliationError, match="PROVIDER_PIN_ID_ALREADY_ASSIGNED"):
         reconcile(db, target.id, actor="admin", action="PROVIDER_PIN_CONFIRMED", confirmed=True, provider_pin_id="pin-dup")
     assert db.query(PublicationReconciliationEvent).count() == 0
+
+
+def test_two_session_reconciliation_race_has_single_winner(tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.models.domain import Base
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'reconcile-race.db'}")
+    Base.metadata.create_all(engine); SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    setup = SessionLocal(); publication = _ready_publication(setup, status=PublicationStatus.PUBLISH_UNKNOWN); pid = publication.id; setup.close()
+    a, b = SessionLocal(), SessionLocal()
+    try:
+        a.get(type(publication), pid); b.get(type(publication), pid)
+        reconcile(a, pid, actor="admin-a", action="CANCELLED_UNKNOWN", confirmed=True, reason="operator decision")
+        with pytest.raises(ReconciliationError, match="RECONCILIATION_(CONFLICT|REQUIRES_PUBLISH_UNKNOWN)"):
+            reconcile(b, pid, actor="admin-b", action="CANCELLED_UNKNOWN", confirmed=True, reason="operator decision")
+        audit = SessionLocal()
+        try:
+            assert audit.query(PublicationReconciliationEvent).filter_by(publication_id=pid).count() == 1
+        finally: audit.close()
+    finally:
+        a.close(); b.close(); engine.dispose()
