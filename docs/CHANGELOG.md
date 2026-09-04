@@ -55,3 +55,4 @@
 - Added server-derived publication preview/readiness operator surfaces and explicit reconciliation messaging.
 - Added explicit dispatch authorization/version confirmation, deliberate revocation, sanitized attempt/reconciliation history, and a PUBLISH_UNKNOWN-only reconciliation workflow. Publishing remains disabled.
 - Added operator runbook and single-Pin pilot readiness documentation.
+- Final release certification passed; PR #21 merged and Issue #20 closed. Alembic remains `0015` and live publishing remains disabled.
