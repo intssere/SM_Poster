@@ -473,6 +473,66 @@ class PublicationAttempt(Base):
     __table_args__ = (UniqueConstraint("publication_id", "attempt_number", name="uq_publication_attempt_number"),)
 
 
+class PublicationDispatchAuthorization(Base):
+    """Durable, server-derived human authorization for a future manual dispatch.
+
+    ``authorized_by`` must be derived from the authenticated admin principal by
+    the future API/service layer.  It is not a client-owned JSON field.
+    """
+
+    __tablename__ = "publication_dispatch_authorizations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    publication_id: Mapped[str] = mapped_column(
+        ForeignKey("pin_publications.id", ondelete="RESTRICT"), index=True, nullable=False
+    )
+    authorized_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    authorized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    publication_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    quality_policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    quality_snapshot: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    readiness_snapshot: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    duplicate_snapshot: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    confirmation_text_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoke_reason: Mapped[str | None] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="ACTIVE")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (
+        Index(
+            "uq_publication_dispatch_authorizations_active",
+            "publication_id",
+            unique=True,
+            sqlite_where=text("status = 'ACTIVE'"),
+            postgresql_where=text("status = 'ACTIVE'"),
+        ),
+        Index("ix_publication_dispatch_authorizations_expires_at", "expires_at"),
+        Index("ix_publication_dispatch_authorizations_status", "status"),
+        Index("ix_publication_dispatch_authorizations_authorized_at", "authorized_at"),
+    )
+
+
+class PublicationReconciliationEvent(Base):
+    """Safe operator audit event for future explicit PUBLISH_UNKNOWN handling."""
+
+    __tablename__ = "publication_reconciliation_events"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    publication_id: Mapped[str] = mapped_column(
+        ForeignKey("pin_publications.id", ondelete="RESTRICT"), index=True, nullable=False
+    )
+    attempt_id: Mapped[str | None] = mapped_column(
+        ForeignKey("publication_attempts.id", ondelete="RESTRICT"), index=True
+    )
+    actor: Mapped[str] = mapped_column(String(255), nullable=False)
+    action: Mapped[str] = mapped_column(String(60), nullable=False)
+    previous_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    new_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    provider_pin_id: Mapped[str | None] = mapped_column(String(255))
+    reason: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 class PinterestOAuthState(Base):
     __tablename__ = "pinterest_oauth_states"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
