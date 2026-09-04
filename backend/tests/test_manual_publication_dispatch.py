@@ -420,6 +420,46 @@ def test_dispatch_gateway_constructor_failure_is_bounded_before_claim(monkeypatc
     assert publication.status == PublicationStatus.SCHEDULED and auth.status == "ACTIVE" and db.query(PublicationAttempt).count() == 0
     engine.dispose()
 
+@pytest.mark.parametrize("drift", ["pilot", "request"])
+def test_dispatch_post_claim_pilot_drift_fails_after_claim(monkeypatch, drift):
+    from app.services import pinterest_single_pin_pilot as pilot_service
+    from app.services import publication_dispatch_authorization as auth_service
+    SessionLocal, engine = _db(); db = SessionLocal(); publication = _ready_publication(db); auth = create_authorization(db, publication, actor="admin@example.test")
+    valid = _settings(True, publication)
+    drifted = _settings(True, publication, pilot=(drift != "pilot"), request_fingerprint=("drift" if drift == "request" else None))
+    sequence = iter([valid, drifted])
+    monkeypatch.setattr(pilot_service, "get_settings", lambda: next(sequence))
+    monkeypatch.setattr(auth_service, "get_settings", lambda: valid)
+    class Gateway:
+        calls = 0
+        def __init__(self, *a, **kw): pass
+        async def create_pin(self, payload): type(self).calls += 1; return {"id": "pin"}
+    import asyncio
+    with pytest.raises(ManualDispatchError): asyncio.run(dispatch_publication(db, publication, decrypt=lambda _: "token", gateway_factory=Gateway))
+    db.expire_all(); assert auth.status == "CONSUMED"; assert publication.status == PublicationStatus.PUBLISH_FAILED
+    attempt = db.query(PublicationAttempt).filter_by(publication_id=publication.id).one()
+    assert attempt.status == "FAILED" and Gateway.calls == 0 and attempt.provider_pin_id is None
+    with pytest.raises(ManualDispatchError): asyncio.run(dispatch_publication(db, publication, decrypt=lambda _: "token", gateway_factory=Gateway))
+    assert Gateway.calls == 0 and db.query(PublicationAttempt).filter_by(publication_id=publication.id).count() == 1
+    engine.dispose()
+
+def test_dispatch_second_invocation_never_calls_provider(monkeypatch):
+    from app.services import pinterest_single_pin_pilot as pilot_service
+    from app.services import publication_dispatch_authorization as auth_service
+    from app.services import pinterest_publisher
+    SessionLocal, engine = _db(); db = SessionLocal(); publication = _ready_publication(db); auth = create_authorization(db, publication, actor="admin@example.test")
+    settings = _settings(True, publication); monkeypatch.setattr(pilot_service, "get_settings", lambda: settings); monkeypatch.setattr(auth_service, "get_settings", lambda: settings); monkeypatch.setattr(pinterest_publisher, "get_settings", lambda: settings)
+    class Gateway:
+        calls = 0
+        def __init__(self, *a, **kw): pass
+        async def create_pin(self, payload): type(self).calls += 1; return {"id": "pin"}
+    import asyncio
+    asyncio.run(dispatch_publication(db, publication, decrypt=lambda _: "token", gateway_factory=Gateway))
+    assert Gateway.calls == 1 and db.query(PublicationAttempt).filter_by(publication_id=publication.id).count() == 1
+    with pytest.raises(ManualDispatchError): asyncio.run(dispatch_publication(db, publication, decrypt=lambda _: "token", gateway_factory=Gateway))
+    assert Gateway.calls == 1 and db.query(PublicationAttempt).filter_by(publication_id=publication.id).count() == 1
+    engine.dispose()
+
 
 def test_two_session_stale_authorized_claim_consumes_once(tmp_path):
     # SQLite-compatible authoritative database CAS proof used by full dispatch:

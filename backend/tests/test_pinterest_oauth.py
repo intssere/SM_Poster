@@ -311,3 +311,34 @@ def test_default_authorization_url_excludes_write_scopes(monkeypatch):
     url = oauth.authorization_url("state")
     assert "user_accounts%3Aread" in url and "boards%3Aread" in url and "pins%3Aread" in url
     assert "pins%3Awrite" not in url and "boards%3Awrite" not in url
+
+def _refresh_row():
+    return PinterestConnection(external_user_id="refresh", access_token_ciphertext=oauth.encrypt_token("old-access"), refresh_token_ciphertext=oauth.encrypt_token("old-refresh"), granted_scopes=list(oauth.READ_SCOPES) + ["pins:write"], access_token_expires_at=datetime.now(timezone.utc)+timedelta(hours=1), refresh_token_expires_at=datetime.now(timezone.utc)+timedelta(days=1), refreshed_at=datetime.now(timezone.utc)-timedelta(days=1))
+
+def test_refresh_persists_actual_write_scope(monkeypatch, isolated_app_db):
+    configure(monkeypatch)
+    with isolated_app_db() as db:
+        row = _refresh_row(); db.add(row); db.commit()
+        class Client:
+            async def refresh_token(self, token): return {"access_token":"new", "refresh_token":"new-refresh", "scope":"user_accounts:read boards:read pins:read pins:write", "expires_in":3600}
+        asyncio.run(oauth.refresh_connection(db, row, Client())); db.expire_all()
+        assert set(db.query(PinterestConnection).one().granted_scopes) == set(oauth.READ_SCOPES) | {"pins:write"}
+
+def test_refresh_scope_loss_removes_write_grant(monkeypatch, isolated_app_db):
+    configure(monkeypatch)
+    with isolated_app_db() as db:
+        row = _refresh_row(); db.add(row); db.commit()
+        class Client:
+            async def refresh_token(self, token): return {"access_token":"new", "scope":"user_accounts:read boards:read pins:read", "expires_in":3600}
+        asyncio.run(oauth.refresh_connection(db, row, Client())); db.expire_all()
+        assert "pins:write" not in db.query(PinterestConnection).one().granted_scopes
+
+def test_refresh_boards_write_rejection_preserves_metadata(monkeypatch, isolated_app_db):
+    configure(monkeypatch)
+    with isolated_app_db() as db:
+        row = _refresh_row(); db.add(row); db.commit(); before = {k: getattr(row, k) for k in ("access_token_ciphertext", "refresh_token_ciphertext", "access_token_expires_at", "refresh_token_expires_at", "granted_scopes", "refreshed_at")}
+        class Client:
+            async def refresh_token(self, token): return {"access_token":"bad", "scope":"user_accounts:read boards:read pins:read boards:write"}
+        with pytest.raises(RuntimeError): asyncio.run(oauth.refresh_connection(db, row, Client()))
+        db.expire_all(); fresh = db.query(PinterestConnection).one()
+        for key, value in before.items(): assert getattr(fresh, key) == value
