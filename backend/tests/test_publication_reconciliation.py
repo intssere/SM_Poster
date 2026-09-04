@@ -98,3 +98,23 @@ def test_known_pin_blocks_unknown_cancellation():
     publication.pinterest_pin_id = "pin-known"; db.commit()
     with pytest.raises(ReconciliationError, match="KNOWN_PROVIDER_PIN_REQUIRES_CONFIRMATION"):
         reconcile(db, publication.id, actor="admin", action="CANCELLED_UNKNOWN", confirmed=True, reason="stop")
+
+
+def test_duplicate_pin_on_another_publication_is_rejected():
+    db = _db(); target = _ready_publication(db, status=PublicationStatus.PUBLISH_UNKNOWN)
+    from app.models.domain import PinPublication
+    other = PinPublication(id="other-pub", draft_id=target.draft_id, revision_id=target.revision_id, creative_id=target.creative_id, approval_id=target.approval_id, source_image_id=target.source_image_id, template_id=target.template_id, template_key=target.template_key, template_version=target.template_version, text_fingerprint=target.text_fingerprint, creative_fingerprint=target.creative_fingerprint, pinterest_connection_id=target.pinterest_connection_id, pinterest_board_record_id=target.pinterest_board_record_id, pinterest_board_id_snapshot=target.pinterest_board_id_snapshot, title_snapshot=target.title_snapshot, description_snapshot=target.description_snapshot, alt_text_snapshot=target.alt_text_snapshot, media_url_snapshot=target.media_url_snapshot, destination_url=target.destination_url, utm_url=target.utm_url, publication_fingerprint="o"*64, status=PublicationStatus.PUBLISHED, pinterest_pin_id="pin-dup")
+    db.add(other); db.commit()
+    with pytest.raises(ReconciliationError, match="PROVIDER_PIN_ID_ALREADY_ASSIGNED"):
+        reconcile(db, target.id, actor="admin", action="PROVIDER_PIN_CONFIRMED", confirmed=True, provider_pin_id="pin-dup")
+    assert db.query(PublicationReconciliationEvent).count() == 0
+
+
+def test_duplicate_pin_on_another_attempt_is_rejected():
+    db = _db(); target = _ready_publication(db, status=PublicationStatus.PUBLISH_UNKNOWN)
+    from app.models.domain import PinPublication
+    other = PinPublication(id="other-pub", draft_id=target.draft_id, revision_id=target.revision_id, creative_id=target.creative_id, approval_id=target.approval_id, source_image_id=target.source_image_id, template_id=target.template_id, template_key=target.template_key, template_version=target.template_version, text_fingerprint=target.text_fingerprint, creative_fingerprint=target.creative_fingerprint, pinterest_connection_id=target.pinterest_connection_id, pinterest_board_record_id=target.pinterest_board_record_id, pinterest_board_id_snapshot=target.pinterest_board_id_snapshot, title_snapshot=target.title_snapshot, description_snapshot=target.description_snapshot, alt_text_snapshot=target.alt_text_snapshot, media_url_snapshot=target.media_url_snapshot, destination_url=target.destination_url, utm_url=target.utm_url, publication_fingerprint="o"*64, status=PublicationStatus.PUBLISHED)
+    db.add(other); db.flush(); db.add(PublicationAttempt(publication_id=other.id, attempt_number=1, status="UNKNOWN", provider_pin_id="pin-dup")); db.commit()
+    with pytest.raises(ReconciliationError, match="PROVIDER_PIN_ID_ALREADY_ASSIGNED"):
+        reconcile(db, target.id, actor="admin", action="PROVIDER_PIN_CONFIRMED", confirmed=True, provider_pin_id="pin-dup")
+    assert db.query(PublicationReconciliationEvent).count() == 0
