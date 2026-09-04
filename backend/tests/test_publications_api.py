@@ -96,7 +96,7 @@ def test_phase3a_authorization_revoke_and_unknown_cancel_api_contract(monkeypatc
     from app.core import auth
     from app.core.config import get_settings
     from app.db.session import get_db
-    from app.models.domain import Base, PublicationDispatchAuthorization, PublicationStatus, PublicationReconciliationEvent
+    from app.models.domain import Base, PublicationDispatchAuthorization, PublicationStatus, PublicationReconciliationEvent, AuditLog
     from app.services.publication_dispatch_authorization import create_authorization
     from fastapi.testclient import TestClient
     from test_manual_dispatch_authorization import _ready_publication
@@ -131,6 +131,9 @@ def test_phase3a_authorization_revoke_and_unknown_cancel_api_contract(monkeypatc
             with SessionLocal() as db:
                 auth_row = db.get(PublicationDispatchAuthorization, created.json()["id"])
                 assert auth_row.status == "REVOKED" and auth_row.revoke_reason == "Operator revoked"
+                audit = db.query(AuditLog).filter_by(action="PUBLICATION_DISPATCH_AUTHORIZATION_REVOKED").one()
+                assert audit.actor == "admin" and audit.entity_type == "PublicationDispatchAuthorization" and audit.entity_id == auth_row.id
+                assert audit.metadata_json == {"authorization_id": auth_row.id}
             with SessionLocal() as db:
                 row = db.get(__import__('app.models.domain', fromlist=['PinPublication']).PinPublication, pid); row.status = PublicationStatus.PUBLISH_UNKNOWN; db.commit()
             cancelled = client.post(f"/api/publications/{pid}/reconcile", json={"action": "CANCELLED_UNKNOWN", "confirmed": True, "reason": "No safe retry"}, headers={"Origin": "http://localhost:5000"})
