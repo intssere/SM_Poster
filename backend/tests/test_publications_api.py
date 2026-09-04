@@ -30,6 +30,22 @@ def test_publications_api_anonymous_routes_denied(monkeypatch):
     assert client.post("/api/publications", json={}, headers={"Origin":"http://localhost:5000"}).status_code == 401
 
 
+def test_phase3a_operator_endpoints_require_authentication(monkeypatch):
+    client = _client(monkeypatch)
+    for method, path, body in [
+        ("get", "/api/publications/missing/preview", None),
+        ("get", "/api/publications/missing/dispatch-readiness", None),
+        ("post", "/api/publications/missing/dispatch-authorization", {"confirmed": True, "confirmation_text_version": "CONFIRM_DISPATCH_V1"}),
+        ("post", "/api/publications/missing/dispatch-authorization/revoke", {"authorization_id": "x", "reason": "x"}),
+        ("post", "/api/publications/missing/reconcile", {"action": "CANCELLED_UNKNOWN", "confirmed": True, "reason": "x"}),
+    ]:
+        if method == "get":
+            response = client.get(path)
+        else:
+            response = client.post(path, json=body, headers={"Origin": "http://localhost:5000"})
+        assert response.status_code == 401
+
+
 def test_publish_route_requires_task39_authorization_and_delegates(monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
