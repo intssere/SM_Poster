@@ -89,6 +89,57 @@ def test_phase3a_preview_and_readiness_authenticated_contract(monkeypatch):
         app.dependency_overrides.pop(get_db, None); engine.dispose()
 
 
+def test_phase3a_authorization_revoke_and_unknown_cancel_api_contract(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from app.core import auth
+    from app.core.config import get_settings
+    from app.db.session import get_db
+    from app.models.domain import Base, PublicationDispatchAuthorization, PublicationStatus, PublicationReconciliationEvent
+    from app.services.publication_dispatch_authorization import create_authorization
+    from fastapi.testclient import TestClient
+    from test_manual_dispatch_authorization import _ready_publication
+    monkeypatch.setenv("APP_ENV", "development"); monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("APP_SECRET_KEY", "a" * 48); monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", auth.hash_password("secret")); monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5000")
+    monkeypatch.setenv("PUBLISHING_ENABLED", "false"); get_settings.cache_clear()
+    engine = create_engine("sqlite+pysqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine); SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    with SessionLocal() as db:
+        publication = _ready_publication(db); pid = publication.id
+    def override_get_db():
+        db = SessionLocal()
+        try: yield db
+        finally: db.close()
+    from app.main import app
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestClient(app) as client:
+            assert client.post("/api/auth/login", json={"username": "admin", "password": "secret"}).status_code == 200
+            bad_origin = client.post(f"/api/publications/{pid}/dispatch-authorization", json={"confirmed": True, "confirmation_text_version": "CONFIRM_DISPATCH_V1"}, headers={"Origin": "https://evil.example"})
+            assert bad_origin.status_code == 403
+            created = client.post(f"/api/publications/{pid}/dispatch-authorization", json={"confirmed": True, "confirmation_text_version": "CONFIRM_DISPATCH_V1"}, headers={"Origin": "http://localhost:5000"})
+            assert created.status_code == 200 and created.json()["status"] == "ACTIVE"
+            assert created.json()["authorized_by"] == "admin"
+            extra = client.post(f"/api/publications/{pid}/dispatch-authorization", json={"confirmed": True, "confirmation_text_version": "CONFIRM_DISPATCH_V1", "authorized_by": "attacker"}, headers={"Origin": "http://localhost:5000"})
+            assert extra.status_code == 422
+            second = client.post(f"/api/publications/{pid}/dispatch-authorization", json={"confirmed": True, "confirmation_text_version": "CONFIRM_DISPATCH_V1"}, headers={"Origin": "http://localhost:5000"})
+            assert second.status_code == 409 and "ACTIVE_AUTHORIZATION_EXISTS" in second.text
+            revoked = client.post(f"/api/publications/{pid}/dispatch-authorization/revoke", json={"authorization_id": created.json()["id"], "reason": "Operator revoked"}, headers={"Origin": "http://localhost:5000"})
+            assert revoked.status_code == 200
+            with SessionLocal() as db:
+                auth_row = db.get(PublicationDispatchAuthorization, created.json()["id"])
+                assert auth_row.status == "REVOKED" and auth_row.revoke_reason == "Operator revoked"
+            with SessionLocal() as db:
+                row = db.get(__import__('app.models.domain', fromlist=['PinPublication']).PinPublication, pid); row.status = PublicationStatus.PUBLISH_UNKNOWN; db.commit()
+            cancelled = client.post(f"/api/publications/{pid}/reconcile", json={"action": "CANCELLED_UNKNOWN", "confirmed": True, "reason": "No safe retry"}, headers={"Origin": "http://localhost:5000"})
+            assert cancelled.status_code == 200 and cancelled.json()["status"] == "CANCELLED"
+            assert client.post(f"/api/publications/{pid}/cancel", headers={"Origin": "http://localhost:5000"}).status_code in (409, 422)
+    finally:
+        app.dependency_overrides.pop(get_db, None); engine.dispose()
+
+
 def test_publish_route_requires_task39_authorization_and_delegates(monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
