@@ -1,5 +1,7 @@
 import pytest
 from types import SimpleNamespace
+from copy import copy
+from sqlalchemy.orm import make_transient
 
 from app.services.publication_reconciliation import ReconciliationError, _pin, reconcile
 from app.models.domain import PublicationStatus, PublicationReconciliationEvent, PublicationAttempt
@@ -73,3 +75,26 @@ def test_invalid_reason_is_rejected_before_state_transition():
     assert publication.status == PublicationStatus.PUBLISH_UNKNOWN
     assert publication.pinterest_pin_id is None
     assert db.query(PublicationReconciliationEvent).count() == 0
+
+
+@pytest.mark.parametrize("kind", ["publication", "attempt"])
+def test_known_or_duplicate_pin_ids_are_rejected_without_mutation(kind):
+    db = _db(); publication = _ready_publication(db, status=PublicationStatus.PUBLISH_UNKNOWN)
+    if kind == "publication":
+        publication.pinterest_pin_id = "pin-known"; submitted = "pin-other"
+    elif kind == "attempt":
+        db.add(PublicationAttempt(publication_id=publication.id, attempt_number=1, status="UNKNOWN", provider_pin_id="pin-known")); submitted = "pin-other"
+    db.commit()
+    expected = "KNOWN_PROVIDER_PIN_MISMATCH" if kind in {"publication", "attempt"} else "PROVIDER_PIN_ID_ALREADY_ASSIGNED"
+    with pytest.raises(ReconciliationError, match=expected):
+        reconcile(db, publication.id, actor="admin", action="PROVIDER_PIN_CONFIRMED", confirmed=True, provider_pin_id=submitted)
+    db.refresh(publication)
+    assert publication.status == PublicationStatus.PUBLISH_UNKNOWN
+    assert db.query(PublicationReconciliationEvent).count() == 0
+
+
+def test_known_pin_blocks_unknown_cancellation():
+    db = _db(); publication = _ready_publication(db, status=PublicationStatus.PUBLISH_UNKNOWN)
+    publication.pinterest_pin_id = "pin-known"; db.commit()
+    with pytest.raises(ReconciliationError, match="KNOWN_PROVIDER_PIN_REQUIRES_CONFIRMATION"):
+        reconcile(db, publication.id, actor="admin", action="CANCELLED_UNKNOWN", confirmed=True, reason="stop")
