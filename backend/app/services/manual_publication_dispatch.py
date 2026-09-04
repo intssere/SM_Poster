@@ -48,15 +48,15 @@ async def dispatch_publication(
     if not auth_result["valid"]:
         raise ManualDispatchError(auth_result["status"])
 
+    pilot_ok, pilot_reason = validate_pilot_candidate(db, publication)
+    if not pilot_ok:
+        raise ManualDispatchError(pilot_reason)
+
     provider = provider_readiness(db, publication)
     if provider["status"] == "PUBLISHING_DISABLED":
         raise ManualDispatchError("PUBLISHING_DISABLED")
     if provider["status"] == "PUBLISHING_SCOPE_REQUIRED":
         raise ManualDispatchError("PUBLISHING_SCOPE_REQUIRED")
-
-    pilot_ok, pilot_reason = validate_pilot_candidate(db, publication)
-    if not pilot_ok:
-        raise ManualDispatchError(pilot_reason)
 
     connection = db.get(PinterestConnection, publication.pinterest_connection_id)
     if not connection or not connection.access_token_ciphertext:
