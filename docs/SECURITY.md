@@ -2,37 +2,46 @@
 
 ## Current controls
 
-- `PUBLISHING_ENABLED=false` blocks production publication.
+- `PUBLISHING_ENABLED=false` blocks protected-state publication.
+- Live Pinterest OAuth requested scopes are exactly `user_accounts:read`, `boards:read`, and `pins:read`.
+- Task #38 does not request `pins:write` or `boards:write`; fixture-only `pins:write` may appear in tests.
 - Protected AI settings remain disabled; hosted provider failures fail closed.
-- Approval requires an exact valid proposal version/creative identity.
-- Publication snapshots reject cross-proposal revision/creative, cross-store board/account, incomplete provenance, and duplicate fingerprint combinations.
-- Authentic Shopify `source_image_id` is retained in every new publication snapshot.
-- Historical rows remain readable without invented provenance.
+- Operational APIs require Task #35 authentication, and unsafe API methods retain Origin/CSRF protection.
 
-## Prohibited behavior
+## Authentication
 
-- No secrets in source, APIs, telemetry, logs, fixtures, or documentation.
-- No Pinterest/OpenAI call from approval or publication identity operations.
-- No generated branded product, package, or logo.
-- No automatic selection, approval, schedule, publication, retry, or model escalation.
-- Board synchronization is read-only; no Pinterest board, section, or Pin writes are permitted.
+Task #35 centralizes single-admin authentication. Sessions use signed HttpOnly cookies, SameSite strict, Secure in exposed mode, automatic expiry, and no browser token storage. Exposed production/Replit modes fail closed without server-side auth configuration. Credentials and secrets must remain in server configuration only.
 
-## Known gap
+## Publication safety
 
-Internal proposal APIs do not yet have dedicated authentication/authorization. Address this in a separate security-hardening task before broader operational exposure.
+Publication snapshots reject incomplete provenance, duplicate fingerprints, identity mismatches, invalid destinations, and unsafe media. Snapshot creation is provider-independent and database-only. Provider execution is separately gated by preflight and execution revalidation.
 
-## Task #35 status
+No provider call may occur when gates fail. Provider execution requires complete immutable snapshot, exact approval identity, exact creative/source-media identity, connected PinterestConnection, matching active/eligible PinterestBoard, unchanged external board snapshot, `PUBLISHING_ENABLED=true`, already-granted `pins:write`, public Pinterest-fetchable HTTPS media, and matching request/attempt fingerprint.
 
-Operational API authorization is now centralized behind a single-admin signed session. `APP_SECRET_KEY` must be at least 32 characters and `ADMIN_USERNAME` plus a PBKDF2 `ADMIN_PASSWORD_HASH` are required in exposed mode. `AUTH_DISABLED=true` is rejected by policy in exposed mode. Cookies are HttpOnly, SameSite strict, Secure when exposed, and expire automatically; credentials never enter frontend storage or logs.
+`PUBLISH_UNKNOWN` is never automatically retried. Automatic scheduling/publishing is prohibited; explicit human scheduling is allowed. No autonomous scheduler/background worker exists in Task #38.
 
-Task #36 OAuth uses one-time hashed state records, server-side code exchange, and Fernet-encrypted tokens. Only read scopes are requested; publishing scopes and calls remain disabled.
+## Attempts and provider outcome safety
 
-## Task #37 status
+Durable STARTED attempts are created before provider execution. Valid provider success with a validated Pin ID becomes `PUBLISHED`; definitive provider rejection becomes `PUBLISH_FAILED`; ambiguous transport, timeout, reset, 5xx, missing/invalid Pin ID, or persistence uncertainty becomes `PUBLISH_UNKNOWN`. Provider success followed by local persistence uncertainty uses `PUBLISHED_STATE_PERSISTENCE_UNKNOWN`. `PublicationReconciliationError` remains typed and distinguishable through the API boundary.
 
-Board Sync & Board Manager v1 stores normalized read snapshots behind authenticated routes only. It performs no Pinterest mutations, scheduling, analytics ingestion, or publication. `PUBLISHING_ENABLED=false` remains authoritative and AI/provider mode remains disabled.
-# Pinterest provider validation
+Attempt metadata is allowlisted to:
 
-Provider metadata is type-validated before persistence. Malformed containers or values fail closed; provider values are never silently stringified or truncated. Failed malformed synchronization does not advance `boards_last_synced_at`. PR #15 is merged and publishing remains disabled.
-# Board synchronization refresh safety
+- `validated_pin_id`
+- `http_status`
+- `provider_error_code`
+- `request_id`
+- `correlation_id`
 
-Expiry preflight uses a five-minute window and one bounded refresh. Refresh failures preserve inventory and sync timestamps, with no background refresh or provider retry loop.
+Never persist or serialize access tokens, refresh tokens, Authorization or Bearer credentials, `client_secret`, raw bodies, raw JSON, tracebacks, exceptions, raw provider error bodies, or arbitrary metadata. Attempt DTOs do not expose `request_fingerprint`.
+
+## Frontend safety
+
+The Publications frontend has no enabled Publish control and no call to `POST /api/publications/{id}/publish`. It uses per-publication datetime-local state, converts schedule values to timezone-aware ISO strings, shows controlled server error details, relies on browser-managed Origin, keeps `credentials: 'include'`, displays identity/destination/readiness and ordered sanitized attempts, and stores no tokens, ciphertext, or client secrets.
+
+## Authentic branded media
+
+Branded products, bottles, packages, and logos must come from authentic persisted Shopify product media. AI-generated material, where separately authorized, may only serve supporting/decorative roles and must not substitute an unapproved product creative. Task #38 provider execution uses the exact approved creative/source-media identity.
+
+## Pinterest read foundations
+
+Task #36 OAuth uses one-time hashed state records, server-side code exchange, encrypted tokens, and read-only scopes. Task #37 board sync validates provider metadata before persistence; malformed containers or values fail closed without silent stringification/truncation. Board sync uses a five-minute token-expiry preflight and one bounded refresh. Refresh failures preserve inventory and sync timestamps, with no background refresh or provider retry loop.

@@ -1,63 +1,80 @@
 # Project Handoff
 
-## What this is
-
-Diamond Shelf Social Studio (`intssere/SM_Poster`) is an internal system for turning trusted Shopify catalog facts into reviewable social creative while preserving authentic branded product imagery and human control.
+Diamond Shelf Social Studio (`intssere/SM_Poster`) turns trusted Shopify catalog facts into reviewable social creative while preserving authentic branded product imagery, immutable audit records, and explicit human control.
 
 ## Current baseline
 
-- Current authoritative GitHub `main` is `886ba9ec25e316f0d5b9a3a590ae8cbef103a059` (tree `f0b3ec2eaaa7f9ac050f43f3b0ad3bc015c409e0`).
-- Alembic head: `0013`; migration 0013 adds nullable `PinterestConnection.boards_last_synced_at` for connection-level successful board-sync state.
-- Backend: FastAPI, SQLAlchemy, Alembic, PostgreSQL-ready models.
-- Frontend: React/Vite internal review dashboard.
-- Publishing: disabled (`PUBLISHING_ENABLED=false`).
-- AI/provider mode: disabled in protected state.
+- Authoritative Task #38 main baseline: `4242b80e6626886b528641749beeb64cf7e4ea62`
+- Main baseline tree: `ac35cffe2f58c1d47deac578e43cabe12189e519`
+- Main Alembic head: `0013`
+- Task #38 branch: `task-38-publisher-scheduler-foundation-v1`
+- Task #38 PRE-MERGE branch Alembic head: `0014`
+- Code/frontend checkpoint entering documentation closure: `8c14903deac4978e36d9a65d62122d84d374978e`
+- Checkpoint tree: `8ca7b7aa438cd1c6fd038e734a4ad24cdd5e4d53`
 
-## Completed feature sequence
+This SHA is the synchronized code/frontend checkpoint entering documentation closure. Do not place the documentation commit SHA inside this document; use the commit evidence after this pass as the next starting point for final release certification.
 
-PRs #1–#8 established review-only AI foundations, production model configuration, fail-closed hosted errors, grounded fact safety, revision comparison previews, and persisted Creative Proof image serving. Task #34 adds exact approval identity, immutable publication snapshots, duplicate protection, and project documentation.
+## Task status
+
+- Task #34: COMPLETE / merged
+- Task #35: COMPLETE / merged
+- Task #36: COMPLETE / merged
+- Task #37: COMPLETE / merged
+- Task #38: PRE-MERGE
+
+Task #38 has not been claimed as merged, PR_READY, or release certified. Do not create a Task #38 PR until the final release matrix and independent branch-vs-main audit are green and explicitly authorized.
 
 ## Non-negotiable rules
 
-- Use the authentic persisted Shopify product image for branded products.
-- AI may generate approved supporting backgrounds, never branded products/packages/logos.
+- Branded products, bottles, packages, and logos must come from authentic persisted Shopify product media.
+- AI may generate approved supporting material only; it may not substitute an unapproved branded creative.
 - Revisions are immutable; active-version selection is explicit.
-- Human approval must bind the exact revision and creative.
-- No auto-approval, auto-publishing, Pinterest API call, or scheduling worker.
-- Hosted text uses Luna by default; Terra is explicit-only; hosted failures fail closed.
-- Never place secrets in source, APIs, telemetry, or logs.
+- Human approval must bind exact revision/original and creative identity.
+- Publication snapshots are provider-independent database/audit records.
+- No auto-approval, autonomous publishing, autonomous scheduler worker, live Pinterest write, OpenAI call, browser automation, or automatic `PUBLISH_UNKNOWN` retry.
+- Never place secrets in source, APIs, telemetry, logs, docs, or frontend storage.
 
-## Pinterest and analytics status
+## Task #38 implementation snapshot
 
-Task #36 account OAuth and Task #37 read-only board/section synchronization with local Board Manager selection are COMPLETE (PR #15 MERGED, Issue #14 CLOSED). Pinterest writes, scheduling, and analytics remain disabled. Publication Identity v2 remains audit-safe.
+Task #38 supplies provider-independent immutable publication snapshots, exact approved content/creative/source-media identity, real PinterestConnection and PinterestBoard binding, immutable external board/title/description/alt/destination/UTM/media snapshots, duplicate fingerprints, explicit human schedule/reschedule/cancel, timezone-aware UTC scheduling, deterministic due discovery, bounded batches of 25, transactional compare-and-set claims, durable STARTED attempts, unique attempt numbering, mockable Pinterest gateway boundary, conservative provider outcome classification, safe attempt metadata, authenticated publication APIs, server-derived readiness, hardened Publications/Scheduler frontend, ordered sanitized attempt-history display, controlled scheduling/rescheduling/cancellation, and no enabled live Publish UI.
 
-Pinterest connection refresh is provider-read-only: replacement values are
-validated and encrypted before connection fields are changed. Failed refreshes
-preserve encrypted credentials and all expiry/scope/timestamp metadata; only a
-sanitized error code may be recorded. No background refresh job is enabled.
+Explicit human scheduling exists; autonomous/background scheduling does not.
+
+## Provider gates and protected state
+
+Provider execution requires complete snapshot data, exact approval identity, exact creative/source-media identity, connected Pinterest connection, matching active/eligible Pinterest board, unchanged external board snapshot, `PUBLISHING_ENABLED=true`, already-granted `pins:write`, public Pinterest-fetchable HTTPS media, and a matching request/attempt fingerprint.
+
+Protected repository state remains `PUBLISHING_ENABLED=false`. Live OAuth requested scopes remain exactly `user_accounts:read`, `boards:read`, and `pins:read`; Task #38 must not request `pins:write` or `boards:write`. Fixture-only `pins:write` may appear in tests. These are two independent live-write blockers.
+
+`PUBLISH_UNKNOWN` is never automatically retried. `PublicationReconciliationError` remains distinguishable through the API boundary.
+
+## Focused verification history
+
+- Publication API: 17 passed
+- Pinterest gateway: 7 passed
+- Pinterest publisher: 37 passed
+- Publication scheduler: 11 passed
+- Combined focused foundation: 72 passed
+- Existing warning count: 1
+- Frontend: `npm run build` passed (`tsc -b` and `vite build`)
+
+This is not the final full release matrix.
 
 ## Repository/test state versus runtime state
 
-Task #34 verification uses isolated test databases. Those fixtures create and delete approvals and publication snapshots and are not evidence of live runtime counts. This repository session had no production database connection, so it did not re-query or mutate runtime business data.
+Task verification uses isolated test databases. These fixtures do not represent deployed business data. No production database was connected or queried during this documentation pass.
 
-The latest previously verified runtime snapshot, carried forward from controlled Adagio v3 verification, is 4 content revisions, 1 selection (Adagio v3), 5 telemetry records, 0 generated assets, 0 approvals, and 0 publications. Treat these values as a prior verified snapshot, not as counts measured by Task #34. Re-query the deployed PostgreSQL database before relying on them operationally.
+Latest carried-forward runtime snapshot, historical and not freshly queried: 4 content revisions, 1 selection (Adagio v3), 5 telemetry records, 0 generated assets, 0 approvals, and 0 publications. Re-query deployed PostgreSQL before operational use.
 
-PR #15 is MERGED and Issue #14 is CLOSED on `main` at `886ba9ec25e316f0d5b9a3a590ae8cbef103a059` (tree `f0b3ec2eaaa7f9ac050f43f3b0ad3bc015c409e0`). Task #35, Task #36, and Task #37 are COMPLETE; Alembic is `0013`. Pinterest board sync is read-only with connection-level successful-sync state, strict provider validation, five-minute refresh preflight, and local-only eligibility/routing; publishing, scheduling, and analytics remain disabled. The next stage is Publisher + Scheduler design.
+## Pinterest SEO + Metadata + Creative Quality Release Gate
 
-## Known issues and next work
+Before any future live publishing phase, apply the canonical gate in `docs/DECISIONS.md`: title/description relevance and limits, alt text, canonical URL/UTMs, eligible board/topic relevance, authentic provenance, public HTTPS media, vertical creative quality, Shopify metadata consistency, Open Graph / Schema.org / Rich Pin compatibility, unsupported-claim and keyword-stuffing rejection, duplicate Pin spam prevention, and topic/product-tag field review.
 
-Task #35, Task #36, and Task #37 are COMPLETE; PR #15 is MERGED and Issue #14 is CLOSED. Alembic is `0013`. Publishing remains disabled; runtime counts remain carried-forward historical values, not freshly queried. The next implementation stage is Publisher + Scheduler design, subject to explicit authorization.
+## Remaining release steps
 
-## Verification commands
-
-```bash
-cd backend
-pytest -q
-alembic upgrade head
-
-cd ../frontend
-npm run build
-```
-# Task #37 refresh behavior
-
-PR #15 — PRE-MERGE / under independent review. Alembic is `0013`. Board sync performs a five-minute token expiry preflight and invokes the existing refresh helper at most once; failures make zero board/section calls and do not advance successful-sync state. Publishing remains disabled.
+1. Final release-certification matrix
+2. Independent branch-vs-main audit
+3. PR_READY authorization
+4. PR creation
+5. Independent PR review
+6. Explicit human merge authorization

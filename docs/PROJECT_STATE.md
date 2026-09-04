@@ -1,22 +1,52 @@
 # Project State
 
-Diamond Shelf Social Studio is an internal Shopify-catalog-to-editorial-content review system. Current authoritative GitHub `main` is `886ba9ec25e316f0d5b9a3a590ae8cbef103a059` (tree `f0b3ec2eaaa7f9ac050f43f3b0ad3bc015c409e0`).
+Diamond Shelf Social Studio is an internal Shopify-catalog-to-editorial-content review system. It preserves authentic branded product imagery, immutable review records, and explicit human control.
 
-Current capabilities include catalog normalization, controlled proposal generation, deterministic authentic-product creative rendering, immutable AI-assisted copy revisions, review-only generated backgrounds and video specifications, explicit version selection, approval auditing, and read-only revision previews.
+## Baselines
 
-Database head is Alembic `0013`. Migration 0013 adds nullable `PinterestConnection.boards_last_synced_at`; migrations add only compatible identity and read-only board snapshot structures.
+- Authoritative Task #38 `main` baseline: `4242b80e6626886b528641749beeb64cf7e4ea62`
+- Baseline tree: `ac35cffe2f58c1d47deac578e43cabe12189e519`
+- Authoritative main Alembic head: `0013`
+- Task #38 PRE-MERGE branch: `task-38-publisher-scheduler-foundation-v1`
+- Task #38 code/frontend checkpoint entering documentation closure: `8c14903deac4978e36d9a65d62122d84d374978e`
+- Task #38 checkpoint tree: `8ca7b7aa438cd1c6fd038e734a4ad24cdd5e4d53`
+- Task #38 PRE-MERGE branch Alembic head: `0014`
 
-Task #34 / PR #10 is merged on `main` at `6bff2e6cf36bbbac0c3f7831fe6680868d07a1be` (tree `22bae2de2346e408552eeeba57786959d38c2f2c`). Task #35 adds internal single-admin authentication without a migration.
+Migration `backend/alembic/versions/0014_publisher_scheduler_foundation.py` is additive and historical migrations `0001`-`0013` were not rewritten. Known limitation: historical migration `0002` contains PostgreSQL-specific syntax such as `'[]'::json`, so Task #38 requires narrow actual `0013 -> 0014` verification rather than claiming the complete fresh SQLite migration chain passes.
 
-Admin authentication protects operational API routes centrally. Sessions are signed, HttpOnly, Secure in exposed mode, SameSite strict, short-lived, and never stored in browser storage. Production fails closed without server-side auth configuration; authentication bypass is permitted only when explicitly enabled in local/test mode.
+## Task status
 
-## Repository and test state
+- Task #34: COMPLETE / merged
+- Task #35: COMPLETE / merged
+- Task #36: COMPLETE / merged
+- Task #37: COMPLETE / merged
+- Task #38: PRE-MERGE; no PR has been claimed and release certification is not complete yet
 
-Task #34 adds models, migration logic, services, and isolated regression fixtures. Test-created approval/publication rows are ephemeral and do not represent deployed business data. No production database was connected or queried during this repository-only verification.
+## Current capabilities
 
-## Latest verified runtime state
+Completed foundations include catalog normalization, controlled proposal generation, deterministic authentic-product creative rendering, immutable AI-assisted copy revisions, review-only generated backgrounds and video specifications, explicit version selection, approval auditing, read-only revision previews, single-admin authentication, read-only Pinterest OAuth, and read-only Pinterest board/section sync with local Board Manager configuration.
 
-The latest previously verified runtime snapshot was recorded during the controlled Adagio v3 verification, before Task #34:
+Task #38 adds provider-independent immutable publication snapshots, exact approved revision/original-content identity, exact approved creative identity, authentic source-image provenance, real PinterestConnection and PinterestBoard binding, immutable external board/title/description/alt/destination/UTM/media snapshots, duplicate fingerprint protection, explicit human schedule/reschedule/cancel, timezone-aware UTC scheduling, deterministic due discovery, bounded dispatcher batches of 25, transactional compare-and-set claims, durable STARTED PublicationAttempt rows, unique attempt numbering, mockable Pinterest gateway boundaries, conservative provider outcome classification, safe attempt metadata, authenticated publication APIs, server-derived readiness, and a hardened Publications frontend.
+
+Explicit human scheduling exists. Autonomous/background scheduling does not.
+
+## Protected release state
+
+`PUBLISHING_ENABLED=false` remains authoritative. Live Pinterest OAuth requested scopes remain exactly:
+
+- `user_accounts:read`
+- `boards:read`
+- `pins:read`
+
+Task #38 does not request `pins:write` or `boards:write`. The publisher may inspect an already-granted `pins:write` in isolated tests or a future authorized environment, but live OAuth does not request it. Protected state therefore has two independent provider-write blockers: `PUBLISHING_ENABLED=false` and no live requested `pins:write`.
+
+No real Pinterest Pin creation, OpenAI call, autonomous worker, browser automation, or automatic `PUBLISH_UNKNOWN` retry is part of Task #38.
+
+## Repository and runtime state
+
+Repository verification uses isolated test databases. Test-created approval/publication rows are ephemeral and do not represent deployed business data. No production database was connected or queried during this documentation pass.
+
+Latest carried-forward runtime snapshot, historical and not freshly queried:
 
 - Content revisions: 4
 - Version selections: 1 (Adagio v3 selected)
@@ -25,13 +55,16 @@ The latest previously verified runtime snapshot was recorded during the controll
 - Approvals: 0
 - Publications: 0
 
-These are carried-forward runtime values, not fresh Task #34 measurements. Task #34 used isolated test databases and did not query the production PostgreSQL database. Re-verify against the deployed database before operational use.
+Re-query the deployed PostgreSQL database before relying on runtime counts operationally.
 
-`AISettings.enabled=false` and `PUBLISHING_ENABLED=false`. No provider or Pinterest publishing call is part of publication identity operations.
-## Task #36 status
+## Latest focused verification history
 
-Pinterest Account Connection/OAuth v1 is complete as a read-only account foundation. Alembic head is 0013; publishing and AI/provider modes remain disabled.
+- Publication API: 17 passed
+- Pinterest gateway: 7 passed
+- Pinterest publisher: 37 passed
+- Publication scheduler: 11 passed
+- Combined focused foundation: 72 passed
+- Existing warning count: 1
+- Frontend: `npm run build` passed (`tsc -b` and `vite build`)
 
-## Task #37 status
-
-Pinterest Board Sync & Board Manager v1 is COMPLETE; PR #15 is MERGED and Issue #14 is CLOSED. It provides connection-level successful-sync state (including zero-board success), five-minute token preflight using Task #36 refresh at most once, strict provider metadata validation, and local-only eligibility/routing. No Pinterest board or Pin writes, scheduler, publishing, or analytics ingestion are enabled. Alembic head is `0013`.
+This is not the final full release matrix.

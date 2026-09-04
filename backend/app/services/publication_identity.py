@@ -7,7 +7,7 @@ an audit snapshot while publishing remains disabled.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -27,18 +27,18 @@ from app.models.domain import (
     PinPublication,
     PublicationStatus,
 )
+
+def normalize_user_schedule(value):
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise PublicationIdentityError("scheduled_for must include timezone")
+    return value.astimezone(timezone.utc)
 from app.services.fingerprints import publication_identity_fingerprint
 
 
 class PublicationIdentityError(ValueError):
     pass
-
-
-def _publishing_must_be_disabled() -> None:
-    if get_settings().publishing_enabled:
-        raise PublicationIdentityError(
-            "Publication identity snapshots are review-only while publishing is enabled."
-        )
 
 
 def _creative_for_approval(db: Any, draft: PinDraft, revision: ContentRevision | None) -> PinCreative:
@@ -94,10 +94,11 @@ class PublicationIdentityService:
         approval_id: str,
         board_id: str,
         integration_account_id: str | None = None,
+        pinterest_connection_id: str | None = None,
+        pinterest_board_record_id: str | None = None,
         scheduled_for: datetime | None = None,
     ) -> PinPublication:
         """Create an immutable, non-publishing snapshot for an exact approval."""
-        _publishing_must_be_disabled()
         db = self.session_factory()
         try:
             approval = db.get(PinApproval, approval_id)
@@ -119,9 +120,20 @@ class PublicationIdentityService:
                 raise PublicationIdentityError("Approval version identity is inconsistent.")
 
             board = db.get(Board, board_id)
+            pinterest_board = None
+            connection = None
+            if bool(pinterest_connection_id) != bool(pinterest_board_record_id):
+                raise PublicationIdentityError("Pinterest connection and board identities are both required.")
+            if pinterest_connection_id and pinterest_board_record_id:
+                from app.models.domain import PinterestBoard, PinterestConnection
+                connection = db.get(PinterestConnection, pinterest_connection_id) if pinterest_connection_id else None
+                pinterest_board = db.get(PinterestBoard, pinterest_board_record_id) if pinterest_board_record_id else None
+                if not connection or connection.status != "CONNECTED" or not pinterest_board or pinterest_board.connection_id != connection.id or not pinterest_board.is_active or not pinterest_board.is_eligible:
+                    raise PublicationIdentityError("Pinterest destination is not eligible.")
+                board = board  # legacy board may be absent for authoritative Pinterest destinations
             concept = db.get(PinConcept, draft.concept_id)
             template = db.get(CreativeTemplate, creative.template_id)
-            if not board or not concept or board.store_id != concept.store_id:
+            if (not board and not pinterest_board) or not concept or (board and board.store_id != concept.store_id):
                 raise PublicationIdentityError("Board does not belong to the proposal store.")
             account = None
             if integration_account_id:
@@ -139,10 +151,13 @@ class PublicationIdentityService:
                 revision_id=revision.id if revision else None,
                 creative_id=creative.id,
                 source_image_id=creative.source_image_id,
-                board_id=board.id,
+                board_id=board.id if board else None,
                 integration_account_id=account.id if account else None,
                 destination_url=destination,
                 utm_url=utm_url,
+                pinterest_connection_id=connection.id if connection else None,
+                pinterest_board_record_id=pinterest_board.id if pinterest_board else None,
+                pinterest_board_id_snapshot=pinterest_board.external_board_id if pinterest_board else None,
             )
             if db.scalar(
                 select(PinPublication).where(
@@ -151,6 +166,7 @@ class PublicationIdentityService:
             ):
                 raise PublicationIdentityError("An identical publication snapshot already exists.")
 
+            scheduled_for = normalize_user_schedule(scheduled_for)
             publication = PinPublication(
                 draft_id=draft.id,
                 revision_id=revision.id if revision else None,
@@ -162,8 +178,15 @@ class PublicationIdentityService:
                 template_version=template.version,
                 text_fingerprint=text_hash,
                 creative_fingerprint=creative.creative_fingerprint,
-                board_id=board.id,
-                pinterest_board_id=board.pinterest_board_id,
+                board_id=board.id if board else None,
+                pinterest_board_id=board.pinterest_board_id if board else pinterest_board.external_board_id,
+                pinterest_connection_id=connection.id if connection else None,
+                pinterest_board_record_id=pinterest_board.id if pinterest_board else None,
+                pinterest_board_id_snapshot=pinterest_board.external_board_id if pinterest_board else board.pinterest_board_id,
+                title_snapshot=revision.title if revision else draft.title,
+                description_snapshot=revision.description if revision else draft.description,
+                alt_text_snapshot=revision.alt_text if revision else draft.alt_text,
+                media_url_snapshot=creative.rendered_url,
                 integration_account_id=account.id if account else None,
                 destination_url=destination,
                 utm_url=utm_url,
