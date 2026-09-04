@@ -46,6 +46,49 @@ def test_phase3a_operator_endpoints_require_authentication(monkeypatch):
         assert response.status_code == 401
 
 
+def test_phase3a_preview_and_readiness_authenticated_contract(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from app.core import auth
+    from app.core.config import get_settings
+    from app.db.session import get_db
+    from app.models.domain import Base
+    from app.services.publication_preview import build_preview
+    from fastapi.testclient import TestClient
+    from test_manual_dispatch_authorization import _ready_publication
+
+    monkeypatch.setenv("APP_ENV", "development"); monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("APP_SECRET_KEY", "a" * 48); monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", auth.hash_password("secret")); monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5000")
+    monkeypatch.setenv("PUBLISHING_ENABLED", "false"); get_settings.cache_clear()
+    engine = create_engine("sqlite+pysqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine); SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    with SessionLocal() as db:
+        publication = _ready_publication(db)
+        publication_id = publication.id
+    def override_get_db():
+        db = SessionLocal()
+        try: yield db
+        finally: db.close()
+    from app.main import app
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestClient(app) as client:
+            login = client.post("/api/auth/login", json={"username": "admin", "password": "secret"})
+            assert login.status_code == 200
+            preview = client.get(f"/api/publications/{publication_id}/preview")
+            assert preview.status_code == 200
+            body = preview.json()
+            for key in ("publication_id", "status", "quality", "duplicate", "manual_readiness", "provider_readiness", "authorization", "checklist", "attempts", "reconciliation", "confirmation_text_version", "confirmation_prompt"):
+                assert key in body
+            readiness = client.get(f"/api/publications/{publication_id}/dispatch-readiness")
+            assert readiness.status_code == 200
+            assert readiness.json()["provider_status"] == "PUBLISHING_DISABLED"
+    finally:
+        app.dependency_overrides.pop(get_db, None); engine.dispose()
+
+
 def test_publish_route_requires_task39_authorization_and_delegates(monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
