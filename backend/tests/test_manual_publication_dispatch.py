@@ -117,7 +117,7 @@ def test_dispatch_disabled_preserves_active_authorization_and_creates_no_attempt
     auth = create_authorization(db, publication, actor="admin@example.test")
     monkeypatch.setattr(auth_service, "get_settings", lambda: _settings(False, publication))
     monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(False, publication))
-    with pytest.raises(ManualDispatchError, match="PILOT_DISABLED"):
+    with pytest.raises(ManualDispatchError, match="PUBLISHING_DISABLED"):
         import asyncio
 
         asyncio.run(dispatch_publication(db, publication))
