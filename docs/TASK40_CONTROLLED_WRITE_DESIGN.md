@@ -58,8 +58,14 @@ provider readiness, decryption, gateway construction, claim, authorization
 consumption, and attempt creation. Decryption and gateway construction happen
 after PRE-CLAIM and before the claim; construction performs no provider HTTP.
 POST-CLAIM validation is after the claim and immediately before
-`publish_once()`/provider execution. A disabled or mismatched pilot causes zero
-provider calls and leaves the publication `SCHEDULED`.
+`publish_once()`/provider execution. A PRE-CLAIM disabled or mismatched pilot
+causes zero provider calls, leaves the publication `SCHEDULED`, leaves the
+authorization unconsumed, and creates no `PublicationAttempt`. A POST-CLAIM
+disabled or mismatched pilot also causes zero provider calls, but the atomic
+claim has already occurred: the authorization is `CONSUMED`, the existing
+attempt is marked `FAILED`, the publication is marked `PUBLISH_FAILED`, and
+execution stops before `publish_once()`/provider execution. The prior-attempt
+pilot rule then prevents a second pilot provider attempt.
 
 ## Proposed two-key pilot gate
 
