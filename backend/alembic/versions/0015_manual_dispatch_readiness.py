@@ -30,7 +30,11 @@ def upgrade():
         sa.Column("revoked_at", sa.DateTime(timezone=True)),
         sa.Column("revoke_reason", sa.String(255)),
         sa.Column("status", sa.String(30), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.CheckConstraint(
+            "status IN ('ACTIVE', 'CONSUMED', 'REVOKED', 'EXPIRED')",
+            name="ck_publication_dispatch_authorization_status",
+        ),
         sa.ForeignKeyConstraint(["publication_id"], ["pin_publications.id"], name="fk_publication_dispatch_authorizations_publication", ondelete="RESTRICT"),
     )
     op.create_index("ix_publication_dispatch_authorizations_publication_id", "publication_dispatch_authorizations", ["publication_id"])
@@ -56,7 +60,20 @@ def upgrade():
         sa.Column("new_status", sa.String(30), nullable=False),
         sa.Column("provider_pin_id", sa.String(255)),
         sa.Column("reason", sa.String(500)),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.CheckConstraint(
+            "action IN ('PROVIDER_PIN_CONFIRMED', 'CANCELLED_UNKNOWN')",
+            name="ck_publication_reconciliation_action",
+        ),
+        sa.CheckConstraint(
+            "previous_status = 'PUBLISH_UNKNOWN'",
+            name="ck_publication_reconciliation_previous_status",
+        ),
+        sa.CheckConstraint(
+            "((action = 'PROVIDER_PIN_CONFIRMED' AND new_status = 'PUBLISHED') OR "
+            "(action = 'CANCELLED_UNKNOWN' AND new_status = 'CANCELLED'))",
+            name="ck_publication_reconciliation_transition",
+        ),
         sa.ForeignKeyConstraint(["publication_id"], ["pin_publications.id"], name="fk_publication_reconciliation_events_publication", ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["attempt_id"], ["publication_attempts.id"], name="fk_publication_reconciliation_events_attempt", ondelete="RESTRICT"),
     )

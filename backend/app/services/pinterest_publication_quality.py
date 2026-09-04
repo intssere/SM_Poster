@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
-from app.models.domain import PinCreative, PinPublication, PinterestBoard
+from app.models.domain import CreativeTemplate, PinCreative, PinPublication, PinterestBoard, ProductImage
 
 PINTEREST_QUALITY_V1 = "PINTEREST_QUALITY_V1"
 
@@ -28,8 +28,9 @@ ASPECT_RATIO_TOLERANCE = 0.08
 RECOMMENDED_WIDTH = 1000
 RECOMMENDED_HEIGHT = 1500
 
-CANONICAL_DESTINATION_HOSTS = {"diamondshelf.us", "www.diamondshelf.us", "diamondshelf.test"}
+CANONICAL_DESTINATION_HOSTS = {"diamondshelf.us", "www.diamondshelf.us"}
 SHORTENER_HOSTS = {"bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly"}
+RESERVED_HOST_SUFFIXES = (".localhost", ".local", ".test", ".invalid", ".example")
 UNSUPPORTED_CLAIM_PATTERNS = (
     re.compile(r"\bguaranteed\b", re.I),
     re.compile(r"\bcures?\b", re.I),
@@ -124,7 +125,7 @@ def _alt_structure_checks(value: str | None) -> list[QualityCheck]:
 
 def _host_is_public(host: str) -> bool:
     normalized = host.lower().rstrip(".")
-    if normalized == "localhost" or normalized.endswith(".localhost") or normalized.endswith(".local"):
+    if normalized == "localhost" or normalized.endswith(RESERVED_HOST_SUFFIXES):
         return False
     try:
         ip = ipaddress.ip_address(normalized)
@@ -133,7 +134,20 @@ def _host_is_public(host: str) -> bool:
     return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified or ip.is_multicast)
 
 
-def _url_checks(label: str, value: str | None, *, canonical_destination: bool) -> list[QualityCheck]:
+def _url_target(value: str | None) -> tuple[str, str, int | None, str] | None:
+    try:
+        parsed = urlsplit(value or "")
+    except ValueError:
+        return None
+    if not parsed.scheme or not parsed.hostname:
+        return None
+    path = parsed.path or "/"
+    if len(path) > 1:
+        path = path.rstrip("/")
+    return (parsed.scheme.lower(), parsed.hostname.lower().rstrip("."), parsed.port, path)
+
+
+def _url_checks(label: str, value: str | None, *, canonical_destination: bool, require_utm_source: bool = False) -> list[QualityCheck]:
     try:
         parsed = urlsplit(value or "")
     except ValueError:
@@ -150,30 +164,48 @@ def _url_checks(label: str, value: str | None, *, canonical_destination: bool) -
         checks.append(_check(f"{label}_NO_SHORTENER", "FAIL", bool(host and host not in SHORTENER_HOSTS), f"{label.lower()} must not use an unapproved shortener", host=host or ""))
         query_pairs = parse_qsl(parsed.query if parsed else "", keep_blank_values=True)
         utm_seen: dict[str, str] = {}
-        conflict = False
+        duplicate = False
+        blank_value = False
         for key, item_value in query_pairs:
             if key.startswith("utm_"):
-                if key in utm_seen and utm_seen[key] != item_value:
-                    conflict = True
+                if key in utm_seen:
+                    duplicate = True
+                if item_value == "":
+                    blank_value = True
                 utm_seen[key] = item_value
-        checks.append(_check(f"{label}_NO_CONFLICTING_UTM_KEYS", "FAIL", not conflict, f"{label.lower()} must not contain duplicate conflicting UTM keys", utm_keys=sorted(utm_seen)))
+        checks.append(_check(f"{label}_UTM_KEYS_UNIQUE", "FAIL", not duplicate, f"{label.lower()} must not contain duplicate UTM keys", utm_keys=sorted(utm_seen)))
+        checks.append(_check(f"{label}_UTM_VALUES_NONEMPTY", "FAIL", not blank_value, f"{label.lower()} UTM values must not be blank", utm_keys=sorted(utm_seen)))
+        if require_utm_source:
+            checks.append(_check(f"{label}_UTM_SOURCE_PINTEREST", "FAIL", utm_seen.get("utm_source") == "pinterest", f"{label.lower()} must include utm_source=pinterest", utm_source=utm_seen.get("utm_source", "")))
     return checks
 
 
 def _creative_checks(db: Any, publication: PinPublication) -> list[QualityCheck]:
     creative = db.get(PinCreative, publication.creative_id) if publication.creative_id else None
+    template = db.get(CreativeTemplate, publication.template_id) if publication.template_id else None
+    source_image = db.get(ProductImage, publication.source_image_id) if publication.source_image_id else None
     checks = [
         _check("CREATIVE_PRESENT", "FAIL", creative is not None, "approved creative must exist"),
+        _check("TEMPLATE_PRESENT", "FAIL", template is not None, "creative template snapshot must resolve to a persisted template"),
+        _check("SOURCE_IMAGE_PRESENT", "FAIL", source_image is not None, "source image snapshot must resolve to a persisted product image"),
     ]
-    if creative is None:
-        return checks
-    checks.extend([
-        _check("CREATIVE_DRAFT_MATCH", "FAIL", creative.draft_id == publication.draft_id, "creative must belong to publication draft"),
-        _check("SOURCE_IMAGE_MATCH", "FAIL", creative.source_image_id == publication.source_image_id, "creative source image must match immutable snapshot"),
-        _check("CREATIVE_FINGERPRINT_MATCH", "FAIL", creative.creative_fingerprint == publication.creative_fingerprint, "creative fingerprint must match immutable snapshot"),
-        _check("CREATIVE_DIMENSIONS_VALID", "FAIL", bool((creative.width or 0) > 0 and (creative.height or 0) > 0), "creative dimensions must be known and positive", width=creative.width, height=creative.height),
-    ])
-    if (creative.width or 0) > 0 and (creative.height or 0) > 0:
+    if template is not None:
+        checks.extend([
+            _check("TEMPLATE_KEY_MATCH", "FAIL", template.key == publication.template_key, "template key must match immutable snapshot"),
+            _check("TEMPLATE_VERSION_MATCH", "FAIL", template.version == publication.template_version, "template version must match immutable snapshot"),
+        ])
+    if creative is not None:
+        checks.extend([
+            _check("CREATIVE_DRAFT_MATCH", "FAIL", creative.draft_id == publication.draft_id, "creative must belong to publication draft"),
+            _check("SOURCE_IMAGE_MATCH", "FAIL", creative.source_image_id == publication.source_image_id, "creative source image must match immutable snapshot"),
+            _check("CREATIVE_FINGERPRINT_MATCH", "FAIL", creative.creative_fingerprint == publication.creative_fingerprint, "creative fingerprint must match immutable snapshot"),
+            _check("CREATIVE_MEDIA_URL_PRESENT", "FAIL", bool((creative.rendered_url or "").strip()), "creative must have a rendered media URL"),
+            _check("CREATIVE_MEDIA_URL_MATCH", "FAIL", creative.rendered_url == publication.media_url_snapshot, "creative rendered URL must match immutable publication media snapshot"),
+            _check("CREATIVE_TEMPLATE_ID_MATCH", "FAIL", creative.template_id == publication.template_id, "creative template id must match immutable snapshot"),
+            _check("CREATIVE_RENDER_COMPLETE", "FAIL", creative.render_status == "COMPLETE", "creative render must be complete before quality pass"),
+            _check("CREATIVE_DIMENSIONS_VALID", "FAIL", bool((creative.width or 0) > 0 and (creative.height or 0) > 0), "creative dimensions must be known and positive", width=creative.width, height=creative.height),
+        ])
+    if creative is not None and (creative.width or 0) > 0 and (creative.height or 0) > 0:
         ratio = creative.width / creative.height
         checks.append(_check("CREATIVE_ASPECT_RATIO_RECOMMENDED", "WARNING", abs(ratio - RECOMMENDED_ASPECT_RATIO) <= ASPECT_RATIO_TOLERANCE, "2:3 creative is recommended for Pinterest", width=creative.width, height=creative.height, recommended_width=RECOMMENDED_WIDTH, recommended_height=RECOMMENDED_HEIGHT))
     return checks
@@ -199,14 +231,21 @@ def validate_publication_quality(db: Any, publication: PinPublication) -> dict[s
     checks.extend(_text_checks("ALT", publication.alt_text_snapshot, PIN_ALT_TEXT_MAX))
     checks.extend(_alt_structure_checks(publication.alt_text_snapshot))
     checks.extend(_url_checks("DESTINATION_URL", publication.destination_url, canonical_destination=True))
+    checks.append(_check("UTM_URL_REQUIRED", "FAIL", bool((publication.utm_url or "").strip()), "publication must snapshot a UTM URL for Pinterest dispatch quality"))
     if publication.utm_url:
-        checks.extend(_url_checks("UTM_URL", publication.utm_url, canonical_destination=True))
+        checks.extend(_url_checks("UTM_URL", publication.utm_url, canonical_destination=True, require_utm_source=True))
+        checks.append(_check("UTM_URL_TARGET_MATCH", "FAIL", _url_target(publication.destination_url) == _url_target(publication.utm_url), "UTM URL must target the same canonical destination page"))
+    # Phase 2 must deliberately choose whether provider dispatch uses
+    # destination_url or utm_url, then apply that same immutable URL in manual
+    # readiness, request fingerprinting, provider payload, duplicate detection,
+    # and preview DTOs. This Phase 1 service validates both but does not change
+    # the Task #38 publisher payload.
     checks.extend(_url_checks("MEDIA_URL", publication.media_url_snapshot, canonical_destination=False))
     checks.extend([
         _check("PUBLICATION_CREATIVE_ID_PRESENT", "FAIL", bool(publication.creative_id), "publication must snapshot creative identity"),
         _check("PUBLICATION_SOURCE_IMAGE_ID_PRESENT", "FAIL", bool(publication.source_image_id), "publication must snapshot source image identity"),
         _check("PUBLICATION_CREATIVE_FINGERPRINT_PRESENT", "FAIL", bool(publication.creative_fingerprint), "publication must snapshot creative fingerprint"),
-        _check("PUBLICATION_TEMPLATE_PRESENT", "FAIL", bool(publication.template_id and publication.template_key), "publication must snapshot template identity"),
+        _check("PUBLICATION_TEMPLATE_PRESENT", "FAIL", bool(publication.template_id and publication.template_key and publication.template_version is not None), "publication must snapshot complete template identity"),
     ])
     checks.extend(_creative_checks(db, publication))
     checks.extend(_board_relevance_checks(db, publication))

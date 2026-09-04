@@ -114,6 +114,14 @@ def test_non_active_authorizations_remain_auditable(status):
     assert db.get(PublicationDispatchAuthorization, auth.id).status == status
 
 
+def test_dispatch_authorization_rejects_unknown_status():
+    db = _db()
+    publication = _publication(db)
+    db.add(_authorization(publication, status="UNKNOWN_STATUS", suffix="bad"))
+    with pytest.raises(IntegrityError):
+        db.commit()
+
+
 def test_reconciliation_event_stores_safe_operator_audit_without_credential_fields():
     db = _db()
     publication = _publication(db)
@@ -152,3 +160,69 @@ def test_reconciliation_event_stores_safe_operator_audit_without_credential_fiel
     assert not hasattr(persisted, "raw_body")
     assert not hasattr(persisted, "traceback")
 
+
+def test_reconciliation_event_allows_only_authorized_task39_transitions():
+    db = _db()
+    publication = _publication(db)
+    attempt = PublicationAttempt(
+        id="attempt-1",
+        publication_id=publication.id,
+        attempt_number=1,
+        status="UNKNOWN",
+        safe_response_metadata={},
+    )
+    db.add(attempt)
+    db.commit()
+
+    db.add(
+        PublicationReconciliationEvent(
+            id="valid-published",
+            publication_id=publication.id,
+            attempt_id=attempt.id,
+            actor="admin@example.test",
+            action="PROVIDER_PIN_CONFIRMED",
+            previous_status="PUBLISH_UNKNOWN",
+            new_status="PUBLISHED",
+            provider_pin_id="pin-123",
+        )
+    )
+    db.add(
+        PublicationReconciliationEvent(
+            id="valid-cancelled",
+            publication_id=publication.id,
+            attempt_id=attempt.id,
+            actor="admin@example.test",
+            action="CANCELLED_UNKNOWN",
+            previous_status="PUBLISH_UNKNOWN",
+            new_status="CANCELLED",
+            reason="operator cancelled unknown outcome",
+        )
+    )
+    db.commit()
+    assert db.get(PublicationReconciliationEvent, "valid-published").created_at is not None
+    assert db.get(PublicationReconciliationEvent, "valid-cancelled").created_at is not None
+
+
+@pytest.mark.parametrize(
+    ("action", "previous_status", "new_status"),
+    [
+        ("RETRY_UNKNOWN", "PUBLISH_UNKNOWN", "PUBLISHED"),
+        ("PROVIDER_PIN_CONFIRMED", "PUBLISH_FAILED", "PUBLISHED"),
+        ("PROVIDER_PIN_CONFIRMED", "PUBLISH_UNKNOWN", "CANCELLED"),
+        ("CANCELLED_UNKNOWN", "PUBLISH_UNKNOWN", "PUBLISHED"),
+    ],
+)
+def test_reconciliation_event_rejects_invalid_actions_and_transitions(action, previous_status, new_status):
+    db = _db()
+    publication = _publication(db)
+    event = PublicationReconciliationEvent(
+        id="invalid-reconciliation",
+        publication_id=publication.id,
+        actor="admin@example.test",
+        action=action,
+        previous_status=previous_status,
+        new_status=new_status,
+    )
+    db.add(event)
+    with pytest.raises(IntegrityError):
+        db.commit()

@@ -6,7 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text,
+    Boolean, CheckConstraint, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text,
     UniqueConstraint, func, text
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -498,8 +498,12 @@ class PublicationDispatchAuthorization(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoke_reason: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="ACTIVE")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     __table_args__ = (
+        CheckConstraint(
+            "status IN ('ACTIVE', 'CONSUMED', 'REVOKED', 'EXPIRED')",
+            name="ck_publication_dispatch_authorization_status",
+        ),
         Index(
             "uq_publication_dispatch_authorizations_active",
             "publication_id",
@@ -530,7 +534,22 @@ class PublicationReconciliationEvent(Base):
     new_status: Mapped[str] = mapped_column(String(30), nullable=False)
     provider_pin_id: Mapped[str | None] = mapped_column(String(255))
     reason: Mapped[str | None] = mapped_column(String(500))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True, nullable=False)
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('PROVIDER_PIN_CONFIRMED', 'CANCELLED_UNKNOWN')",
+            name="ck_publication_reconciliation_action",
+        ),
+        CheckConstraint(
+            "previous_status = 'PUBLISH_UNKNOWN'",
+            name="ck_publication_reconciliation_previous_status",
+        ),
+        CheckConstraint(
+            "((action = 'PROVIDER_PIN_CONFIRMED' AND new_status = 'PUBLISHED') OR "
+            "(action = 'CANCELLED_UNKNOWN' AND new_status = 'CANCELLED'))",
+            name="ck_publication_reconciliation_transition",
+        ),
+    )
 
 
 class PinterestOAuthState(Base):

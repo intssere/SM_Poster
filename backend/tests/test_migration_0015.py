@@ -96,6 +96,8 @@ def test_0014_to_0015_adds_authorization_and_reconciliation_audit_without_fabric
         )
         assert conn.scalar(sa.text("SELECT COUNT(*) FROM publication_dispatch_authorizations WHERE publication_id='p1'")) == 1
         assert conn.scalar(sa.text("SELECT COUNT(*) FROM publication_reconciliation_events WHERE publication_id='p1'")) == 1
+        assert conn.scalar(sa.text("SELECT created_at FROM publication_dispatch_authorizations WHERE id='auth1'")) is not None
+        assert conn.scalar(sa.text("SELECT created_at FROM publication_reconciliation_events WHERE id='rec1'")) is not None
 
         with pytest.raises(IntegrityError):
             conn.execute(
@@ -108,6 +110,23 @@ def test_0014_to_0015_adds_authorization_and_reconciliation_audit_without_fabric
                     ) VALUES (
                         'auth2', 'p1', 'admin', :now, :fp, 'PINTEREST_QUALITY_V1',
                         '{}', '{}', '{}', 'CONFIRM_V1', :expires, 'ACTIVE'
+                    )
+                    """
+                ),
+                {"now": now, "expires": expires, "fp": "a" * 64},
+            )
+
+        with pytest.raises(IntegrityError):
+            conn.execute(
+                sa.text(
+                    """
+                    INSERT INTO publication_dispatch_authorizations(
+                        id, publication_id, authorized_by, authorized_at, publication_fingerprint,
+                        quality_policy_version, quality_snapshot, readiness_snapshot,
+                        duplicate_snapshot, confirmation_text_version, expires_at, status
+                    ) VALUES (
+                        'bad-status-auth', 'p1', 'admin', :now, :fp, 'PINTEREST_QUALITY_V1',
+                        '{}', '{}', '{}', 'CONFIRM_V1', :expires, 'BYPASS_ACTIVE'
                     )
                     """
                 ),
@@ -128,8 +147,79 @@ def test_0014_to_0015_adds_authorization_and_reconciliation_audit_without_fabric
                 )
                 """
             ),
+                {"now": now, "expires": expires, "fp": "a" * 64},
+        )
+
+        conn.execute(
+            sa.text(
+                """
+                INSERT INTO publication_dispatch_authorizations(
+                    id, publication_id, authorized_by, authorized_at, publication_fingerprint,
+                    quality_policy_version, quality_snapshot, readiness_snapshot,
+                    duplicate_snapshot, confirmation_text_version, expires_at, status
+                ) VALUES (
+                    'auth-revoked', 'p1', 'admin', :now, :fp, 'PINTEREST_QUALITY_V1',
+                    '{}', '{}', '{}', 'CONFIRM_V1', :expires, 'REVOKED'
+                )
+                """
+            ),
             {"now": now, "expires": expires, "fp": "a" * 64},
         )
+        conn.execute(
+            sa.text(
+                """
+                INSERT INTO publication_dispatch_authorizations(
+                    id, publication_id, authorized_by, authorized_at, publication_fingerprint,
+                    quality_policy_version, quality_snapshot, readiness_snapshot,
+                    duplicate_snapshot, confirmation_text_version, expires_at, status
+                ) VALUES (
+                    'auth-expired', 'p1', 'admin', :now, :fp, 'PINTEREST_QUALITY_V1',
+                    '{}', '{}', '{}', 'CONFIRM_V1', :expires, 'EXPIRED'
+                )
+                """
+            ),
+            {"now": now, "expires": expires, "fp": "a" * 64},
+        )
+
+        conn.execute(
+            sa.text(
+                """
+                INSERT INTO publication_reconciliation_events(
+                    id, publication_id, attempt_id, actor, action, previous_status,
+                    new_status, reason
+                ) VALUES (
+                    'rec-cancel', 'p1', 'att1', 'admin', 'CANCELLED_UNKNOWN',
+                    'PUBLISH_UNKNOWN', 'CANCELLED', 'operator cancelled'
+                )
+                """
+            )
+        )
+
+        invalid_reconciliation_rows = [
+            ("bad-action", "RETRY_UNKNOWN", "PUBLISH_UNKNOWN", "PUBLISHED"),
+            ("bad-previous", "PROVIDER_PIN_CONFIRMED", "PUBLISH_FAILED", "PUBLISHED"),
+            ("bad-confirm-transition", "PROVIDER_PIN_CONFIRMED", "PUBLISH_UNKNOWN", "CANCELLED"),
+            ("bad-cancel-transition", "CANCELLED_UNKNOWN", "PUBLISH_UNKNOWN", "PUBLISHED"),
+        ]
+        for row_id, action, previous_status, new_status in invalid_reconciliation_rows:
+            with pytest.raises(IntegrityError):
+                conn.execute(
+                    sa.text(
+                        """
+                        INSERT INTO publication_reconciliation_events(
+                            id, publication_id, actor, action, previous_status, new_status
+                        ) VALUES (
+                            :row_id, 'p1', 'admin', :action, :previous_status, :new_status
+                        )
+                        """
+                    ),
+                    {
+                        "row_id": row_id,
+                        "action": action,
+                        "previous_status": previous_status,
+                        "new_status": new_status,
+                    },
+                )
 
         with pytest.raises(IntegrityError):
             conn.execute(
@@ -161,4 +251,3 @@ def test_0014_to_0015_adds_authorization_and_reconciliation_audit_without_fabric
                     """
                 )
             )
-
