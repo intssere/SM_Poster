@@ -13,12 +13,14 @@ def _pin(value):
     return value
 
 def reconcile(db, publication_id: str, *, actor: str, action: str, confirmed: bool, provider_pin_id: str | None = None, reason: str | None = None):
+    if not actor: raise ReconciliationError("ACTOR_REQUIRED")
     if not confirmed: raise ReconciliationError("CONFIRMATION_REQUIRED")
     publication = db.get(PinPublication, publication_id)
     if not publication or publication.status != PublicationStatus.PUBLISH_UNKNOWN: raise ReconciliationError("RECONCILIATION_REQUIRES_PUBLISH_UNKNOWN")
     attempts = db.scalars(select(PublicationAttempt).where(PublicationAttempt.publication_id == publication_id)).all()
     known = {a.provider_pin_id for a in attempts if a.provider_pin_id}
     if publication.pinterest_pin_id: known.add(publication.pinterest_pin_id)
+    if len(known) > 1: raise ReconciliationError("CONFLICTING_KNOWN_PROVIDER_PIN_IDS")
     if action == "PROVIDER_PIN_CONFIRMED":
         pin = _pin(provider_pin_id)
         if known and pin not in known: raise ReconciliationError("KNOWN_PROVIDER_PIN_MISMATCH")
@@ -28,14 +30,18 @@ def reconcile(db, publication_id: str, *, actor: str, action: str, confirmed: bo
         if other_attempt: raise ReconciliationError("PROVIDER_PIN_ID_ALREADY_ASSIGNED")
         new_status, event_pin = PublicationStatus.PUBLISHED, pin
     elif action == "CANCELLED_UNKNOWN":
-        if not reason or not reason.strip() or any(ord(c) < 32 for c in reason): raise ReconciliationError("REASON_REQUIRED")
+        if not reason or not reason.strip() or len(reason) > 500 or any(ord(c) < 32 for c in reason): raise ReconciliationError("REASON_REQUIRED")
         if known: raise ReconciliationError("KNOWN_PROVIDER_PIN_REQUIRES_CONFIRMATION")
         new_status, event_pin = PublicationStatus.CANCELLED, None
     else: raise ReconciliationError("UNSUPPORTED_RECONCILIATION_ACTION")
     now = datetime.now(timezone.utc)
     claimed = db.execute(update(PinPublication).where(PinPublication.id == publication_id, PinPublication.status == PublicationStatus.PUBLISH_UNKNOWN).values(status=new_status, pinterest_pin_id=event_pin, published_at=now if event_pin else None, scheduled_for=None if not event_pin else publication.scheduled_for, error_code=None)).rowcount
     if claimed != 1: db.rollback(); raise ReconciliationError("RECONCILIATION_CONFLICT")
-    event = PublicationReconciliationEvent(publication_id=publication_id, attempt_id=next((a.id for a in attempts if a.status == "UNKNOWN"), None), actor=actor, action=action, previous_status="PUBLISH_UNKNOWN", new_status=new_status.value, provider_pin_id=event_pin, reason=(reason or "")[:500])
+    event = PublicationReconciliationEvent(publication_id=publication_id, attempt_id=next((a.id for a in attempts if a.status == "UNKNOWN"), None), actor=actor, action=action, previous_status="PUBLISH_UNKNOWN", new_status=new_status.value, provider_pin_id=event_pin, reason=reason)
     db.add(event)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise ReconciliationError("RECONCILIATION_PERSISTENCE_FAILED") from None
     return publication

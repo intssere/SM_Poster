@@ -110,17 +110,20 @@ def revoke_authorization(
     db: Session,
     authorization: PublicationDispatchAuthorization,
     *,
+    actor: str,
     reason: str,
     now: datetime | None = None,
 ) -> PublicationDispatchAuthorization:
+    if not actor:
+        raise DispatchAuthorizationError("ACTOR_REQUIRED")
+    if not reason or not reason.strip() or len(reason) > 255 or any(ord(c) < 32 for c in reason):
+        raise DispatchAuthorizationError("INVALID_REVOKE_REASON")
     if authorization.status != "ACTIVE":
         raise DispatchAuthorizationError("AUTHORIZATION_NOT_ACTIVE")
     authorization.status = "REVOKED"
     authorization.revoked_at = normalize_persisted_utc(now or _now())
     authorization.revoke_reason = reason[:255]
-    # Actor is supplied by the authenticated API layer; retain a safe audit.
-    if getattr(authorization, "_revoke_actor", None):
-        db.add(AuditLog(actor=authorization._revoke_actor, action="PUBLICATION_DISPATCH_AUTHORIZATION_REVOKED", entity_type="PublicationDispatchAuthorization", entity_id=authorization.id, metadata_json={"authorization_id": authorization.id}))
+    db.add(AuditLog(actor=actor, action="PUBLICATION_DISPATCH_AUTHORIZATION_REVOKED", entity_type="PublicationDispatchAuthorization", entity_id=authorization.id, metadata_json={"authorization_id": authorization.id}))
     db.commit()
     return authorization
 

@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.db.session import get_db
-from app.models.domain import PinPublication, PinApproval, PinterestBoard, PinterestConnection, PublicationStatus, PublicationAttempt
+from app.models.domain import PinPublication, PinApproval, PinterestBoard, PinterestConnection, PublicationStatus, PublicationAttempt, PublicationDispatchAuthorization
 from app.services.publication_identity import PublicationIdentityService, PublicationIdentityError
 from app.services.publication_scheduler import schedule, cancel, due_publications
 from app.services.pinterest_publisher import publication_readiness, sanitize_metadata, PublicationReconciliationError
@@ -12,7 +12,7 @@ from app.services.pinterest_publisher import preflight_publish_readiness, execut
 from app.services.manual_publication_dispatch import ManualDispatchError
 from app.services import manual_publication_dispatch
 from app.services.publication_preview import build_preview
-from app.services.publication_dispatch_authorization import create_authorization, revoke_authorization, CONFIRMATION_TEXT_VERSION
+from app.services.publication_dispatch_authorization import create_authorization, revoke_authorization, CONFIRMATION_TEXT_VERSION, DispatchAuthorizationError
 from app.services.publication_reconciliation import reconcile, ReconciliationError
 from app.core.auth import current_user
 
@@ -44,7 +44,7 @@ class ReconcileRequest(BaseModel):
     action: str
     confirmed: bool
     provider_pin_id: str | None = None
-    reason: str | None = None
+    reason: str | None = Field(default=None, max_length=500)
 
 def _dto(db, row):
     from app.core.config import get_settings
@@ -133,22 +133,21 @@ def authorize(publication_id: str, request: Request, payload: DispatchAuthorizat
     if payload.confirmation_text_version != CONFIRMATION_TEXT_VERSION: raise HTTPException(422, "INVALID_CONFIRMATION_TEXT_VERSION")
     actor = current_user(request)
     if not actor: raise HTTPException(401, "Authentication required")
-    if not actor: raise HTTPException(401, "Authentication required")
     try: auth = create_authorization(db, _get(publication_id, db), actor=actor)
-    except Exception as exc:
-        if hasattr(exc, "args") and exc.args and isinstance(exc, (RuntimeError, ValueError)): raise HTTPException(409, str(exc.args[0]))
-        raise
+    except DispatchAuthorizationError as exc: raise HTTPException(409, str(exc)) from None
+    except Exception: raise HTTPException(500, "Authorization could not be created") from None
     return {"id": auth.id, "status": auth.status, "authorized_by": auth.authorized_by, "authorized_at": auth.authorized_at, "expires_at": auth.expires_at, "confirmation_text_version": auth.confirmation_text_version}
 
 @router.post("/{publication_id}/dispatch-authorization/revoke")
 def revoke(publication_id: str, request: Request, payload: RevokeRequest, db: Session = Depends(get_db)):
     actor = current_user(request)
+    if not actor: raise HTTPException(401, "Authentication required")
     row = _get(publication_id, db)
-    auth = db.get(__import__('app.models.domain', fromlist=['PublicationDispatchAuthorization']).PublicationDispatchAuthorization, payload.authorization_id)
+    auth = db.get(PublicationDispatchAuthorization, payload.authorization_id)
     if not auth or auth.publication_id != row.id: raise HTTPException(404, "Authorization not found")
-    auth._revoke_actor = actor
-    try: revoke_authorization(db, auth, reason=payload.reason)
-    except Exception as exc: raise HTTPException(409, str(exc)) from None
+    try: revoke_authorization(db, auth, actor=actor, reason=payload.reason)
+    except DispatchAuthorizationError as exc: raise HTTPException(409, str(exc)) from None
+    except Exception: raise HTTPException(500, "Authorization could not be revoked") from None
     return {"id": auth.id, "status": auth.status}
 
 @router.post("/{publication_id}/reconcile")
