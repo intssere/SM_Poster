@@ -23,6 +23,7 @@ from app.services.publication_dispatch_authorization import (
     AUTHORIZATION_TTL,
     DispatchAuthorizationError,
     create_authorization,
+    _is_active_authorization_unique_violation,
     provider_readiness,
     readiness_result,
     validate_authorization,
@@ -418,7 +419,7 @@ def test_authorization_creation_requires_text_fingerprint():
         ("ACTIVE", "ACTIVE"),
         ("REVOKED", "AUTHORIZATION_REVOKED"),
         ("CONSUMED", "AUTHORIZATION_CONSUMED"),
-        ("EXPIRED", "AUTHORIZATION_EXPIRED"),
+        ("ACTIVE_EXPIRED", "AUTHORIZATION_EXPIRED"),
     ],
 )
 def test_readiness_reports_latest_authorization_status(status, expected):
@@ -432,7 +433,7 @@ def test_readiness_reports_latest_authorization_status(status, expected):
     elif status == "CONSUMED":
         auth.status = "CONSUMED"
         auth.consumed_at = datetime.now(timezone.utc)
-    elif status == "EXPIRED":
+    elif status == "ACTIVE_EXPIRED":
         auth.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
     db.commit()
 
@@ -442,6 +443,43 @@ def test_readiness_reports_latest_authorization_status(status, expected):
     assert "quality_snapshot" not in readiness["authorization"]
     assert "readiness_snapshot" not in readiness["authorization"]
     assert "duplicate_snapshot" not in readiness["authorization"]
+
+
+def test_readiness_reports_persisted_expired_status_without_mutation():
+    db = _db()
+    publication = _ready_publication(db)
+    auth = create_authorization(db, publication, actor="admin@example.test")
+    auth.status = "EXPIRED"
+    db.commit()
+
+    readiness = readiness_result(db, publication)
+    assert readiness["authorization"] == {
+        "status": "AUTHORIZATION_EXPIRED",
+        "authorization_id": auth.id,
+    }
+    assert db.get(PublicationDispatchAuthorization, auth.id).status == "EXPIRED"
+
+
+def test_integrity_error_classifier_is_narrowly_scoped():
+    active = IntegrityError(
+        "insert", {},
+        Exception("UNIQUE constraint failed: publication_dispatch_authorizations.publication_id"),
+    )
+    assert _is_active_authorization_unique_violation(active)
+
+    unrelated = IntegrityError("insert", {}, Exception("FOREIGN KEY constraint failed"))
+    assert not _is_active_authorization_unique_violation(unrelated)
+
+
+def test_integrity_error_classifier_accepts_postgres_constraint_identity():
+    class Diag:
+        constraint_name = "uq_publication_dispatch_authorizations_active"
+
+    class Orig:
+        diag = Diag()
+
+    exc = IntegrityError("insert", {}, Orig())
+    assert _is_active_authorization_unique_violation(exc)
 
 
 def test_provider_readiness_requires_connected_connection_even_with_pins_write(monkeypatch):

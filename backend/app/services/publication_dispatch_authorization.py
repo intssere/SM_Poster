@@ -38,6 +38,24 @@ class DispatchAuthorizationError(RuntimeError):
     """Bounded authorization/readiness failure."""
 
 
+def _is_active_authorization_unique_violation(exc: IntegrityError) -> bool:
+    """Recognize only the active-authorization uniqueness conflict.
+
+    Driver metadata is preferred; SQLite's deterministic index message is
+    supported for the isolated test database.  Other integrity failures must
+    propagate to callers unchanged.
+    """
+    orig = getattr(exc, "orig", None)
+    diag = getattr(orig, "diag", None)
+    if getattr(diag, "constraint_name", None) == "uq_publication_dispatch_authorizations_active":
+        return True
+    message = str(orig or exc)
+    return message == (
+        "UNIQUE constraint failed: "
+        "publication_dispatch_authorizations.publication_id"
+    )
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -206,6 +224,8 @@ def readiness_result(db: Session, publication: PinPublication, *, now: datetime 
             authorization = {"status": "AUTHORIZATION_REVOKED", "authorization_id": auth.id}
         elif auth.status == "CONSUMED":
             authorization = {"status": "AUTHORIZATION_CONSUMED", "authorization_id": auth.id}
+        elif auth.status == "EXPIRED":
+            authorization = {"status": "AUTHORIZATION_EXPIRED", "authorization_id": auth.id}
         elif auth.status == "ACTIVE" and expires_at and expires_at <= now:
             authorization = {"status": "AUTHORIZATION_EXPIRED", "authorization_id": auth.id}
         elif auth.status == "ACTIVE":
@@ -265,8 +285,7 @@ def create_authorization(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        message = str(getattr(exc, "orig", exc))
-        if "publication_dispatch_authorizations" in message or "uq_publication_dispatch_authorizations_active" in message:
+        if _is_active_authorization_unique_violation(exc):
             raise DispatchAuthorizationError("ACTIVE_AUTHORIZATION_EXISTS") from None
         raise
     db.refresh(authorization)
