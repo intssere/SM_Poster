@@ -7,7 +7,7 @@ from app.services.publication_scheduler import request_fingerprint_for
 def validate_pilot_candidate(db, publication: PinPublication) -> tuple[bool, str]:
     settings = get_settings()
     if not settings.publishing_enabled:
-        return False, "PILOT_DISABLED"
+        return False, "PUBLISHING_DISABLED"
     if not settings.pinterest_single_pin_pilot_enabled:
         return False, "PILOT_DISABLED"
     if not settings.pinterest_single_pin_pilot_publication_id or not settings.pinterest_single_pin_pilot_publication_fingerprint or not settings.pinterest_single_pin_pilot_request_fingerprint:

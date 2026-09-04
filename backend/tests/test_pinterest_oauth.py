@@ -119,6 +119,32 @@ def test_scope_normalization_is_exact():
     scopes = set("pins:read boards:read user_accounts:read".split())
     assert scopes == set(oauth.SCOPES)
 
+@pytest.mark.parametrize("write_enabled,expected", [(False, set(oauth.READ_SCOPES)), (True, set(oauth.READ_SCOPES) | {"pins:write"})])
+def test_requested_scopes_conditionally_adds_only_pins_write(monkeypatch, write_enabled, expected):
+    configure(monkeypatch)
+    settings = type("S", (), {"pinterest_write_scope_enabled": write_enabled})()
+    assert set(oauth.requested_scopes(settings)) == expected
+    assert "boards:write" not in oauth.requested_scopes(settings)
+
+def test_authorization_url_uses_conditional_write_scope(monkeypatch):
+    configure(monkeypatch, PINTEREST_WRITE_SCOPE_ENABLED="true")
+    get_settings.cache_clear()
+    assert "pins%3Awrite" in oauth.authorization_url("state")
+    assert "boards%3Awrite" not in oauth.authorization_url("state")
+
+def test_task40_defaults_are_disabled_and_unbound(monkeypatch):
+    for key in ("PUBLISHING_ENABLED", "PINTEREST_WRITE_SCOPE_ENABLED", "PINTEREST_SINGLE_PIN_PILOT_ENABLED", "PINTEREST_SINGLE_PIN_PILOT_PUBLICATION_ID", "PINTEREST_SINGLE_PIN_PILOT_PUBLICATION_FINGERPRINT", "PINTEREST_SINGLE_PIN_PILOT_REQUEST_FINGERPRINT"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert settings.publishing_enabled is False
+    assert settings.pinterest_write_scope_enabled is False
+    assert settings.pinterest_single_pin_pilot_enabled is False
+    assert settings.pinterest_single_pin_pilot_publication_id == ""
+    assert settings.pinterest_single_pin_pilot_publication_fingerprint == ""
+    assert settings.pinterest_single_pin_pilot_request_fingerprint == ""
+
 def test_state_hash_is_one_way_and_fixed_length(monkeypatch):
     configure(monkeypatch)
     raw, digest = oauth.new_state()
