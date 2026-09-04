@@ -12,10 +12,16 @@
 
 ## Task #38 protected state
 
+- Task #38 is merged on `main`.
+- The publisher foundation existing does not authorize publishing.
 - `PUBLISHING_ENABLED=false` remains the protected repository/default state.
-- Live OAuth requested scopes stay exactly `user_accounts:read`, `boards:read`, and `pins:read`.
-- Fixture-only `pins:write` is allowed in tests that prove future readiness boundaries.
-- Never add `boards:write` in Task #38.
+- Live OAuth remains read-only until a separately authorized task changes it; requested scopes stay exactly `user_accounts:read`, `boards:read`, and `pins:read`.
+- Never add `pins:write` or `boards:write` casually.
+- Any future write-scope request requires explicit authorization and review.
 - Do not perform live Pinterest writes, OpenAI calls, browser automation, autonomous worker startup, or automatic `PUBLISH_UNKNOWN` retry.
-- Do not add an enabled frontend Publish control.
-- Task #38 PR creation must wait until the final release matrix and independent branch-vs-main audit are green and PR_READY is explicitly authorized.
+- Do not add an enabled frontend Publish control without separate authorization.
+- Future live-publishing work must pass the Pinterest SEO + Metadata + Creative Quality Release Gate.
+- Authentic Shopify product media remains authoritative.
+- No autonomous worker may be introduced unless a future task explicitly authorizes one.
+- New work must start from current verified `main` and use a new branch.
+- PR creation and merge still require independent review and explicit human authorization.

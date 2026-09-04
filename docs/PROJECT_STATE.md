@@ -4,13 +4,17 @@ Diamond Shelf Social Studio is an internal Shopify-catalog-to-editorial-content 
 
 ## Baselines
 
-- Authoritative Task #38 `main` baseline: `4242b80e6626886b528641749beeb64cf7e4ea62`
-- Baseline tree: `ac35cffe2f58c1d47deac578e43cabe12189e519`
-- Authoritative main Alembic head: `0013`
-- Task #38 PRE-MERGE branch: `task-38-publisher-scheduler-foundation-v1`
-- Task #38 code/frontend checkpoint entering documentation closure: `8c14903deac4978e36d9a65d62122d84d374978e`
-- Task #38 checkpoint tree: `8ca7b7aa438cd1c6fd038e734a4ad24cdd5e4d53`
-- Task #38 PRE-MERGE branch Alembic head: `0014`
+- Authoritative current `main`: `010e238c2750be8c85efa4d4c83b9aed48f3192e`
+- Current main tree: `48335065aad89272b791362c4d8d56f238944b5e`
+- Current main Alembic head: `0014`
+- Task #38 starting main baseline: `4242b80e6626886b528641749beeb64cf7e4ea62`
+- Task #38 starting tree: `ac35cffe2f58c1d47deac578e43cabe12189e519`
+- Task #38 starting Alembic head: `0013`
+- Task #38 branch: `task-38-publisher-scheduler-foundation-v1`
+- Certified Task #38 branch SHA: `92614f876f10947c6c37c7f9bef056b07eefbb21`
+- Certified and merged tree: `48335065aad89272b791362c4d8d56f238944b5e`
+- Merged PR: #18 — Publisher + Scheduler Foundation v1
+- Closed issue: #17 — Task #38 — Publisher + Scheduler Foundation v1 (Publishing Disabled)
 
 Migration `backend/alembic/versions/0014_publisher_scheduler_foundation.py` is additive and historical migrations `0001`-`0013` were not rewritten. Known limitation: historical migration `0002` contains PostgreSQL-specific syntax such as `'[]'::json`, so Task #38 requires narrow actual `0013 -> 0014` verification rather than claiming the complete fresh SQLite migration chain passes.
 
@@ -20,7 +24,7 @@ Migration `backend/alembic/versions/0014_publisher_scheduler_foundation.py` is a
 - Task #35: COMPLETE / merged
 - Task #36: COMPLETE / merged
 - Task #37: COMPLETE / merged
-- Task #38: PRE-MERGE; no PR has been claimed and release certification is not complete yet
+- Task #38: COMPLETE / merged
 
 ## Current capabilities
 
@@ -57,14 +61,23 @@ Latest carried-forward runtime snapshot, historical and not freshly queried:
 
 Re-query the deployed PostgreSQL database before relying on runtime counts operationally.
 
-## Latest focused verification history
+## Task #38 release certification
 
 - Publication API: 17 passed
 - Pinterest gateway: 7 passed
 - Pinterest publisher: 37 passed
 - Publication scheduler: 11 passed
 - Combined focused foundation: 72 passed
-- Existing warning count: 1
+- Focused foundation warning count: 1
+- Migration 0014: PASS
+- Task #34 regressions: 8 passed
+- Task #35 regressions: 12 passed
+- Task #36 regressions: 30 passed
+- Task #37 regressions: 59 passed
+- Full backend: 347 passed, 0 failures, 0 errors, 2 warnings
+- Python compile: PASS
+- Task #38 import verification: PASS (`TASK38_IMPORT_OK`)
+- Alembic: sole head `0014`; `0014` directly follows `0013`
 - Frontend: `npm run build` passed (`tsc -b` and `vite build`)
 
-This is not the final full release matrix.
+`RELEASE_MATRIX=PASS`. The final release matrix executed against Task #38 branch SHA `92614f876f10947c6c37c7f9bef056b07eefbb21` with tree `48335065aad89272b791362c4d8d56f238944b5e`. Merge commit `010e238c2750be8c85efa4d4c83b9aed48f3192e` has the same tree, so the content merged to `main` is exactly the certified tree.

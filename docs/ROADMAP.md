@@ -10,10 +10,11 @@
 - Task #35: internal single-admin authentication and API authorization
 - Task #36: Pinterest Account Connection/OAuth v1 with read-only scopes
 - Task #37: Pinterest Board Sync & Board Manager v1, read-only board/section sync, connection-level sync timestamp, strict provider validation, and local eligibility/routing
+- Task #38: Publisher + Scheduler Foundation v1, PR #18 merged, Issue #17 closed, Alembic `0014`
 
-## Current pre-merge work
+## Current state
 
-Task #38 is the PRE-MERGE Publisher + Scheduler Foundation on `task-38-publisher-scheduler-foundation-v1`. It adds immutable provider-independent publication snapshots, explicit human scheduling/rescheduling/cancellation, bounded due discovery, transactional claims, durable attempts, readiness reporting, outcome classification, safe attempt metadata, authenticated publication APIs, and a hardened scheduler frontend.
+Task #38 added immutable provider-independent publication snapshots, explicit human scheduling/rescheduling/cancellation, bounded due discovery, transactional claims, durable attempts, readiness reporting, outcome classification, safe attempt metadata, authenticated publication APIs, and a hardened scheduler frontend.
 
 Task #38 does not turn publishing on. `PUBLISHING_ENABLED=false` remains authoritative; live OAuth requested scopes remain exactly `user_accounts:read`, `boards:read`, and `pins:read`; `pins:write` and `boards:write` are not requested live.
 
@@ -23,6 +24,10 @@ Before any separately authorized live publishing phase, the canonical release ga
 
 ## Future phases
 
-The next stage after Task #38 merge is Publisher + Scheduler live-readiness design, not automatic enablement. It requires separate authorization for write-scope access, provider-access review, Pinterest SEO + Metadata + Creative Quality gate, public-media readiness, sandbox/mock validation, operational dispatcher/deployment authorization, and reconciliation/runbook readiness.
+The recommended next stage is Task #39 — Pinterest Live Publishing Readiness + Manual Dispatch v1. Task #39 does not mean immediately enabling live publishing; it should prepare a controlled manual live-publishing path with separate authorization.
+
+Required future readiness gates include Pinterest SEO + Metadata + Creative Quality validation, public Pinterest-fetchable HTTPS media, write-scope authorization review, provider-access review, duplicate prevention, final publication preview, explicit operator confirmation, safe `PUBLISH_UNKNOWN` reconciliation, runbook/incident handling, and controlled single-Pin validation.
+
+Do not introduce an autonomous worker as the immediate next step.
 
 Analytics ingestion remains a later separate phase. No later phase is enabled by Task #38.
