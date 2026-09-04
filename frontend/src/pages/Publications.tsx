@@ -27,6 +27,13 @@ type Publication = {
   live_publishing_enabled?: boolean
   publishing_readiness_reason?: string | null
   attempts?: Attempt[]
+  title?: string | null
+  description?: string | null
+  alt_text?: string | null
+  destination_url?: string | null
+  utm_url?: string | null
+  media_url?: string | null
+  provider_readiness?: { status?: string; live_provider_write_enabled?: boolean }
 }
 
 const scheduleableStatuses = new Set(['APPROVED', 'SCHEDULED', 'PUBLISH_FAILED'])
@@ -58,6 +65,7 @@ export function PublicationsPage() {
   const [error, setError] = useState<string | null>(null)
   const [scheduleValues, setScheduleValues] = useState<Record<string, string>>({})
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [previews, setPreviews] = useState<Record<string, any>>({})
 
   const load = async () => {
     try {
@@ -103,6 +111,17 @@ export function PublicationsPage() {
     await mutate(row.id, 'schedule', { scheduled_for: scheduledFor })
   }
 
+  const loadPreview = async (id: string) => {
+    try {
+      const response = await fetch(`/api/publications/${id}/preview`, { credentials: 'include' })
+      if (!response.ok) throw new Error(await readApiError(response))
+      const preview = await response.json()
+      setPreviews((current) => ({ ...current, [id]: preview }))
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : 'Preview request failed')
+    }
+  }
+
   const schedulerKnown = rows.length === 0 || rows.some((row) => row.scheduler_foundation_available)
   const publishingEnabled = rows.some((row) => row.live_publishing_enabled)
 
@@ -141,6 +160,20 @@ export function PublicationsPage() {
             <p>
               Status: {row.status} · Readiness: {row.publishing_readiness_reason || '—'}
             </p>
+            <p>Live provider writes: {row.live_publishing_enabled ? 'enabled' : 'PUBLISHING_DISABLED'}</p>
+            <button onClick={() => void loadPreview(row.id)} disabled={busyId === row.id}>View final preview</button>
+            {previews[row.id] && (
+              <section className="panel">
+                <h4>Final immutable preview</h4>
+                <p>Title: {previews[row.id].title || row.title || '—'}</p>
+                <p>Description: {previews[row.id].description || row.description || '—'}</p>
+                <p>Alt text: {previews[row.id].alt_text || row.alt_text || '—'}</p>
+                <p>Destination: {previews[row.id].destination_url || row.destination_url || '—'}</p>
+                <p>UTM: {previews[row.id].utm_url || row.utm_url || '—'}</p>
+                <p>Manual readiness: {previews[row.id].manual_readiness?.status || '—'} · Provider: {previews[row.id].provider_readiness?.status || '—'}</p>
+                {previews[row.id].checklist?.map((item: { code: string; passed: boolean; status?: string }) => <p key={item.code}>{item.code}: {item.passed ? 'PASS' : item.status || 'FAIL'}</p>)}
+              </section>
+            )}
             <p>
               Revision: {row.revision_id || 'original'} · Creative: {row.creative_id || '—'} ·
               Approval: {row.approval_id || '—'}
@@ -158,6 +191,8 @@ export function PublicationsPage() {
               Live publishing: {row.live_publishing_enabled ? 'enabled' : 'disabled'}
             </p>
             {row.error_code && <p>Safe error: {row.error_code}</p>}
+
+            {row.status === 'PUBLISH_UNKNOWN' && <p><strong>Reconciliation required.</strong> No retry or publish action is available.</p>}
 
             {canSchedule && (
               <>

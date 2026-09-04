@@ -83,3 +83,6 @@ Before any future live publishing phase, apply the canonical gate in `docs/DECIS
 Task #39 is the recommended next stage: Pinterest Live Publishing Readiness + Manual Dispatch v1. It requires separate authorization and must not immediately enable ordinary live publishing.
 
 Before any future live provider write, require write-scope authorization review, provider-access review, Pinterest SEO + Metadata + Creative Quality gate, public Pinterest-fetchable HTTPS media, duplicate prevention, final publication preview, explicit operator confirmation, safe `PUBLISH_UNKNOWN` reconciliation, runbook/incident handling, and controlled single-Pin validation. Do not introduce an autonomous worker as the immediate next step.
+## Task #39 Phase 3B
+
+Operator preview, readiness, authorization and PUBLISH_UNKNOWN reconciliation controls are available. Publishing remains disabled (`PUBLISHING_ENABLED=false`); live OAuth scopes are read-only. PUBLISH_UNKNOWN is never retried and requires explicit reconciliation.

@@ -81,3 +81,6 @@ Re-query the deployed PostgreSQL database before relying on runtime counts opera
 - Frontend: `npm run build` passed (`tsc -b` and `vite build`)
 
 `RELEASE_MATRIX=PASS`. The final release matrix executed against Task #38 branch SHA `92614f876f10947c6c37c7f9bef056b07eefbb21` with tree `48335065aad89272b791362c4d8d56f238944b5e`. Merge commit `010e238c2750be8c85efa4d4c83b9aed48f3192e` has the same tree, so the content merged to `main` is exactly the certified tree.
+### Task #39 Phase 3B
+
+Frontend operator preview/readiness surfaces server-derived state. Manual authorization is distinct from live provider readiness; publishing remains disabled.

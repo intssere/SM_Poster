@@ -31,3 +31,6 @@ Required future readiness gates include Pinterest SEO + Metadata + Creative Qual
 Do not introduce an autonomous worker as the immediate next step.
 
 Analytics ingestion remains a later separate phase. No later phase is enabled by Task #38.
+### Task #39 Phase 3B
+
+Operator experience and runbook are complete; next separately authorized stage is controlled Pinterest write enablement and a single-Pin pilot.

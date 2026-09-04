@@ -75,3 +75,6 @@ Attempt metadata is allowlisted to `validated_pin_id`, `http_status`, `provider_
 Task #36 provides read-only OAuth with encrypted credentials and one-time hashed state. Task #37 provides read-only board/section snapshots, connection-level successful sync time, strict provider metadata validation, five-minute token refresh preflight, and local-only eligibility/routing. Task #38 binds new publications to real PinterestConnection and PinterestBoard identities without enabling live writes.
 
 Protected state keeps `PUBLISHING_ENABLED=false` and live OAuth scopes exactly `user_accounts:read`, `boards:read`, and `pins:read`.
+### Operator controls
+
+Phase 3B uses server-derived publication preview/readiness and explicit authorization/reconciliation APIs; the frontend never handles provider credentials or invokes publish directly.

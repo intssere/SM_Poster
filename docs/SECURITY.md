@@ -45,3 +45,6 @@ Branded products, bottles, packages, and logos must come from authentic persiste
 ## Pinterest read foundations
 
 Task #36 OAuth uses one-time hashed state records, server-side code exchange, encrypted tokens, and read-only scopes. Task #37 board sync validates provider metadata before persistence; malformed containers or values fail closed without silent stringification/truncation. Board sync uses a five-minute token-expiry preflight and one bounded refresh. Refresh failures preserve inventory and sync timestamps, with no background refresh or provider retry loop.
+### Phase 3B controls
+
+Provider credentials remain server-side; the UI does not store tokens or invoke provider writes. Publishing is disabled and PUBLISH_UNKNOWN cannot be retried.

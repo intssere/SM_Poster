@@ -61,3 +61,6 @@ Before any separately authorized live publishing phase, each candidate Pin must 
 - supported Pinterest topic/product-tag fields evaluated before future enablement rather than silently omitted
 
 This is a future live-publishing release gate. It does not enable provider writes now.
+### Phase 3B safety decision
+
+No frontend Publish Now action is exposed. PUBLISH_UNKNOWN requires explicit human reconciliation and is never automatically retried.
