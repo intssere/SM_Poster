@@ -95,18 +95,28 @@ def _ready_publication(db, *, scopes=None, scheduled_for=None, fingerprint="p"):
     return publication
 
 
-def _settings(enabled):
-    return type("S", (), {"publishing_enabled": enabled})()
+def _settings(enabled, publication=None, *, pilot=True, publication_id=None, publication_fingerprint=None, request_fingerprint=None):
+    if publication is None:
+        return type("S", (), {"publishing_enabled": enabled, "pinterest_single_pin_pilot_enabled": pilot})()
+    return type("S", (), {
+        "publishing_enabled": enabled,
+        "pinterest_single_pin_pilot_enabled": pilot,
+        "pinterest_single_pin_pilot_publication_id": publication.id if publication_id is None else publication_id,
+        "pinterest_single_pin_pilot_publication_fingerprint": publication.publication_fingerprint if publication_fingerprint is None else publication_fingerprint,
+        "pinterest_single_pin_pilot_request_fingerprint": request_fingerprint_for(publication) if request_fingerprint is None else request_fingerprint,
+    })()
 
 
 def test_dispatch_disabled_preserves_active_authorization_and_creates_no_attempt(monkeypatch):
     from app.services import publication_dispatch_authorization as auth_service
+    from app.services import pinterest_single_pin_pilot as pilot_service
 
     SessionLocal, engine = _db()
     db = SessionLocal()
     publication = _ready_publication(db)
     auth = create_authorization(db, publication, actor="admin@example.test")
-    monkeypatch.setattr(auth_service, "get_settings", lambda: _settings(False))
+    monkeypatch.setattr(auth_service, "get_settings", lambda: _settings(False, publication))
+    monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(False, publication))
     with pytest.raises(ManualDispatchError, match="PUBLISHING_DISABLED"):
         import asyncio
 
@@ -120,12 +130,14 @@ def test_dispatch_disabled_preserves_active_authorization_and_creates_no_attempt
 
 def test_dispatch_missing_pins_write_preserves_active_authorization_and_creates_no_attempt(monkeypatch):
     from app.services import publication_dispatch_authorization as auth_service
+    from app.services import pinterest_single_pin_pilot as pilot_service
 
     SessionLocal, engine = _db()
     db = SessionLocal()
     publication = _ready_publication(db, scopes=["user_accounts:read", "boards:read", "pins:read"])
     auth = create_authorization(db, publication, actor="admin@example.test")
-    monkeypatch.setattr(auth_service, "get_settings", lambda: _settings(True))
+    monkeypatch.setattr(auth_service, "get_settings", lambda: _settings(True, publication))
+    monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(True, publication))
     with pytest.raises(ManualDispatchError, match="PUBLISHING_SCOPE_REQUIRED"):
         import asyncio
 
@@ -139,12 +151,14 @@ def test_dispatch_missing_pins_write_preserves_active_authorization_and_creates_
 
 def test_dispatch_token_decrypt_failure_happens_before_claim(monkeypatch):
     from app.services import publication_dispatch_authorization as auth_service
+    from app.services import pinterest_single_pin_pilot as pilot_service
 
     SessionLocal, engine = _db()
     db = SessionLocal()
     publication = _ready_publication(db)
     auth = create_authorization(db, publication, actor="admin@example.test")
-    monkeypatch.setattr(auth_service, "get_settings", lambda: _settings(True))
+    monkeypatch.setattr(auth_service, "get_settings", lambda: _settings(True, publication))
+    monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(True, publication))
     with pytest.raises(ManualDispatchError, match="TOKEN_DECRYPT_FAILED"):
         import asyncio
 
@@ -159,13 +173,15 @@ def test_dispatch_token_decrypt_failure_happens_before_claim(monkeypatch):
 def test_dispatch_ready_path_claims_and_calls_mock_gateway_once(monkeypatch):
     from app.services import publication_dispatch_authorization as auth_service
     from app.services import pinterest_publisher
+    from app.services import pinterest_single_pin_pilot as pilot_service
 
     SessionLocal, engine = _db()
     db = SessionLocal()
     publication = _ready_publication(db)
     auth = create_authorization(db, publication, actor="admin@example.test")
-    monkeypatch.setattr(auth_service, "get_settings", lambda: _settings(True))
-    monkeypatch.setattr(pinterest_publisher, "get_settings", lambda: _settings(True))
+    monkeypatch.setattr(auth_service, "get_settings", lambda: _settings(True, publication))
+    monkeypatch.setattr(pinterest_publisher, "get_settings", lambda: _settings(True, publication))
+    monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(True, publication))
 
     class Gateway:
         calls = 0
@@ -295,13 +311,15 @@ def test_post_claim_validation_exception_fails_known_without_provider_call(monke
     from app.services import manual_publication_dispatch as dispatch_service
     from app.services import publication_dispatch_authorization as auth_service
     from app.services import pinterest_publisher
+    from app.services import pinterest_single_pin_pilot as pilot_service
 
     SessionLocal, engine = _db()
     db = SessionLocal()
     publication = _ready_publication(db)
     auth = create_authorization(db, publication, actor="admin@example.test")
-    monkeypatch.setattr(auth_service, "get_settings", lambda: _settings(True))
-    monkeypatch.setattr(pinterest_publisher, "get_settings", lambda: _settings(True))
+    monkeypatch.setattr(auth_service, "get_settings", lambda: _settings(True, publication))
+    monkeypatch.setattr(pinterest_publisher, "get_settings", lambda: _settings(True, publication))
+    monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(True, publication))
     monkeypatch.setattr(
         dispatch_service,
         "validate_post_claim",
@@ -338,8 +356,115 @@ def test_post_claim_validation_exception_fails_known_without_provider_call(monke
     assert "traceback" not in str(attempt.safe_response_metadata).lower()
     engine.dispose()
 
+@pytest.mark.parametrize("mode,expected", [("disabled", "PILOT_DISABLED"), ("wrong_id", "PILOT_PUBLICATION_MISMATCH"), ("wrong_fp", "PILOT_PUBLICATION_FINGERPRINT_MISMATCH"), ("wrong_request", "PILOT_REQUEST_FINGERPRINT_MISMATCH")])
+def test_dispatch_pilot_preclaim_failures_are_zero_mutation(monkeypatch, mode, expected):
+    from app.services import pinterest_single_pin_pilot as pilot_service
+    SessionLocal, engine = _db(); db = SessionLocal(); publication = _ready_publication(db); auth = create_authorization(db, publication, actor="admin@example.test")
+    kwargs = {"pilot": mode != "disabled"}
+    if mode == "wrong_id": kwargs["publication_id"] = "other"
+    if mode == "wrong_fp": kwargs["publication_fingerprint"] = "other"
+    if mode == "wrong_request": kwargs["request_fingerprint"] = "other"
+    monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(True, publication, **kwargs))
+    decrypt_calls = []; gateway_calls = []
+    class Gateway:
+        def __init__(self, *args, **kwargs): gateway_calls.append(1)
+    import asyncio
+    with pytest.raises(ManualDispatchError, match=expected):
+        asyncio.run(dispatch_publication(db, publication, decrypt=lambda value: decrypt_calls.append(1) or "token", gateway_factory=Gateway))
+    db.expire_all()
+    assert decrypt_calls == [] and gateway_calls == []
+    assert db.get(PinPublication, publication.id).status == PublicationStatus.SCHEDULED
+    assert db.get(type(auth), auth.id).status == "ACTIVE"
+    assert db.query(PublicationAttempt).filter_by(publication_id=publication.id).count() == 0
+    engine.dispose()
+
+@pytest.mark.parametrize("field", ["publication_id", "publication_fingerprint", "request_fingerprint"])
+def test_dispatch_pilot_incomplete_binding_is_zero_mutation(monkeypatch, field):
+    from app.services import pinterest_single_pin_pilot as pilot_service
+    SessionLocal, engine = _db(); db = SessionLocal(); publication = _ready_publication(db); auth = create_authorization(db, publication, actor="admin@example.test")
+    values = {"publication_id": publication.id, "publication_fingerprint": publication.publication_fingerprint, "request_fingerprint": request_fingerprint_for(publication)}; values[field] = ""
+    monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(True, publication, **values))
+    decrypt_calls=[]; gateway_calls=[]
+    class Gateway:
+        def __init__(self, *a, **kw): gateway_calls.append(1)
+    import asyncio
+    with pytest.raises(ManualDispatchError, match="PILOT_BINDING_INCOMPLETE"):
+        asyncio.run(dispatch_publication(db, publication, decrypt=lambda _: decrypt_calls.append(1), gateway_factory=Gateway))
+    assert decrypt_calls == [] and gateway_calls == [] and db.query(PublicationAttempt).count() == 0
+    assert publication.status == PublicationStatus.SCHEDULED and auth.status == "ACTIVE"
+    engine.dispose()
+
+@pytest.mark.parametrize("status", ["STARTED", "FAILED", "UNKNOWN", "SUCCEEDED"])
+def test_dispatch_prior_attempt_blocks_pilot_before_provider(monkeypatch, status):
+    from app.services import pinterest_single_pin_pilot as pilot_service
+    SessionLocal, engine = _db(); db = SessionLocal(); publication = _ready_publication(db); auth = create_authorization(db, publication, actor="admin@example.test")
+    db.add(PublicationAttempt(publication_id=publication.id, attempt_number=1, status=status, request_fingerprint="prior")); db.commit()
+    monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(True, publication))
+    calls=[]
+    import asyncio
+    with pytest.raises(ManualDispatchError, match="PILOT_ALREADY_ATTEMPTED"):
+        asyncio.run(dispatch_publication(db, publication, decrypt=lambda _: calls.append("decrypt"), gateway_factory=lambda **_: calls.append("gateway")))
+    assert calls == [] and db.query(PublicationAttempt).filter_by(publication_id=publication.id).count() == 1 and auth.status == "ACTIVE"
+    engine.dispose()
+
+def test_dispatch_gateway_constructor_failure_is_bounded_before_claim(monkeypatch):
+    from app.services import pinterest_single_pin_pilot as pilot_service
+    from app.services import publication_dispatch_authorization as auth_service
+    SessionLocal, engine = _db(); db = SessionLocal(); publication = _ready_publication(db); auth = create_authorization(db, publication, actor="admin@example.test")
+    monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(True, publication))
+    monkeypatch.setattr(auth_service, "get_settings", lambda: _settings(True, publication))
+    import asyncio
+    def broken(**kwargs): raise RuntimeError("gateway secret")
+    with pytest.raises(ManualDispatchError, match="TOKEN_DECRYPT_FAILED"):
+        asyncio.run(dispatch_publication(db, publication, decrypt=lambda _: "token", gateway_factory=broken))
+    assert publication.status == PublicationStatus.SCHEDULED and auth.status == "ACTIVE" and db.query(PublicationAttempt).count() == 0
+    engine.dispose()
+
+@pytest.mark.parametrize("drift", ["pilot", "request"])
+def test_dispatch_post_claim_pilot_drift_fails_after_claim(monkeypatch, drift):
+    from app.services import pinterest_single_pin_pilot as pilot_service
+    from app.services import publication_dispatch_authorization as auth_service
+    SessionLocal, engine = _db(); db = SessionLocal(); publication = _ready_publication(db); auth = create_authorization(db, publication, actor="admin@example.test")
+    valid = _settings(True, publication)
+    drifted = _settings(True, publication, pilot=(drift != "pilot"), request_fingerprint=("drift" if drift == "request" else None))
+    sequence = iter([valid, drifted])
+    monkeypatch.setattr(pilot_service, "get_settings", lambda: next(sequence))
+    monkeypatch.setattr(auth_service, "get_settings", lambda: valid)
+    class Gateway:
+        calls = 0
+        def __init__(self, *a, **kw): pass
+        async def create_pin(self, payload): type(self).calls += 1; return {"id": "pin"}
+    import asyncio
+    with pytest.raises(ManualDispatchError): asyncio.run(dispatch_publication(db, publication, decrypt=lambda _: "token", gateway_factory=Gateway))
+    db.expire_all(); assert auth.status == "CONSUMED"; assert publication.status == PublicationStatus.PUBLISH_FAILED
+    attempt = db.query(PublicationAttempt).filter_by(publication_id=publication.id).one()
+    assert attempt.status == "FAILED" and Gateway.calls == 0 and attempt.provider_pin_id is None
+    with pytest.raises(ManualDispatchError): asyncio.run(dispatch_publication(db, publication, decrypt=lambda _: "token", gateway_factory=Gateway))
+    assert Gateway.calls == 0 and db.query(PublicationAttempt).filter_by(publication_id=publication.id).count() == 1
+    engine.dispose()
+
+def test_dispatch_second_invocation_never_calls_provider(monkeypatch):
+    from app.services import pinterest_single_pin_pilot as pilot_service
+    from app.services import publication_dispatch_authorization as auth_service
+    from app.services import pinterest_publisher
+    SessionLocal, engine = _db(); db = SessionLocal(); publication = _ready_publication(db); auth = create_authorization(db, publication, actor="admin@example.test")
+    settings = _settings(True, publication); monkeypatch.setattr(pilot_service, "get_settings", lambda: settings); monkeypatch.setattr(auth_service, "get_settings", lambda: settings); monkeypatch.setattr(pinterest_publisher, "get_settings", lambda: settings)
+    class Gateway:
+        calls = 0
+        def __init__(self, *a, **kw): pass
+        async def create_pin(self, payload): type(self).calls += 1; return {"id": "pin"}
+    import asyncio
+    asyncio.run(dispatch_publication(db, publication, decrypt=lambda _: "token", gateway_factory=Gateway))
+    assert Gateway.calls == 1 and db.query(PublicationAttempt).filter_by(publication_id=publication.id).count() == 1
+    with pytest.raises(ManualDispatchError): asyncio.run(dispatch_publication(db, publication, decrypt=lambda _: "token", gateway_factory=Gateway))
+    assert Gateway.calls == 1 and db.query(PublicationAttempt).filter_by(publication_id=publication.id).count() == 1
+    engine.dispose()
+
 
 def test_two_session_stale_authorized_claim_consumes_once(tmp_path):
+    # SQLite-compatible authoritative database CAS proof used by full dispatch:
+    # two stale sessions observe SCHEDULED/ACTIVE, exactly one claim/attempt wins,
+    # and the losing claim cannot proceed to provider execution.
     db_path = tmp_path / "claim-race.db"
     SessionLocal, engine = _db(db_path)
     setup = SessionLocal()

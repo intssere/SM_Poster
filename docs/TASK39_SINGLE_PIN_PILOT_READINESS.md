@@ -12,4 +12,8 @@ Future prerequisites (not executed by Task #39):
 4. Capture provider Pin ID and verify the Pinterest Pin and Diamond Shelf destination/UTM.
 5. Capture complete audit evidence, then disable the pilot again.
 
-No prerequisite is implied or performed by the current branch. There is no autonomous worker, scheduler, automatic retry, or browser automation.
+Task #39 itself performed none of these live prerequisites. Task #40 now
+contains default-off, mocked-only capability for a future controlled scope
+upgrade and single-Pin pilot, but Gate A has not been authorized, live
+`pins:write` has not been requested, and no live Pin has been created. There is
+no autonomous worker, scheduler, automatic retry, or browser automation.

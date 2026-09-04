@@ -119,6 +119,32 @@ def test_scope_normalization_is_exact():
     scopes = set("pins:read boards:read user_accounts:read".split())
     assert scopes == set(oauth.SCOPES)
 
+@pytest.mark.parametrize("write_enabled,expected", [(False, set(oauth.READ_SCOPES)), (True, set(oauth.READ_SCOPES) | {"pins:write"})])
+def test_requested_scopes_conditionally_adds_only_pins_write(monkeypatch, write_enabled, expected):
+    configure(monkeypatch)
+    settings = type("S", (), {"pinterest_write_scope_enabled": write_enabled})()
+    assert set(oauth.requested_scopes(settings)) == expected
+    assert "boards:write" not in oauth.requested_scopes(settings)
+
+def test_authorization_url_uses_conditional_write_scope(monkeypatch):
+    configure(monkeypatch, PINTEREST_WRITE_SCOPE_ENABLED="true")
+    get_settings.cache_clear()
+    assert "pins%3Awrite" in oauth.authorization_url("state")
+    assert "boards%3Awrite" not in oauth.authorization_url("state")
+
+def test_task40_defaults_are_disabled_and_unbound(monkeypatch):
+    for key in ("PUBLISHING_ENABLED", "PINTEREST_WRITE_SCOPE_ENABLED", "PINTEREST_SINGLE_PIN_PILOT_ENABLED", "PINTEREST_SINGLE_PIN_PILOT_PUBLICATION_ID", "PINTEREST_SINGLE_PIN_PILOT_PUBLICATION_FINGERPRINT", "PINTEREST_SINGLE_PIN_PILOT_REQUEST_FINGERPRINT"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert settings.publishing_enabled is False
+    assert settings.pinterest_write_scope_enabled is False
+    assert settings.pinterest_single_pin_pilot_enabled is False
+    assert settings.pinterest_single_pin_pilot_publication_id == ""
+    assert settings.pinterest_single_pin_pilot_publication_fingerprint == ""
+    assert settings.pinterest_single_pin_pilot_request_fingerprint == ""
+
 def test_state_hash_is_one_way_and_fixed_length(monkeypatch):
     configure(monkeypatch)
     raw, digest = oauth.new_state()
@@ -258,3 +284,61 @@ def test_callback_malformed_provider_data_is_safe(monkeypatch, isolated_app_db, 
     response = TestClient(app).get(f"/api/channels/pinterest/callback?code=x&state={raw}", follow_redirects=False)
     assert "result=oauth_error" in response.headers["location"]
     with isolated_app_db() as db: assert db.query(PinterestConnection).count() == 0
+
+@pytest.mark.parametrize("scope,accepted", [
+    ("user_accounts:read boards:read pins:read pins:write", True),
+    ("user_accounts:read boards:read pins:read pins:write boards:write", False),
+    ("user_accounts:read boards:read", False),
+])
+def test_callback_scope_policy_is_enforced_at_route(monkeypatch, isolated_app_db, scope, accepted):
+    configure(monkeypatch, FRONTEND_RETURN_URL="http://localhost:5000/#channels"); monkeypatch.setenv("AUTH_DISABLED", "true"); monkeypatch.setenv("APP_ENV", "development"); get_settings.cache_clear()
+    raw, digest = oauth.new_state()
+    with isolated_app_db() as db:
+        db.add(PinterestOAuthState(state_hash=digest, initiated_by="admin", expires_at=datetime.now(timezone.utc)+timedelta(minutes=10))); db.commit()
+    async def exchange(self, code): return {"access_token":"a", "refresh_token":"r", "scope":scope, "expires_in":3600}
+    async def user(self, token): return {"id":"acct-scope", "username":"safe"}
+    monkeypatch.setattr(oauth.PinterestClient, "exchange_code", exchange); monkeypatch.setattr(oauth.PinterestClient, "user_account", user)
+    response = TestClient(app).get(f"/api/channels/pinterest/callback?code=x&state={raw}", follow_redirects=False)
+    expected = "connected" if accepted else "oauth_error"
+    assert f"result={expected}" in response.headers["location"]
+    with isolated_app_db() as db:
+        connections = db.query(PinterestConnection).filter_by(external_user_id="acct-scope").all()
+        assert bool(connections) is accepted
+        if accepted: assert set(connections[0].granted_scopes) == set(scope.split())
+
+def test_default_authorization_url_excludes_write_scopes(monkeypatch):
+    configure(monkeypatch, PINTEREST_WRITE_SCOPE_ENABLED="false"); get_settings.cache_clear()
+    url = oauth.authorization_url("state")
+    assert "user_accounts%3Aread" in url and "boards%3Aread" in url and "pins%3Aread" in url
+    assert "pins%3Awrite" not in url and "boards%3Awrite" not in url
+
+def _refresh_row():
+    return PinterestConnection(external_user_id="refresh", access_token_ciphertext=oauth.encrypt_token("old-access"), refresh_token_ciphertext=oauth.encrypt_token("old-refresh"), granted_scopes=list(oauth.READ_SCOPES) + ["pins:write"], access_token_expires_at=datetime.now(timezone.utc)+timedelta(hours=1), refresh_token_expires_at=datetime.now(timezone.utc)+timedelta(days=1), refreshed_at=datetime.now(timezone.utc)-timedelta(days=1))
+
+def test_refresh_persists_actual_write_scope(monkeypatch, isolated_app_db):
+    configure(monkeypatch)
+    with isolated_app_db() as db:
+        row = _refresh_row(); db.add(row); db.commit()
+        class Client:
+            async def refresh_token(self, token): return {"access_token":"new", "refresh_token":"new-refresh", "scope":"user_accounts:read boards:read pins:read pins:write", "expires_in":3600}
+        asyncio.run(oauth.refresh_connection(db, row, Client())); db.expire_all()
+        assert set(db.query(PinterestConnection).one().granted_scopes) == set(oauth.READ_SCOPES) | {"pins:write"}
+
+def test_refresh_scope_loss_removes_write_grant(monkeypatch, isolated_app_db):
+    configure(monkeypatch)
+    with isolated_app_db() as db:
+        row = _refresh_row(); db.add(row); db.commit()
+        class Client:
+            async def refresh_token(self, token): return {"access_token":"new", "scope":"user_accounts:read boards:read pins:read", "expires_in":3600}
+        asyncio.run(oauth.refresh_connection(db, row, Client())); db.expire_all()
+        assert "pins:write" not in db.query(PinterestConnection).one().granted_scopes
+
+def test_refresh_boards_write_rejection_preserves_metadata(monkeypatch, isolated_app_db):
+    configure(monkeypatch)
+    with isolated_app_db() as db:
+        row = _refresh_row(); db.add(row); db.commit(); before = {k: getattr(row, k) for k in ("access_token_ciphertext", "refresh_token_ciphertext", "access_token_expires_at", "refresh_token_expires_at", "granted_scopes", "refreshed_at")}
+        class Client:
+            async def refresh_token(self, token): return {"access_token":"bad", "scope":"user_accounts:read boards:read pins:read boards:write"}
+        with pytest.raises(RuntimeError): asyncio.run(oauth.refresh_connection(db, row, Client()))
+        db.expire_all(); fresh = db.query(PinterestConnection).one()
+        for key, value in before.items(): assert getattr(fresh, key) == value
