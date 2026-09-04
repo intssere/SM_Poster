@@ -37,12 +37,12 @@ APPROVED -> SCHEDULED -> CANCELLED
 SCHEDULED -> PUBLISHING -> CANCELLED
 PUBLISHING -> PUBLISHED | PUBLISH_FAILED | PUBLISH_UNKNOWN
 PUBLISH_FAILED -> SCHEDULED (explicit human/admin reschedule only) | CANCELLED
-PUBLISH_UNKNOWN -> PUBLISHED (explicit/manual reconciliation only) | CANCELLED
+PUBLISH_UNKNOWN -> PUBLISHED only through PROVIDER_PIN_CONFIRMED reconciliation; PUBLISH_UNKNOWN -> CANCELLED only through CANCELLED_UNKNOWN reconciliation. The ordinary cancel route is prohibited.
 PUBLISHED terminal
 CANCELLED terminal
 ```
 
-`PUBLISH_UNKNOWN` is never automatically retried.
+`PUBLISH_UNKNOWN` is never automatically retried. The ordinary `POST /api/publications/{id}/cancel` route is prohibited for this state; it may transition to `PUBLISHED` only through `PROVIDER_PIN_CONFIRMED` reconciliation or to `CANCELLED` only through `CANCELLED_UNKNOWN` reconciliation.
 
 ## Readiness and provider gates
 

@@ -4,9 +4,9 @@ Diamond Shelf Social Studio (`intssere/SM_Poster`) turns trusted Shopify catalog
 
 ## Current baseline
 
-- Authoritative current main: `010e238c2750be8c85efa4d4c83b9aed48f3192e`
-- Current main tree: `48335065aad89272b791362c4d8d56f238944b5e`
-- Current main Alembic head: `0014`
+- Authoritative current main for Task #39 audit continuity: `4b508a610cb1005fba4e7495d377341177d90be6`
+- Current main tree: `23a9f3d61f5dcf1748ede054d3dd9f8b0f7640ba`
+- Current main Alembic head: `0014`; Task #39 branch head: `0015`
 - Task #38 branch: `task-38-publisher-scheduler-foundation-v1`
 - Task #38 certified branch SHA: `92614f876f10947c6c37c7f9bef056b07eefbb21`
 - Certified and merged tree: `48335065aad89272b791362c4d8d56f238944b5e`
@@ -80,7 +80,7 @@ Before any future live publishing phase, apply the canonical gate in `docs/DECIS
 
 ## Next implementation stage
 
-Task #39 is the recommended next stage: Pinterest Live Publishing Readiness + Manual Dispatch v1. It requires separate authorization and must not immediately enable ordinary live publishing.
+Task #39 is the current PRE-MERGE task (Issue #20 OPEN), with Phase 1, Phase 2, and Phase 3A PASS and Phase 3B under independent certification. The next separately authorized dependency after Task #39 is Controlled Pinterest Write Enablement + Single-Pin Pilot; it is not authorized now.
 
 Before any future live provider write, require write-scope authorization review, provider-access review, Pinterest SEO + Metadata + Creative Quality gate, public Pinterest-fetchable HTTPS media, duplicate prevention, final publication preview, explicit operator confirmation, safe `PUBLISH_UNKNOWN` reconciliation, runbook/incident handling, and controlled single-Pin validation. Do not introduce an autonomous worker as the immediate next step.
 ## Task #39 Phase 3B

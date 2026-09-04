@@ -14,7 +14,7 @@ Publication snapshots are provider-independent audit records, not joins to mutab
 
 ## Publication state machine
 
-`APPROVED -> SCHEDULED -> CANCELLED`; `SCHEDULED -> PUBLISHING -> CANCELLED`; `PUBLISHING -> PUBLISHED | PUBLISH_FAILED | PUBLISH_UNKNOWN`; `PUBLISH_FAILED -> SCHEDULED` only by explicit human/admin reschedule or `CANCELLED`; `PUBLISH_UNKNOWN -> PUBLISHED` only by explicit/manual reconciliation or `CANCELLED`. `PUBLISHED` and `CANCELLED` are terminal. `PUBLISH_UNKNOWN` is never automatically retried.
+`APPROVED -> SCHEDULED -> CANCELLED`; `SCHEDULED -> PUBLISHING -> CANCELLED`; `PUBLISHING -> PUBLISHED | PUBLISH_FAILED | PUBLISH_UNKNOWN`; `PUBLISH_FAILED -> SCHEDULED` only by explicit human/admin reschedule or `CANCELLED`; `PUBLISH_UNKNOWN -> PUBLISHED` only through `PROVIDER_PIN_CONFIRMED` reconciliation or `PUBLISH_UNKNOWN -> CANCELLED` only through `CANCELLED_UNKNOWN` reconciliation. The ordinary cancel route is prohibited for `PUBLISH_UNKNOWN`; it is never automatically retried. `PUBLISHED` and `CANCELLED` are terminal.
 
 ## Scheduling and concurrency policy
 

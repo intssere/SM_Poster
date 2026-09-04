@@ -4,9 +4,9 @@ Diamond Shelf Social Studio is an internal Shopify-catalog-to-editorial-content 
 
 ## Baselines
 
-- Authoritative current `main`: `010e238c2750be8c85efa4d4c83b9aed48f3192e`
-- Current main tree: `48335065aad89272b791362c4d8d56f238944b5e`
-- Current main Alembic head: `0014`
+- Authoritative current `main` for Task #39 audit continuity: `4b508a610cb1005fba4e7495d377341177d90be6`
+- Current main tree: `23a9f3d61f5dcf1748ede054d3dd9f8b0f7640ba`
+- Current main Alembic head: `0014`; Task #39 branch head: `0015`
 - Task #38 starting main baseline: `4242b80e6626886b528641749beeb64cf7e4ea62`
 - Task #38 starting tree: `ac35cffe2f58c1d47deac578e43cabe12189e519`
 - Task #38 starting Alembic head: `0013`
