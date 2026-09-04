@@ -82,3 +82,17 @@ def test_post_claim_pilot_rejects_disabled_and_drift(monkeypatch):
     assert pilot_service.validate_post_claim_pilot(db, pub, attempt) == (False, "PILOT_DISABLED")
     monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(pub, request_fingerprint="drift"))
     assert pilot_service.validate_post_claim_pilot(db, pub, attempt) == (False, "PILOT_BINDING_MISMATCH")
+
+@pytest.mark.parametrize("mode", ["zero", "two", "wrong_status", "wrong_request", "not_publishing"])
+def test_post_claim_pilot_rejects_invalid_state_matrix(monkeypatch, mode):
+    db = _db(); pub = _publication(db); pub.status = PublicationStatus.PUBLISHING
+    attempt = PublicationAttempt(publication_id=pub.id, attempt_number=1, status="STARTED", request_fingerprint=request_fingerprint_for(pub)); db.add(attempt)
+    if mode == "two": db.add(PublicationAttempt(publication_id=pub.id, attempt_number=2, status="STARTED", request_fingerprint=request_fingerprint_for(pub)))
+    db.commit(); monkeypatch.setattr(pilot_service, "get_settings", lambda: _settings(pub))
+    if mode == "zero": db.delete(attempt)
+    elif mode == "wrong_status": attempt.status = "FAILED"
+    elif mode == "wrong_request": attempt.request_fingerprint = "bad"
+    elif mode == "not_publishing": pub.status = PublicationStatus.SCHEDULED
+    db.commit()
+    expected = "PILOT_REQUEST_FINGERPRINT_MISMATCH" if mode == "wrong_request" else "PILOT_POST_CLAIM_INVALID"
+    assert pilot_service.validate_post_claim_pilot(db, pub, attempt) == (False, expected)

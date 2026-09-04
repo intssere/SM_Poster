@@ -422,6 +422,9 @@ def test_dispatch_gateway_constructor_failure_is_bounded_before_claim(monkeypatc
 
 
 def test_two_session_stale_authorized_claim_consumes_once(tmp_path):
+    # SQLite-compatible authoritative database CAS proof used by full dispatch:
+    # two stale sessions observe SCHEDULED/ACTIVE, exactly one claim/attempt wins,
+    # and the losing claim cannot proceed to provider execution.
     db_path = tmp_path / "claim-race.db"
     SessionLocal, engine = _db(db_path)
     setup = SessionLocal()
