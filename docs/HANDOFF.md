@@ -12,6 +12,11 @@ Diamond Shelf Social Studio (`intssere/SM_Poster`) turns trusted Shopify catalog
 - Certified and merged tree: `48335065aad89272b791362c4d8d56f238944b5e`
 - PR #18: MERGED
 - Issue #17: CLOSED
+- PR #21: MERGED
+- Issue #20: CLOSED
+- Task #39 merge SHA: `2e2122958bcef1993e8e132401501107e1fa7dac`
+- Task #39 certified tree: `b546a6ee0395b9e80a83fd5c520e439ebb52e3f6`
+- Task #39 Alembic: `0015`
 
 Historical Task #38 starting baseline: main `4242b80e6626886b528641749beeb64cf7e4ea62`, tree `ac35cffe2f58c1d47deac578e43cabe12189e519`, Alembic `0013`. Do not confuse that starting point with the current merged main state above.
 
@@ -22,6 +27,7 @@ Historical Task #38 starting baseline: main `4242b80e6626886b528641749beeb64cf7e
 - Task #36: COMPLETE / merged
 - Task #37: COMPLETE / merged
 - Task #38: COMPLETE / merged
+- Task #39: COMPLETE / merged
 
 ## Non-negotiable rules
 

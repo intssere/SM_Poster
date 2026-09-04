@@ -50,9 +50,12 @@
 - Full backend: 347 passed, 2 warnings.
 - Frontend `npm run build`, `tsc -b`, and `vite build` passed.
 - Task #38 release certification passed and the certified tree was merged. Live publishing remains disabled by policy and requires a separate future authorization.
-## Task #39 Phase 3B
+## Task #39 — Pinterest Live Publishing Readiness + Manual Dispatch v1 — MERGED
 
 - Added server-derived publication preview/readiness operator surfaces and explicit reconciliation messaging.
 - Added explicit dispatch authorization/version confirmation, deliberate revocation, sanitized attempt/reconciliation history, and a PUBLISH_UNKNOWN-only reconciliation workflow. Publishing remains disabled.
 - Added operator runbook and single-Pin pilot readiness documentation.
 - Final release certification passed; PR #21 merged and Issue #20 closed. Alembic remains `0015` and live publishing remains disabled.
+- Merge commit: `2e2122958bcef1993e8e132401501107e1fa7dac`; merged/certified tree: `b546a6ee0395b9e80a83fd5c520e439ebb52e3f6`; Alembic: `0015`.
+- Final evidence: Task #34 8 passed; Task #35 12 passed; Task #36 30 passed; Task #37 59 passed; Task #38 current regression 86 passed; full backend 442 passed with 2 warnings; frontend production build PASS; Python compile/import PASS; Alembic sole head 0015; `git diff --check` clean.
+- Deliverables: PINTEREST_QUALITY_V1, immutable final preview, duplicate protection, fifteen-minute authorization, one ACTIVE authorization, single-use consumption, server-derived actor, revocation, manual dispatch orchestration, PUBLISH_UNKNOWN reconciliation, known Pin-ID reconciliation, operator frontend, operator runbook, and single-Pin pilot readiness. Live Pinterest publishing remained disabled.

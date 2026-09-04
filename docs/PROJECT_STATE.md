@@ -25,6 +25,7 @@ Migration `backend/alembic/versions/0014_publisher_scheduler_foundation.py` is a
 - Task #36: COMPLETE / merged
 - Task #37: COMPLETE / merged
 - Task #38: COMPLETE / merged
+- Task #39: COMPLETE / merged
 
 ## Current capabilities
 
@@ -81,8 +82,10 @@ Re-query the deployed PostgreSQL database before relying on runtime counts opera
 - Frontend: `npm run build` passed (`tsc -b` and `vite build`)
 
 `RELEASE_MATRIX=PASS`. The final release matrix executed against Task #38 branch SHA `92614f876f10947c6c37c7f9bef056b07eefbb21` with tree `48335065aad89272b791362c4d8d56f238944b5e`. Merge commit `010e238c2750be8c85efa4d4c83b9aed48f3192e` has the same tree, so the content merged to `main` is exactly the certified tree.
-### Task #39 Phase 3B
+### Task #39 — Pinterest Live Publishing Readiness + Manual Dispatch v1
 
 Frontend operator preview/readiness surfaces server-derived state. Manual authorization is distinct from live provider readiness; publishing remains disabled.
 
 Task #39 is COMPLETE / MERGED (PR #21, Issue #20 CLOSED). Phase 1, Phase 2, Phase 3A, Phase 3B, final PR certification, and merge verification passed. The release contract is PINTEREST_QUALITY_V1, fifteen-minute authorization TTL, one ACTIVE authorization, single-use consumption, immutable snapshot binding, duplicate protection, and explicit PUBLISH_UNKNOWN reconciliation. Publishing is `PUBLISHING_ENABLED=false`; live OAuth scopes remain read-only and no Pinterest writes, autonomous worker, analytics ingestion, or new OpenAI behavior is enabled. Runtime counts remain historical and were not freshly queried.
+
+PR #21: MERGED. Issue #20: CLOSED. Merge commit: `2e2122958bcef1993e8e132401501107e1fa7dac`. Certified/merged tree: `b546a6ee0395b9e80a83fd5c520e439ebb52e3f6`. Alembic: `0015`. Phase 1 PASS; Phase 2 PASS; Phase 3A PASS; Phase 3B PASS; Final PR certification PASS; Merge verification PASS.

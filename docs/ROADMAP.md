@@ -11,6 +11,7 @@
 - Task #36: Pinterest Account Connection/OAuth v1 with read-only scopes
 - Task #37: Pinterest Board Sync & Board Manager v1, read-only board/section sync, connection-level sync timestamp, strict provider validation, and local eligibility/routing
 - Task #38: Publisher + Scheduler Foundation v1, PR #18 merged, Issue #17 closed, Alembic `0014`
+- Task #39: Pinterest Live Publishing Readiness + Manual Dispatch v1, PR #21 merged, Issue #20 closed, Alembic `0015`
 
 ## Current state
 
