@@ -4,14 +4,19 @@ Diamond Shelf Social Studio (`intssere/SM_Poster`) turns trusted Shopify catalog
 
 ## Current baseline
 
-- Authoritative current main for Task #39 audit continuity: `4b508a610cb1005fba4e7495d377341177d90be6`
-- Current main tree: `23a9f3d61f5dcf1748ede054d3dd9f8b0f7640ba`
-- Current main Alembic head: `0014`; Task #39 branch head: `0015`
+- Authoritative current main: `2e2122958bcef1993e8e132401501107e1fa7dac`
+- Current main tree: `b546a6ee0395b9e80a83fd5c520e439ebb52e3f6`
+- Current main Alembic head: `0015`
 - Task #38 branch: `task-38-publisher-scheduler-foundation-v1`
 - Task #38 certified branch SHA: `92614f876f10947c6c37c7f9bef056b07eefbb21`
 - Certified and merged tree: `48335065aad89272b791362c4d8d56f238944b5e`
 - PR #18: MERGED
 - Issue #17: CLOSED
+- PR #21: MERGED
+- Issue #20: CLOSED
+- Task #39 merge SHA: `2e2122958bcef1993e8e132401501107e1fa7dac`
+- Task #39 certified tree: `b546a6ee0395b9e80a83fd5c520e439ebb52e3f6`
+- Task #39 Alembic: `0015`
 
 Historical Task #38 starting baseline: main `4242b80e6626886b528641749beeb64cf7e4ea62`, tree `ac35cffe2f58c1d47deac578e43cabe12189e519`, Alembic `0013`. Do not confuse that starting point with the current merged main state above.
 
@@ -22,6 +27,7 @@ Historical Task #38 starting baseline: main `4242b80e6626886b528641749beeb64cf7e
 - Task #36: COMPLETE / merged
 - Task #37: COMPLETE / merged
 - Task #38: COMPLETE / merged
+- Task #39: COMPLETE / merged
 
 ## Non-negotiable rules
 
@@ -80,11 +86,11 @@ Before any future live publishing phase, apply the canonical gate in `docs/DECIS
 
 ## Next implementation stage
 
-Task #39 is the current PRE-MERGE task (Issue #20 OPEN), with Phase 1, Phase 2, and Phase 3A PASS and Phase 3B under independent certification. The next separately authorized dependency after Task #39 is Controlled Pinterest Write Enablement + Single-Pin Pilot; it is not authorized now.
+Task #39 is COMPLETE / MERGED (PR #21 merged; Issue #20 closed). Phase 1, Phase 2, Phase 3A, Phase 3B, final PR certification, and merge verification all passed. The next separately authorized dependency is Controlled Pinterest Write Enablement + Single-Pin Pilot; it is not authorized now.
 
 Before any future live provider write, require write-scope authorization review, provider-access review, Pinterest SEO + Metadata + Creative Quality gate, public Pinterest-fetchable HTTPS media, duplicate prevention, final publication preview, explicit operator confirmation, safe `PUBLISH_UNKNOWN` reconciliation, runbook/incident handling, and controlled single-Pin validation. Do not introduce an autonomous worker as the immediate next step.
 ## Task #39 Phase 3B
 
 Operator preview, readiness, authorization and PUBLISH_UNKNOWN reconciliation controls are available. Publishing remains disabled (`PUBLISHING_ENABLED=false`); live OAuth scopes are read-only. PUBLISH_UNKNOWN is never retried and requires explicit reconciliation.
 
-Task #39 is PRE-MERGE remediation for Issue #20 (Phase 1, Phase 2, and Phase 3A passed; Phase 3B remains under independent certification). The authoritative starting main was `4b508a610cb1005fba4e7495d377341177d90be6` (tree `23a9f3d61f5dcf1748ede054d3dd9f8b0f7640ba`); PR #18 and PR #19 are merged continuity changes. Alembic remains `0015`. Dispatch authorization is a fifteen-minute, single-active, single-use server-bound confirmation; PUBLISH_UNKNOWN has only explicit reconciliation and no generic cancel/retry path. See `TASK39_OPERATOR_RUNBOOK.md` and `TASK39_SINGLE_PIN_PILOT_READINESS.md`. Runtime counts are carried-forward historical snapshots, not freshly queried production data. The next separately authorized dependency is Controlled Pinterest Write Enablement + Single-Pin Pilot.
+Task #39 is COMPLETE / MERGED in PR #21 (merge SHA `2e2122958bcef1993e8e132401501107e1fa7dac`, tree `b546a6ee0395b9e80a83fd5c520e439ebb52e3f6`; Issue #20 is CLOSED). It delivered PINTEREST_QUALITY_V1, immutable final preview, duplicate protection, fifteen-minute single-active single-use dispatch authorization, server-derived actor, explicit revocation, manual dispatch orchestration, PUBLISH_UNKNOWN reconciliation, known Pin-ID reconciliation, frontend operator controls, the operator runbook, and the single-Pin pilot readiness document. Alembic is `0015`. Publishing remains disabled and runtime counts are carried-forward historical snapshots, not freshly queried production data. The next separately authorized dependency is Controlled Pinterest Write Enablement + Single-Pin Pilot.

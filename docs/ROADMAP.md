@@ -11,6 +11,7 @@
 - Task #36: Pinterest Account Connection/OAuth v1 with read-only scopes
 - Task #37: Pinterest Board Sync & Board Manager v1, read-only board/section sync, connection-level sync timestamp, strict provider validation, and local eligibility/routing
 - Task #38: Publisher + Scheduler Foundation v1, PR #18 merged, Issue #17 closed, Alembic `0014`
+- Task #39: Pinterest Live Publishing Readiness + Manual Dispatch v1, PR #21 merged, Issue #20 closed, Alembic `0015`
 
 ## Current state
 
@@ -24,7 +25,7 @@ Before any separately authorized live publishing phase, the canonical release ga
 
 ## Future phases
 
-Task #39 is the current PRE-MERGE implementation and independent-certification task (Issue #20 OPEN). The next separately authorized dependency after it is Controlled Pinterest Write Enablement + Single-Pin Pilot; it is not authorized now and must not be implied by the current branch.
+Task #39 is COMPLETE / MERGED (PR #21; Issue #20 CLOSED). The next separately authorized dependency is Controlled Pinterest Write Enablement + Single-Pin Pilot; it is not authorized now. Analytics ingestion and automation remain later separate phases.
 
 Required future readiness gates include Pinterest SEO + Metadata + Creative Quality validation, public Pinterest-fetchable HTTPS media, write-scope authorization review, provider-access review, duplicate prevention, final publication preview, explicit operator confirmation, safe `PUBLISH_UNKNOWN` reconciliation, runbook/incident handling, and controlled single-Pin validation.
 
@@ -32,7 +33,7 @@ Do not introduce an autonomous worker as the immediate next step.
 
 Analytics ingestion remains a later separate phase. No later phase is enabled by Task #38.
 
-Task #39 Phase 3B remains PRE-MERGE remediation under independent certification. The operator UI provides server-derived preview/readiness, explicit dispatch authorization and revocation, sanitized history, and PUBLISH_UNKNOWN reconciliation without enabling provider writes. The next separately authorized dependency is Controlled Pinterest Write Enablement + Single-Pin Pilot.
+Task #39 Phase 3B is complete and merged. The operator UI provides server-derived preview/readiness, explicit dispatch authorization and revocation, sanitized history, and PUBLISH_UNKNOWN reconciliation without enabling provider writes. The next separately authorized dependency is Controlled Pinterest Write Enablement + Single-Pin Pilot.
 ### Task #39 Phase 3B
 
 Operator experience and runbook are complete; next separately authorized stage is controlled Pinterest write enablement and a single-Pin pilot.
