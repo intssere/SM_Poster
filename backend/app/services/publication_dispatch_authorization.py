@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -62,6 +63,15 @@ def active_authorization(db: Session, publication_id: str) -> PublicationDispatc
     )
 
 
+def latest_authorization(db: Session, publication_id: str) -> PublicationDispatchAuthorization | None:
+    return db.scalar(
+        select(PublicationDispatchAuthorization)
+        .where(PublicationDispatchAuthorization.publication_id == publication_id)
+        .order_by(PublicationDispatchAuthorization.authorized_at.desc(), PublicationDispatchAuthorization.created_at.desc())
+        .limit(1)
+    )
+
+
 def expire_stale_active_authorizations(db: Session, publication_id: str, *, now: datetime | None = None) -> int:
     now = normalize_persisted_utc(now or _now())
     result = db.execute(
@@ -97,6 +107,7 @@ def _base_snapshot_complete(publication: PinPublication) -> bool:
     return all(
         (
             publication.publication_fingerprint,
+            publication.text_fingerprint,
             publication.pinterest_connection_id,
             publication.pinterest_board_record_id,
             publication.pinterest_board_id_snapshot,
@@ -121,11 +132,12 @@ def manual_structural_readiness(
     publication: PinPublication,
     *,
     now: datetime | None = None,
+    expected_publication_state: PublicationStatus = PublicationStatus.SCHEDULED,
 ) -> dict[str, Any]:
     """Pure manual-readiness checks. Does not inspect/modify authorization."""
     now = normalize_persisted_utc(now or _now())
     scheduled_for = normalize_persisted_utc(publication.scheduled_for)
-    if _status(publication.status) != PublicationStatus.SCHEDULED.value:
+    if _status(publication.status) != expected_publication_state.value:
         return {"status": "INVALID_PUBLICATION_STATE", "ready": False}
     if not scheduled_for or scheduled_for > now:
         return {"status": "NOT_DUE", "ready": False}
@@ -169,7 +181,7 @@ def provider_readiness(db: Session, publication: PinPublication) -> dict[str, An
     if not get_settings().publishing_enabled:
         return {"status": "PUBLISHING_DISABLED", "ready": False, "live_provider_write_enabled": False}
     connection = db.get(PinterestConnection, publication.pinterest_connection_id)
-    if not connection or "pins:write" not in (connection.granted_scopes or []):
+    if not connection or connection.status != "CONNECTED" or "pins:write" not in (connection.granted_scopes or []):
         return {"status": "PUBLISHING_SCOPE_REQUIRED", "ready": False, "live_provider_write_enabled": False}
     return {"status": "READY", "ready": True, "live_provider_write_enabled": True}
 
@@ -186,7 +198,7 @@ def readiness_result(db: Session, publication: PinPublication, *, now: datetime 
             "status": "UNKNOWN_OUTCOME_BLOCKED" if duplicate["status"] == "UNKNOWN_OUTCOME_BLOCKS_RETRY" else "DUPLICATE_BLOCKED",
             "ready": False,
         }
-    auth = active_authorization(db, publication.id)
+    auth = latest_authorization(db, publication.id)
     authorization = {"status": "AUTHORIZATION_REQUIRED", "authorization_id": None}
     if auth:
         expires_at = normalize_persisted_utc(auth.expires_at)
@@ -249,9 +261,41 @@ def create_authorization(
         status="ACTIVE",
     )
     db.add(authorization)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        message = str(getattr(exc, "orig", exc))
+        if "publication_dispatch_authorizations" in message or "uq_publication_dispatch_authorizations_active" in message:
+            raise DispatchAuthorizationError("ACTIVE_AUTHORIZATION_EXISTS") from None
+        raise
     db.refresh(authorization)
     return authorization
+
+
+def validate_authorization_snapshot_binding(
+    db: Session,
+    publication: PinPublication,
+    authorization: PublicationDispatchAuthorization,
+    *,
+    now: datetime | None = None,
+    expected_publication_state: PublicationStatus = PublicationStatus.SCHEDULED,
+) -> dict[str, Any]:
+    now = normalize_persisted_utc(now or _now())
+    if authorization.publication_fingerprint != publication.publication_fingerprint:
+        return {"valid": False, "status": "AUTHORIZATION_MISMATCH"}
+    quality = validate_publication_quality(db, publication)
+    duplicate = evaluate_publication_duplicates(db, publication)
+    manual = manual_structural_readiness(db, publication, now=now, expected_publication_state=expected_publication_state)
+    if authorization.quality_policy_version != PINTEREST_QUALITY_V1:
+        return {"valid": False, "status": "AUTHORIZATION_MISMATCH"}
+    if quality != authorization.quality_snapshot:
+        return {"valid": False, "status": "AUTHORIZATION_MISMATCH"}
+    if duplicate != authorization.duplicate_snapshot:
+        return {"valid": False, "status": "AUTHORIZATION_MISMATCH"}
+    if manual != authorization.readiness_snapshot:
+        return {"valid": False, "status": "AUTHORIZATION_MISMATCH"}
+    return {"valid": True, "status": "SNAPSHOT_BOUND", "quality": quality, "duplicate": duplicate, "manual": manual}
 
 
 def validate_authorization(
@@ -271,17 +315,8 @@ def validate_authorization(
     expires_at = normalize_persisted_utc(authorization.expires_at)
     if not expires_at or expires_at <= now:
         return {"valid": False, "status": "AUTHORIZATION_EXPIRED"}
-    if authorization.publication_fingerprint != publication.publication_fingerprint:
-        return {"valid": False, "status": "AUTHORIZATION_MISMATCH"}
-    quality = validate_publication_quality(db, publication)
-    duplicate = evaluate_publication_duplicates(db, publication)
-    manual = manual_structural_readiness(db, publication, now=now)
-    if authorization.quality_policy_version != PINTEREST_QUALITY_V1:
-        return {"valid": False, "status": "AUTHORIZATION_MISMATCH"}
-    if quality != authorization.quality_snapshot:
-        return {"valid": False, "status": "AUTHORIZATION_MISMATCH"}
-    if duplicate != authorization.duplicate_snapshot:
-        return {"valid": False, "status": "AUTHORIZATION_MISMATCH"}
-    if manual != authorization.readiness_snapshot:
-        return {"valid": False, "status": "AUTHORIZATION_MISMATCH"}
-    return {"valid": True, "status": "ACTIVE", "quality": quality, "duplicate": duplicate, "manual": manual}
+    result = validate_authorization_snapshot_binding(db, publication, authorization, now=now)
+    if not result["valid"]:
+        return result
+    result["status"] = "ACTIVE"
+    return result

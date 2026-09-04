@@ -14,12 +14,14 @@ from app.models.domain import (
     PinterestConnection,
     ProductImage,
     PublicationAttempt,
+    PublicationDispatchAuthorization,
     PublicationStatus,
 )
 from app.services.manual_publication_dispatch import (
     ManualDispatchError,
     atomic_authorized_claim,
     dispatch_publication,
+    validate_post_claim,
 )
 from app.services.publication_dispatch_authorization import create_authorization
 from app.services.publication_scheduler import request_fingerprint_for
@@ -253,3 +255,125 @@ def test_atomic_authorized_claim_rejects_expired_and_fingerprint_mismatch():
     assert atomic_authorized_claim(db, publication, auth) is None
     assert db.query(PublicationAttempt).filter_by(publication_id=publication.id).count() == 0
     engine.dispose()
+
+
+def test_post_claim_validation_does_not_mutate_lifecycle_state(monkeypatch):
+    from app.services import manual_publication_dispatch as dispatch_service
+
+    SessionLocal, engine = _db()
+    db = SessionLocal()
+    publication = _ready_publication(db)
+    auth = create_authorization(db, publication, actor="admin@example.test")
+    attempt = atomic_authorized_claim(db, publication, auth)
+    db.refresh(publication)
+    db.refresh(auth)
+    db.refresh(attempt)
+    observed = {}
+
+    def snapshot_binding(spy_db, spy_publication, spy_authorization, **kwargs):
+        observed["publication_status"] = spy_publication.status
+        observed["authorization_status"] = spy_authorization.status
+        return {
+            "valid": True,
+            "status": "SNAPSHOT_BOUND",
+            "quality": auth.quality_snapshot,
+            "duplicate": auth.duplicate_snapshot,
+            "manual": auth.readiness_snapshot,
+        }
+
+    monkeypatch.setattr(dispatch_service, "validate_authorization_snapshot_binding", snapshot_binding)
+
+    assert validate_post_claim(db, publication, auth, attempt)["valid"] is True
+    assert observed["publication_status"] == PublicationStatus.PUBLISHING
+    assert observed["authorization_status"] == "CONSUMED"
+    assert publication.status == PublicationStatus.PUBLISHING
+    assert auth.status == "CONSUMED"
+    engine.dispose()
+
+
+def test_post_claim_validation_exception_fails_known_without_provider_call(monkeypatch):
+    from app.services import manual_publication_dispatch as dispatch_service
+    from app.services import publication_dispatch_authorization as auth_service
+    from app.services import pinterest_publisher
+
+    SessionLocal, engine = _db()
+    db = SessionLocal()
+    publication = _ready_publication(db)
+    auth = create_authorization(db, publication, actor="admin@example.test")
+    monkeypatch.setattr(auth_service, "get_settings", lambda: _settings(True))
+    monkeypatch.setattr(pinterest_publisher, "get_settings", lambda: _settings(True))
+    monkeypatch.setattr(
+        dispatch_service,
+        "validate_post_claim",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("internal traceback secret")),
+    )
+
+    class Gateway:
+        calls = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def create_pin(self, payload):
+            type(self).calls += 1
+            return {"id": "pin-123"}
+
+    import asyncio
+
+    with pytest.raises(ManualDispatchError, match="TASK39_POST_CLAIM_REVALIDATION_FAILED"):
+        asyncio.run(dispatch_publication(db, publication, decrypt=lambda _: "plain-token", gateway_factory=Gateway))
+
+    db.expire_all()
+    persisted_publication = db.get(PinPublication, publication.id)
+    persisted_auth = db.get(type(auth), auth.id)
+    attempt = db.query(PublicationAttempt).filter_by(publication_id=publication.id).one()
+    assert Gateway.calls == 0
+    assert persisted_publication.status == PublicationStatus.PUBLISH_FAILED
+    assert persisted_publication.error_code == "TASK39_POST_CLAIM_REVALIDATION_FAILED"
+    assert persisted_auth.status == "CONSUMED"
+    assert attempt.status == "FAILED"
+    assert attempt.error_code == "TASK39_POST_CLAIM_REVALIDATION_FAILED"
+    assert attempt.provider_pin_id is None
+    assert "secret" not in str(attempt.safe_response_metadata)
+    assert "traceback" not in str(attempt.safe_response_metadata).lower()
+    engine.dispose()
+
+
+def test_two_session_stale_authorized_claim_consumes_once(tmp_path):
+    db_path = tmp_path / "claim-race.db"
+    SessionLocal, engine = _db(db_path)
+    setup = SessionLocal()
+    publication = _ready_publication(setup)
+    auth = create_authorization(setup, publication, actor="admin@example.test")
+    setup.close()
+
+    session_a = SessionLocal()
+    session_b = SessionLocal()
+    try:
+        pub_a = session_a.get(PinPublication, publication.id)
+        auth_a = session_a.get(PublicationDispatchAuthorization, auth.id)
+        pub_b = session_b.get(PinPublication, publication.id)
+        auth_b = session_b.get(PublicationDispatchAuthorization, auth.id)
+        assert pub_a.status == pub_b.status == PublicationStatus.SCHEDULED
+        assert auth_a.status == auth_b.status == "ACTIVE"
+
+        first_attempt = atomic_authorized_claim(session_a, pub_a, auth_a)
+        assert first_attempt is not None
+        second_attempt = atomic_authorized_claim(session_b, pub_b, auth_b)
+        assert second_attempt is None
+
+        audit = SessionLocal()
+        try:
+            persisted_publication = audit.get(PinPublication, publication.id)
+            persisted_auth = audit.get(PublicationDispatchAuthorization, auth.id)
+            attempts = audit.query(PublicationAttempt).filter_by(publication_id=publication.id).all()
+            assert persisted_publication.status == PublicationStatus.PUBLISHING
+            assert persisted_auth.status == "CONSUMED"
+            assert len(attempts) == 1
+            assert attempts[0].status == "STARTED"
+        finally:
+            audit.close()
+    finally:
+        session_a.close()
+        session_b.close()
+        engine.dispose()

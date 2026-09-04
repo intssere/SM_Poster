@@ -23,6 +23,7 @@ from app.services.publication_dispatch_authorization import (
     AUTHORIZATION_TTL,
     DispatchAuthorizationError,
     create_authorization,
+    provider_readiness,
     readiness_result,
     validate_authorization,
 )
@@ -390,3 +391,112 @@ def test_authorization_creation_ignores_provider_kill_switches(monkeypatch):
     readiness = readiness_result(db, publication)
     assert readiness["manual_status"] == "READY_FOR_MANUAL_DISPATCH"
     assert readiness["provider_status"] == "PUBLISHING_DISABLED"
+
+
+def test_authorization_creation_requires_text_fingerprint():
+    db = _db()
+    publication = _ready_publication(db)
+    publication.text_fingerprint = None
+    db.commit()
+
+    with pytest.raises(DispatchAuthorizationError, match="INCOMPLETE_SNAPSHOT"):
+        create_authorization(db, publication, actor="admin@example.test")
+
+    publication.text_fingerprint = ""
+    db.commit()
+    with pytest.raises(DispatchAuthorizationError, match="INCOMPLETE_SNAPSHOT"):
+        create_authorization(db, publication, actor="admin@example.test")
+
+    readiness = readiness_result(db, publication)
+    assert readiness["manual_status"] == "INCOMPLETE_SNAPSHOT"
+    assert readiness["manual_ready"] is False
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("ACTIVE", "ACTIVE"),
+        ("REVOKED", "AUTHORIZATION_REVOKED"),
+        ("CONSUMED", "AUTHORIZATION_CONSUMED"),
+        ("EXPIRED", "AUTHORIZATION_EXPIRED"),
+    ],
+)
+def test_readiness_reports_latest_authorization_status(status, expected):
+    db = _db()
+    publication = _ready_publication(db)
+    auth = create_authorization(db, publication, actor="admin@example.test")
+    if status == "REVOKED":
+        auth.status = "REVOKED"
+        auth.revoked_at = datetime.now(timezone.utc)
+        auth.revoke_reason = "operator revoked"
+    elif status == "CONSUMED":
+        auth.status = "CONSUMED"
+        auth.consumed_at = datetime.now(timezone.utc)
+    elif status == "EXPIRED":
+        auth.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    db.commit()
+
+    readiness = readiness_result(db, publication)
+    assert readiness["authorization"]["status"] == expected
+    assert readiness["authorization"]["authorization_id"] == auth.id
+    assert "quality_snapshot" not in readiness["authorization"]
+    assert "readiness_snapshot" not in readiness["authorization"]
+    assert "duplicate_snapshot" not in readiness["authorization"]
+
+
+def test_provider_readiness_requires_connected_connection_even_with_pins_write(monkeypatch):
+    from app.services import publication_dispatch_authorization as auth_service
+
+    db = _db()
+    publication = _ready_publication(
+        db,
+        connection_scopes=["user_accounts:read", "boards:read", "pins:read", "pins:write"],
+    )
+    db.get(PinterestConnection, publication.pinterest_connection_id).status = "DISCONNECTED"
+    db.commit()
+    monkeypatch.setattr(auth_service, "get_settings", lambda: type("S", (), {"publishing_enabled": True})())
+
+    readiness = provider_readiness(db, publication)
+    assert readiness == {
+        "status": "PUBLISHING_SCOPE_REQUIRED",
+        "ready": False,
+        "live_provider_write_enabled": False,
+    }
+
+
+def test_two_session_authorization_creation_race_is_bounded(tmp_path, monkeypatch):
+    from app.services import publication_dispatch_authorization as auth_service
+
+    db_path = tmp_path / "auth-race.db"
+    engine = create_engine(f"sqlite+pysqlite:///{db_path}")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    setup = SessionLocal()
+    publication = _ready_publication(setup)
+    setup.close()
+
+    session_a = SessionLocal()
+    session_b = SessionLocal()
+    try:
+        pub_a = session_a.get(PinPublication, publication.id)
+        pub_b = session_b.get(PinPublication, publication.id)
+        first = create_authorization(session_a, pub_a, actor="admin@example.test")
+        assert first.status == "ACTIVE"
+        monkeypatch.setattr(auth_service, "active_authorization", lambda *args, **kwargs: None)
+        with pytest.raises(DispatchAuthorizationError, match="ACTIVE_AUTHORIZATION_EXISTS"):
+            create_authorization(session_b, pub_b, actor="admin@example.test")
+
+        audit = SessionLocal()
+        try:
+            active = (
+                audit.query(PublicationDispatchAuthorization)
+                .filter_by(publication_id=publication.id, status="ACTIVE")
+                .all()
+            )
+            assert len(active) == 1
+        finally:
+            audit.close()
+    finally:
+        session_a.close()
+        session_b.close()
+        engine.dispose()

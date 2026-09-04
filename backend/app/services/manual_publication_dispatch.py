@@ -20,10 +20,11 @@ from app.services.publication_dispatch_authorization import (
     active_authorization,
     provider_readiness,
     validate_authorization,
+    validate_authorization_snapshot_binding,
 )
 from app.services.publication_scheduler import request_fingerprint_for
 from app.services.pinterest_oauth import decrypt_token
-from app.services.pinterest_publisher import publish_once, normalize_persisted_utc
+from app.services.pinterest_publisher import PublicationReconciliationError, publish_once, normalize_persisted_utc
 
 
 class ManualDispatchError(RuntimeError):
@@ -69,14 +70,21 @@ async def dispatch_publication(
     db.refresh(publication)
     db.refresh(authorization)
     db.refresh(attempt)
-    post_claim = validate_post_claim(db, publication, authorization, attempt, now=now)
+    try:
+        post_claim = validate_post_claim(db, publication, authorization, attempt, now=now)
+    except Exception:
+        post_claim = {"valid": False, "status": "TASK39_POST_CLAIM_REVALIDATION_FAILED"}
     if not post_claim["valid"]:
         attempt.status = "FAILED"
         attempt.error_code = "TASK39_POST_CLAIM_REVALIDATION_FAILED"
         attempt.completed_at = now
         publication.status = PublicationStatus.PUBLISH_FAILED
         publication.error_code = "TASK39_POST_CLAIM_REVALIDATION_FAILED"
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise PublicationReconciliationError("Publication reconciliation could not be persisted") from None
         raise ManualDispatchError("TASK39_POST_CLAIM_REVALIDATION_FAILED")
 
     return await publish_once(db, publication, gateway, attempt)
@@ -169,17 +177,16 @@ def validate_post_claim(
     if attempt.request_fingerprint != request_fingerprint_for(publication):
         return {"valid": False, "status": "ATTEMPT_MISMATCH"}
 
-    # Reuse the exact snapshot validation while tolerating the expected
-    # CONSUMED status for the authorization claimed by this transaction.
-    previous_auth_status = authorization.status
-    previous_publication_status = publication.status
-    authorization.status = "ACTIVE"
-    publication.status = PublicationStatus.SCHEDULED
-    try:
-        result = validate_authorization(db, publication, authorization, now=now or datetime.now(timezone.utc))
-    finally:
-        authorization.status = previous_auth_status
-        publication.status = previous_publication_status
+    if publication.status != PublicationStatus.PUBLISHING:
+        return {"valid": False, "status": "INVALID_PUBLICATION_STATE"}
+
+    result = validate_authorization_snapshot_binding(
+        db,
+        publication,
+        authorization,
+        now=now or datetime.now(timezone.utc),
+        expected_publication_state=PublicationStatus.PUBLISHING,
+    )
     if not result["valid"]:
         return result
     return {"valid": True, "status": "READY"}
