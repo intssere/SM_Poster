@@ -116,7 +116,7 @@ def revoke_authorization(
 ) -> PublicationDispatchAuthorization:
     if not actor:
         raise DispatchAuthorizationError("ACTOR_REQUIRED")
-    if not reason or not reason.strip() or len(reason) > 255 or any(ord(c) < 32 for c in reason):
+    if not reason or not reason.strip() or len(reason) > 255 or any(ord(c) < 32 or ord(c) == 127 for c in reason):
         raise DispatchAuthorizationError("INVALID_REVOKE_REASON")
     if authorization.status != "ACTIVE":
         raise DispatchAuthorizationError("AUTHORIZATION_NOT_ACTIVE")

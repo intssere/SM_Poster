@@ -7,6 +7,15 @@ from app.models.domain import PinPublication, PublicationAttempt, PublicationRec
 class ReconciliationError(RuntimeError): pass
 _PIN = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
 
+def _validate_reason(reason: str | None, *, required: bool = False) -> str | None:
+    if reason is None:
+        if required:
+            raise ReconciliationError("REASON_REQUIRED")
+        return None
+    if len(reason) > 500 or not reason.strip() or any(ord(c) < 32 or ord(c) == 127 for c in reason):
+        raise ReconciliationError("REASON_REQUIRED" if required else "INVALID_REASON")
+    return reason
+
 def _pin(value):
     if not isinstance(value, str) or not _PIN.fullmatch(value) or any(c.isspace() or ord(c) < 32 for c in value):
         raise ReconciliationError("INVALID_PROVIDER_PIN_ID")
@@ -30,13 +39,14 @@ def reconcile(db, publication_id: str, *, actor: str, action: str, confirmed: bo
         if other_attempt: raise ReconciliationError("PROVIDER_PIN_ID_ALREADY_ASSIGNED")
         new_status, event_pin = PublicationStatus.PUBLISHED, pin
     elif action == "CANCELLED_UNKNOWN":
-        if not reason or not reason.strip() or len(reason) > 500 or any(ord(c) < 32 for c in reason): raise ReconciliationError("REASON_REQUIRED")
+        reason = _validate_reason(reason, required=True)
         if known: raise ReconciliationError("KNOWN_PROVIDER_PIN_REQUIRES_CONFIRMATION")
         new_status, event_pin = PublicationStatus.CANCELLED, None
     else: raise ReconciliationError("UNSUPPORTED_RECONCILIATION_ACTION")
     now = datetime.now(timezone.utc)
     claimed = db.execute(update(PinPublication).where(PinPublication.id == publication_id, PinPublication.status == PublicationStatus.PUBLISH_UNKNOWN).values(status=new_status, pinterest_pin_id=event_pin, published_at=now if event_pin else None, scheduled_for=None if not event_pin else publication.scheduled_for, error_code=None)).rowcount
     if claimed != 1: db.rollback(); raise ReconciliationError("RECONCILIATION_CONFLICT")
+    reason = _validate_reason(reason)
     event = PublicationReconciliationEvent(publication_id=publication_id, attempt_id=next((a.id for a in attempts if a.status == "UNKNOWN"), None), actor=actor, action=action, previous_status="PUBLISH_UNKNOWN", new_status=new_status.value, provider_pin_id=event_pin, reason=reason)
     db.add(event)
     try:

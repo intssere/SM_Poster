@@ -2,6 +2,8 @@ import pytest
 from types import SimpleNamespace
 
 from app.services.publication_reconciliation import ReconciliationError, _pin, reconcile
+from app.models.domain import PublicationStatus, PublicationReconciliationEvent, PublicationAttempt
+from test_manual_dispatch_authorization import _db, _ready_publication
 
 
 @pytest.mark.parametrize("value", ["", " ", "a b", "https://x", "a/b", "a!", "x\n", "x" * 256])
@@ -25,3 +27,35 @@ def test_reconcile_requires_publish_unknown():
     db = SimpleNamespace(get=lambda *_: SimpleNamespace(status="SCHEDULED"))
     with pytest.raises(ReconciliationError, match="RECONCILIATION_REQUIRES_PUBLISH_UNKNOWN"):
         reconcile(db, "p", actor="admin", action="CANCELLED_UNKNOWN", confirmed=True, reason="stop")
+
+
+def test_provider_pin_confirmation_persists_real_publication_and_event():
+    db = _db()
+    publication = _ready_publication(db, status=PublicationStatus.PUBLISH_UNKNOWN)
+    reconcile(db, publication.id, actor="admin@example.test", action="PROVIDER_PIN_CONFIRMED", confirmed=True, provider_pin_id="pin-123")
+    db.refresh(publication)
+    assert publication.status == PublicationStatus.PUBLISHED
+    assert publication.pinterest_pin_id == "pin-123"
+    event = db.query(PublicationReconciliationEvent).filter_by(publication_id=publication.id).one()
+    assert (event.actor, event.previous_status, event.new_status, event.provider_pin_id) == ("admin@example.test", "PUBLISH_UNKNOWN", "PUBLISHED", "pin-123")
+
+
+def test_cancelled_unknown_persists_event_and_clears_schedule():
+    db = _db()
+    publication = _ready_publication(db, status=PublicationStatus.PUBLISH_UNKNOWN)
+    reconcile(db, publication.id, actor="admin@example.test", action="CANCELLED_UNKNOWN", confirmed=True, reason="Operator confirmed cancellation")
+    db.refresh(publication)
+    assert publication.status == PublicationStatus.CANCELLED
+    assert publication.scheduled_for is None
+    assert db.query(PublicationReconciliationEvent).count() == 1
+
+
+def test_conflicting_known_pin_ids_fail_closed_without_event():
+    db = _db()
+    publication = _ready_publication(db, status=PublicationStatus.PUBLISH_UNKNOWN)
+    publication.pinterest_pin_id = "pin-a"
+    db.add(PublicationAttempt(publication_id=publication.id, attempt_number=1, status="UNKNOWN", provider_pin_id="pin-b"))
+    db.commit()
+    with pytest.raises(ReconciliationError, match="CONFLICTING_KNOWN_PROVIDER_PIN_IDS"):
+        reconcile(db, publication.id, actor="admin@example.test", action="PROVIDER_PIN_CONFIRMED", confirmed=True, provider_pin_id="pin-a")
+    assert db.query(PublicationReconciliationEvent).count() == 0
