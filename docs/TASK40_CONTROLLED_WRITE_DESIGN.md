@@ -8,6 +8,16 @@
 This Phase 0 document is design-only. It does not request a write scope,
 reconnect OAuth, create a Pin, or change runtime behavior.
 
+## Certification status
+
+PHASE 0 DESIGN = PASS
+PHASE 1A DEFAULT-OFF IMPLEMENTATION = PASS
+GATE A = NOT AUTHORIZED
+GATE B = NOT AUTHORIZED
+
+Certified branch head: `4580b5eadee9babf23aab5e574503c4ecb154e0a`.
+Task #40 is not complete and live publishing is not authorized.
+
 ## Baseline and protected state
 
 Design baseline: main commit `73b2d0c5455f0c85d9c0ab8bae7908ff5231defe`,
