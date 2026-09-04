@@ -53,3 +53,5 @@
 ## Task #39 Phase 3B
 
 - Added server-derived publication preview/readiness operator surfaces and explicit reconciliation messaging.
+- Added explicit dispatch authorization/version confirmation, deliberate revocation, sanitized attempt/reconciliation history, and a PUBLISH_UNKNOWN-only reconciliation workflow. Publishing remains disabled.
+- Added operator runbook and single-Pin pilot readiness documentation.

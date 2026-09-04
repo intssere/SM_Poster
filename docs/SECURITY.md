@@ -48,3 +48,5 @@ Task #36 OAuth uses one-time hashed state records, server-side code exchange, en
 ### Phase 3B controls
 
 Provider credentials remain server-side; the UI does not store tokens or invoke provider writes. Publishing is disabled and PUBLISH_UNKNOWN cannot be retried.
+
+Phase 3B controls are server-derived. The UI sends only confirmation/version, authorization ID plus bounded reason, or explicit reconciliation payloads; it does not render fingerprints, raw provider bodies, headers, ciphertext, tokens, or secrets, and generic cancellation is unavailable for PUBLISH_UNKNOWN.

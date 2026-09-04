@@ -86,3 +86,5 @@ Before any future live provider write, require write-scope authorization review,
 ## Task #39 Phase 3B
 
 Operator preview, readiness, authorization and PUBLISH_UNKNOWN reconciliation controls are available. Publishing remains disabled (`PUBLISHING_ENABLED=false`); live OAuth scopes are read-only. PUBLISH_UNKNOWN is never retried and requires explicit reconciliation.
+
+Task #39 is PRE-MERGE remediation for Issue #20 (Phase 1, Phase 2, and Phase 3A passed; Phase 3B remains under independent certification). The authoritative starting main was `4b508a610cb1005fba4e7495d377341177d90be6` (tree `23a9f3d61f5dcf1748ede054d3dd9f8b0f7640ba`); PR #18 and PR #19 are merged continuity changes. Alembic remains `0015`. Dispatch authorization is a fifteen-minute, single-active, single-use server-bound confirmation; PUBLISH_UNKNOWN has only explicit reconciliation and no generic cancel/retry path. See `TASK39_OPERATOR_RUNBOOK.md` and `TASK39_SINGLE_PIN_PILOT_READINESS.md`. Runtime counts are carried-forward historical snapshots, not freshly queried production data. The next separately authorized dependency is Controlled Pinterest Write Enablement + Single-Pin Pilot.

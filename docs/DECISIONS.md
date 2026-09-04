@@ -64,3 +64,5 @@ This is a future live-publishing release gate. It does not enable provider write
 ### Phase 3B safety decision
 
 No frontend Publish Now action is exposed. PUBLISH_UNKNOWN requires explicit human reconciliation and is never automatically retried.
+
+Phase 3B remediation: authorization requires the exact server confirmation text/version, revocation requires a human reason, and PUBLISH_UNKNOWN is handled only through explicit provider confirmation or CANCELLED_UNKNOWN. Authorization is not live publishing; the single-Pin pilot remains separately authorized and unexecuted.

@@ -84,3 +84,5 @@ Re-query the deployed PostgreSQL database before relying on runtime counts opera
 ### Task #39 Phase 3B
 
 Frontend operator preview/readiness surfaces server-derived state. Manual authorization is distinct from live provider readiness; publishing remains disabled.
+
+Task #39 Phase 3B is PRE-MERGE remediation for Issue #20. The release contract is PINTEREST_QUALITY_V1, fifteen-minute authorization TTL, one ACTIVE authorization, single-use consumption, immutable snapshot binding, duplicate protection, and explicit PUBLISH_UNKNOWN reconciliation. Publishing is `PUBLISHING_ENABLED=false`; live OAuth scopes remain `user_accounts:read`, `boards:read`, and `pins:read`, with no Pinterest writes, autonomous worker, analytics ingestion, or new OpenAI behavior. Operator procedures and the not-yet-authorized single-Pin pilot are documented separately. Runtime counts remain historical and were not freshly queried.

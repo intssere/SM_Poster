@@ -28,3 +28,5 @@
 ### Task #39 Phase 3B
 
 Keep operator controls server-derived, preserve human approval, and never enable publishing or expose provider credentials in browser state.
+
+Use the exact server confirmation text/version for authorization, require a human-readable revocation/reconciliation reason, and never expose generic retry/cancel controls for PUBLISH_UNKNOWN. Consult the operator runbook before incident actions.
