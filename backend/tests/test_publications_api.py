@@ -140,6 +140,40 @@ def test_phase3a_authorization_revoke_and_unknown_cancel_api_contract(monkeypatc
         app.dependency_overrides.pop(get_db, None); engine.dispose()
 
 
+def test_unknown_publication_cancel_requires_reconciliation(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from app.core import auth
+    from app.core.config import get_settings
+    from app.db.session import get_db
+    from app.models.domain import Base, PinPublication, PublicationStatus, PublicationReconciliationEvent
+    from fastapi.testclient import TestClient
+    from test_manual_dispatch_authorization import _ready_publication
+    monkeypatch.setenv("APP_ENV", "development"); monkeypatch.setenv("AUTH_DISABLED", "false"); monkeypatch.setenv("APP_SECRET_KEY", "a" * 48); monkeypatch.setenv("ADMIN_USERNAME", "admin"); monkeypatch.setenv("ADMIN_PASSWORD_HASH", auth.hash_password("secret")); monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5000"); get_settings.cache_clear()
+    engine = create_engine("sqlite+pysqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool); Base.metadata.create_all(engine); SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    with SessionLocal() as db:
+        publication = _ready_publication(db, status=PublicationStatus.PUBLISH_UNKNOWN); pid = publication.id; pin_before = publication.pinterest_pin_id
+    def override_get_db():
+        db = SessionLocal()
+        try: yield db
+        finally: db.close()
+    from app.main import app
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestClient(app) as client:
+            assert client.post("/api/auth/login", json={"username": "admin", "password": "secret"}).status_code == 200
+            response = client.post(f"/api/publications/{pid}/cancel", headers={"Origin": "http://localhost:5000"})
+            assert response.status_code == 409
+            assert response.json() == {"detail": "PUBLISH_UNKNOWN_REQUIRES_RECONCILIATION"}
+        with SessionLocal() as db:
+            row = db.get(PinPublication, pid)
+            assert row.status == PublicationStatus.PUBLISH_UNKNOWN and row.pinterest_pin_id == pin_before
+            assert db.query(PublicationReconciliationEvent).filter_by(publication_id=pid).count() == 0
+    finally:
+        app.dependency_overrides.pop(get_db, None); engine.dispose()
+
+
 def test_publish_route_requires_task39_authorization_and_delegates(monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
