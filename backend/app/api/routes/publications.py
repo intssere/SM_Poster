@@ -6,8 +6,11 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.domain import PinPublication, PinApproval, PinterestBoard, PinterestConnection, PublicationStatus, PublicationAttempt
 from app.services.publication_identity import PublicationIdentityService, PublicationIdentityError
-from app.services.publication_scheduler import schedule, cancel, due_publications, claim
-from app.services.pinterest_publisher import publishing_ready, publication_readiness, preflight_publish_readiness, execution_publish_readiness, finalize_post_claim_unknown, sanitize_metadata, PublicationReconciliationError
+from app.services.publication_scheduler import schedule, cancel, due_publications
+from app.services.pinterest_publisher import publication_readiness, sanitize_metadata, PublicationReconciliationError
+from app.services.pinterest_publisher import preflight_publish_readiness, execution_publish_readiness, finalize_post_claim_unknown
+from app.services.manual_publication_dispatch import ManualDispatchError
+from app.services import manual_publication_dispatch
 
 router = APIRouter(prefix="/publications", tags=["publications"])
 
@@ -73,32 +76,13 @@ def cancel_publication(publication_id: str, db: Session = Depends(get_db)):
 async def publish(publication_id: str, db: Session = Depends(get_db)):
     row = db.get(PinPublication, publication_id)
     if not row: raise HTTPException(404, "Publication not found")
-    from app.core.config import get_settings
-    if not get_settings().publishing_enabled:
-        raise HTTPException(409, "Publishing is disabled")
-    from app.services.publication_scheduler import claim
-    from app.services.pinterest_oauth import decrypt_token
-    from app.integrations.pinterest.gateway import PinterestV5Gateway
-    from app.services.pinterest_publisher import publish_once
-    ready, reason = preflight_publish_readiness(db, row)
-    if not ready: raise HTTPException(409, reason)
-    connection = db.get(PinterestConnection, row.pinterest_connection_id)
     try:
-        attempt = claim(db, row)
-        if not attempt: raise HTTPException(409, "Publication is not due or already claimed")
-        ready, reason = execution_publish_readiness(db, row, attempt)
-        if not ready:
-            finalize_post_claim_unknown(db, row, attempt, reason)
-            raise HTTPException(409, reason)
-        try:
-            if not connection or not connection.access_token_ciphertext:
-                raise RuntimeError("TOKEN_UNAVAILABLE_AFTER_CLAIM")
-            token = decrypt_token(connection.access_token_ciphertext)
-            gateway = PinterestV5Gateway(access_token=token, publishing_enabled=True)
-        except Exception:
-            finalize_post_claim_unknown(db, row, attempt, "TOKEN_DECRYPT_FAILED")
-            raise HTTPException(502, "Pinterest publication setup failed") from None
-        await publish_once(db, row, gateway, attempt)
+        await manual_publication_dispatch.dispatch_publication(db, row)
+    except ManualDispatchError as exc:
+        detail = str(exc)
+        if detail == "TOKEN_DECRYPT_FAILED":
+            raise HTTPException(502, detail) from None
+        raise HTTPException(409, detail) from None
     except HTTPException: raise
     except PublicationReconciliationError: raise
     except Exception:

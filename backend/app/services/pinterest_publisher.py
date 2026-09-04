@@ -45,7 +45,7 @@ def publishing_ready(db, publication):
     settings = get_settings()
     if publication.status not in {PublicationStatus.SCHEDULED, PublicationStatus.PUBLISHING}:
         return False, "INVALID_PUBLICATION_STATE"
-    if not all((publication.publication_fingerprint, publication.pinterest_connection_id, publication.pinterest_board_record_id, publication.pinterest_board_id_snapshot, publication.title_snapshot, publication.description_snapshot, publication.destination_url, publication.media_url_snapshot)):
+    if not all((publication.publication_fingerprint, publication.pinterest_connection_id, publication.pinterest_board_record_id, publication.pinterest_board_id_snapshot, publication.title_snapshot, publication.description_snapshot, publication.destination_url, publication.utm_url, publication.media_url_snapshot)):
         return False, "INCOMPLETE_SNAPSHOT"
     if not settings.publishing_enabled:
         return False, "PUBLISHING_DISABLED"
@@ -138,7 +138,7 @@ async def publish_once(db, publication, gateway, attempt=None):
         board_id=publication.pinterest_board_id_snapshot or publication.pinterest_board_id or "",
         title=publication.title_snapshot or "",
         description=publication.description_snapshot or "",
-        link=publication.destination_url or "",
+        link=publication.utm_url or "",
         image_url=publication.media_url_snapshot,
         alt_text=publication.alt_text_snapshot,
     )

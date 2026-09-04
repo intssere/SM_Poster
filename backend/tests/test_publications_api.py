@@ -1,3 +1,8 @@
+from datetime import datetime, timezone
+
+import pytest
+
+
 def test_publications_router_is_registered():
     import os
     os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
@@ -23,6 +28,151 @@ def test_publications_api_anonymous_routes_denied(monkeypatch):
     assert client.get("/api/publications").status_code == 401
     assert client.get("/api/publications/missing").status_code == 401
     assert client.post("/api/publications", json={}, headers={"Origin":"http://localhost:5000"}).status_code == 401
+
+
+def test_publish_route_requires_task39_authorization_and_delegates(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.core import auth
+    from app.core.config import get_settings
+    from app.db.session import get_db
+    from app.main import app
+    from app.models.domain import Base, PinPublication, PublicationStatus
+    from app.services import manual_publication_dispatch
+    from app.services.manual_publication_dispatch import ManualDispatchError
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("APP_SECRET_KEY", "a" * 48)
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", auth.hash_password("secret"))
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5000")
+    monkeypatch.setenv("PUBLISHING_ENABLED", "true")
+    get_settings.cache_clear()
+
+    engine = create_engine("sqlite+pysqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    calls = {"dispatch": 0}
+
+    async def fake_dispatch(db, publication):
+        calls["dispatch"] += 1
+        assert publication.id == "task39-api-publication"
+        raise ManualDispatchError("AUTHORIZATION_REQUIRED")
+
+    monkeypatch.setattr(manual_publication_dispatch, "dispatch_publication", fake_dispatch)
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestingSessionLocal() as db:
+            db.add(
+                PinPublication(
+                    id="task39-api-publication",
+                    draft_id="task39-api-draft",
+                    creative_id="task39-api-creative",
+                    publication_fingerprint="9" * 64,
+                    status=PublicationStatus.SCHEDULED,
+                    scheduled_for=datetime.now(timezone.utc),
+                    title_snapshot="Title",
+                    description_snapshot="Description",
+                    alt_text_snapshot="Alt",
+                    destination_url="https://diamondshelf.us/products/item",
+                    utm_url="https://diamondshelf.us/products/item?utm_source=pinterest",
+                    media_url_snapshot="https://cdn.shopify.com/item.jpg",
+                )
+            )
+            db.commit()
+
+        with TestClient(app) as client:
+            assert client.post("/api/auth/login", json={"username": "admin", "password": "secret"}).status_code == 200
+            response = client.post("/api/publications/task39-api-publication/publish", headers={"Origin": "http://localhost:5000"})
+            assert response.status_code == 409
+            assert response.json() == {"detail": "AUTHORIZATION_REQUIRED"}
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
+        get_settings.cache_clear()
+
+    assert calls == {"dispatch": 1}
+
+
+@pytest.mark.parametrize(
+    ("service_code", "expected_status"),
+    [
+        ("AUTHORIZATION_EXPIRED", 409),
+        ("AUTHORIZATION_REVOKED", 409),
+        ("UNKNOWN_OUTCOME_BLOCKS_RETRY", 409),
+        ("PUBLISHING_DISABLED", 409),
+        ("PUBLISHING_SCOPE_REQUIRED", 409),
+        ("TOKEN_DECRYPT_FAILED", 502),
+    ],
+)
+def test_publish_route_surfaces_bounded_task39_errors(monkeypatch, service_code, expected_status):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.core import auth
+    from app.core.config import get_settings
+    from app.db.session import get_db
+    from app.main import app
+    from app.models.domain import Base, PinPublication, PublicationStatus
+    from app.services import manual_publication_dispatch
+    from app.services.manual_publication_dispatch import ManualDispatchError
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("APP_SECRET_KEY", "a" * 48)
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", auth.hash_password("secret"))
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5000")
+    get_settings.cache_clear()
+
+    engine = create_engine("sqlite+pysqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    async def fake_dispatch(db, publication):
+        raise ManualDispatchError(service_code)
+
+    monkeypatch.setattr(manual_publication_dispatch, "dispatch_publication", fake_dispatch)
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestingSessionLocal() as db:
+            db.add(PinPublication(id=f"pub-{service_code}", draft_id="draft", creative_id="creative", publication_fingerprint=service_code[:1].lower() * 64, status=PublicationStatus.SCHEDULED))
+            db.commit()
+        with TestClient(app) as client:
+            assert client.post("/api/auth/login", json={"username": "admin", "password": "secret"}).status_code == 200
+            response = client.post(f"/api/publications/pub-{service_code}/publish", headers={"Origin": "http://localhost:5000"})
+            assert response.status_code == expected_status
+            assert response.json() == {"detail": service_code}
+            rendered = response.text.lower()
+            assert "access_token" not in rendered
+            assert "refresh_token" not in rendered
+            assert "client_secret" not in rendered
+            assert "traceback" not in rendered
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
+        get_settings.cache_clear()
 
 
 def test_publications_api_authenticated_list_and_detail_allowed(monkeypatch):
@@ -158,7 +308,7 @@ def test_publication_reconciliation_error_is_not_swallowed_by_api_route(monkeypa
         PublicationAttempt,
         PublicationStatus,
     )
-    from app.services import pinterest_oauth, pinterest_publisher
+    from app.services import manual_publication_dispatch, pinterest_oauth, pinterest_publisher
     from app.services.pinterest_publisher import (
         PublicationReconciliationError,
         preflight_publish_readiness,
@@ -204,9 +354,15 @@ def test_publication_reconciliation_error_is_not_swallowed_by_api_route(monkeypa
         fake_publish_once_call_count += 1
         raise PublicationReconciliationError("Publication reconciliation could not be persisted")
 
+    async def fake_dispatch(db, publication):
+        nonlocal fake_publish_once_call_count
+        fake_publish_once_call_count += 1
+        raise PublicationReconciliationError("Publication reconciliation could not be persisted")
+
     monkeypatch.setattr(pinterest_oauth, "decrypt_token", fake_decrypt_token)
     monkeypatch.setattr(gateway_module, "PinterestV5Gateway", InertGateway)
     monkeypatch.setattr(pinterest_publisher, "publish_once", fake_publish_once)
+    monkeypatch.setattr(manual_publication_dispatch, "dispatch_publication", fake_dispatch)
 
     engine = create_engine(
         "sqlite+pysqlite://",
@@ -333,16 +489,11 @@ def test_publication_reconciliation_error_is_not_swallowed_by_api_route(monkeypa
                     PublicationAttempt.publication_id == "reconciliation-error-publication"
                 )
             ).all()
-            assert publication.status == PublicationStatus.PUBLISHING
-            assert len(attempts) == 1
-            attempt = attempts[0]
-            assert attempt.attempt_number == 1
-            assert attempt.status == "STARTED"
-            assert attempt.publication_id == "reconciliation-error-publication"
-            assert attempt.request_fingerprint
+            assert publication.status == PublicationStatus.SCHEDULED
+            assert len(attempts) == 0
 
-        assert token_decrypt_call_count == 1
-        assert gateway_constructor_call_count == 1
+        assert token_decrypt_call_count == 0
+        assert gateway_constructor_call_count == 0
         assert fake_publish_once_call_count == 1
         assert real_create_pin_call_count == 0
 
@@ -1533,7 +1684,7 @@ def test_publication_publish_disabled_fails_before_claim_attempt_token_or_provid
             )
 
         assert response.status_code == 409
-        assert response.json() == {"detail": "Publishing is disabled"}
+        assert response.json() == {"detail": "AUTHORIZATION_REQUIRED"}
         assert preflight_call_count == 0
         assert claim_call_count == 0
         assert token_decrypt_call_count == 0
@@ -1713,7 +1864,7 @@ def test_publication_publish_scope_preflight_blocks_before_claim_attempt_token_o
             )
 
         assert response.status_code == 409
-        assert response.json() == {"detail": "PUBLISHING_SCOPE_REQUIRED"}
+        assert response.json() == {"detail": "AUTHORIZATION_REQUIRED"}
         assert claim_call_count == 0
         assert token_decrypt_call_count == 0
         assert gateway_constructor_call_count == 0
@@ -1904,7 +2055,7 @@ def test_publication_publish_inactive_destination_fails_before_claim(monkeypatch
             )
 
         assert response.status_code == 409
-        assert response.json() == {"detail": "INVALID_DESTINATION"}
+        assert response.json() == {"detail": "AUTHORIZATION_REQUIRED"}
         assert "INACTIVE_DESTINATION_ACCESS_CIPHERTEXT_DO_NOT_USE" not in response.text
         assert "INACTIVE_DESTINATION_REFRESH_CIPHERTEXT_DO_NOT_USE" not in response.text
         assert claim_call_count == 0
@@ -2104,7 +2255,7 @@ def test_publication_publish_destination_snapshot_mismatch_fails_before_claim(mo
             )
 
         assert response.status_code == 409
-        assert response.json() == {"detail": "DESTINATION_MISMATCH"}
+        assert response.json() == {"detail": "AUTHORIZATION_REQUIRED"}
         assert "DESTINATION_MISMATCH_ACCESS_CIPHERTEXT_DO_NOT_USE" not in response.text
         assert "DESTINATION_MISMATCH_REFRESH_CIPHERTEXT_DO_NOT_USE" not in response.text
         assert "access_token" not in response.text
@@ -2357,7 +2508,7 @@ def test_publication_publish_invalid_approval_fails_before_claim(monkeypatch):
             )
 
         assert response.status_code == 409
-        assert response.json() == {"detail": "INVALID_APPROVAL"}
+        assert response.json() == {"detail": "AUTHORIZATION_REQUIRED"}
         assert "INVALID_APPROVAL_ACCESS_CIPHERTEXT_DO_NOT_USE" not in response.text
         assert "INVALID_APPROVAL_REFRESH_CIPHERTEXT_DO_NOT_USE" not in response.text
         assert "access_token" not in response.text
@@ -2614,7 +2765,7 @@ def test_publication_publish_invalid_creative_provenance_fails_before_claim(monk
             )
 
         assert response.status_code == 409
-        assert response.json() == {"detail": "INVALID_CREATIVE"}
+        assert response.json() == {"detail": "AUTHORIZATION_REQUIRED"}
         assert "INVALID_CREATIVE_ACCESS_CIPHERTEXT_DO_NOT_USE" not in response.text
         assert "INVALID_CREATIVE_REFRESH_CIPHERTEXT_DO_NOT_USE" not in response.text
         assert "access_token" not in response.text
@@ -2873,7 +3024,7 @@ def test_publication_publish_nonpublishable_media_fails_before_claim(monkeypatch
             )
 
         assert response.status_code == 409
-        assert response.json() == {"detail": "MEDIA_NOT_PUBLISHABLE"}
+        assert response.json() == {"detail": "AUTHORIZATION_REQUIRED"}
         assert "MEDIA_PREFLIGHT_ACCESS_CIPHERTEXT_DO_NOT_USE" not in response.text
         assert "MEDIA_PREFLIGHT_REFRESH_CIPHERTEXT_DO_NOT_USE" not in response.text
         assert "access_token" not in response.text

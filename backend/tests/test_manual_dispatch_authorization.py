@@ -7,11 +7,24 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db.base import Base
 from app.models.domain import (
+    CreativeTemplate,
+    PinApproval,
+    PinCreative,
     PinPublication,
+    PinterestBoard,
+    PinterestConnection,
+    ProductImage,
     PublicationAttempt,
     PublicationDispatchAuthorization,
     PublicationReconciliationEvent,
     PublicationStatus,
+)
+from app.services.publication_dispatch_authorization import (
+    AUTHORIZATION_TTL,
+    DispatchAuthorizationError,
+    create_authorization,
+    readiness_result,
+    validate_authorization,
 )
 
 
@@ -50,6 +63,76 @@ def _authorization(publication, *, status="ACTIVE", suffix="1"):
         expires_at=now + timedelta(minutes=15),
         status=status,
     )
+
+
+def _ready_publication(db, *, scheduled_for=None, connection_scopes=None, status=PublicationStatus.SCHEDULED):
+    now = datetime.now(timezone.utc)
+    template = CreativeTemplate(id="template-ready", key="product_classification", version=1, name="Template")
+    source = ProductImage(id="source-ready", product_id="product-ready", source_url="https://cdn.shopify.com/source.jpg", width=1000, height=1500)
+    creative = PinCreative(
+        id="creative-ready",
+        draft_id="draft-ready",
+        template_id=template.id,
+        source_image_id=source.id,
+        rendered_url="https://cdn.shopify.com/creative.jpg",
+        creative_fingerprint="c" * 64,
+        width=1000,
+        height=1500,
+        render_status="COMPLETE",
+    )
+    approval = PinApproval(
+        id="approval-ready",
+        draft_id="draft-ready",
+        revision_id="revision-ready",
+        creative_id=creative.id,
+        decision="APPROVED",
+        decided_by="admin@example.test",
+    )
+    connection = PinterestConnection(
+        id="connection-ready",
+        external_user_id="user-ready",
+        access_token_ciphertext="enc-access",
+        refresh_token_ciphertext="enc-refresh",
+        granted_scopes=connection_scopes or ["user_accounts:read", "boards:read", "pins:read"],
+        status="CONNECTED",
+    )
+    board = PinterestBoard(
+        id="board-ready",
+        connection_id=connection.id,
+        external_board_id="external-board-ready",
+        name="Fragrance",
+        is_active=True,
+        is_eligible=True,
+        routing_label="fragrance",
+    )
+    publication = PinPublication(
+        id="publication-ready",
+        draft_id="draft-ready",
+        revision_id="revision-ready",
+        creative_id=creative.id,
+        approval_id=approval.id,
+        source_image_id=source.id,
+        template_id=template.id,
+        template_key=template.key,
+        template_version=template.version,
+        text_fingerprint="t" * 64,
+        creative_fingerprint=creative.creative_fingerprint,
+        pinterest_connection_id=connection.id,
+        pinterest_board_record_id=board.id,
+        pinterest_board_id_snapshot=board.external_board_id,
+        title_snapshot="Fragrance gift pick",
+        description_snapshot="Explore this fragrance gift pick for a polished scent routine.",
+        alt_text_snapshot="A verified product creative for a fragrance gift pick.",
+        destination_url="https://diamondshelf.us/products/fragrance-pick",
+        utm_url="https://diamondshelf.us/products/fragrance-pick?utm_source=pinterest",
+        media_url_snapshot=creative.rendered_url,
+        publication_fingerprint="p" * 64,
+        status=status,
+        scheduled_for=scheduled_for or (now - timedelta(minutes=1)),
+    )
+    db.add_all([template, source, creative, approval, connection, board, publication])
+    db.commit()
+    return publication
 
 
 def test_dispatch_authorization_stores_exact_fingerprint_policy_snapshots_and_bounded_expiry():
@@ -226,3 +309,84 @@ def test_reconciliation_event_rejects_invalid_actions_and_transitions(action, pr
     db.add(event)
     with pytest.raises(IntegrityError):
         db.commit()
+
+
+def test_authorization_creation_requires_quality_pass_and_due_scheduled_publication(monkeypatch):
+    db = _db()
+    publication = _ready_publication(db)
+    auth = create_authorization(db, publication, actor="admin@example.test")
+    assert auth.expires_at - auth.authorized_at == AUTHORIZATION_TTL
+    assert auth.publication_fingerprint == publication.publication_fingerprint
+    assert auth.quality_snapshot["status"] == "PASS"
+    assert auth.duplicate_snapshot["status"] == "SAFE_TO_CONTINUE"
+    assert auth.readiness_snapshot["status"] == "READY_FOR_MANUAL_DISPATCH"
+
+    db2 = _db()
+    warning_publication = _ready_publication(db2, scheduled_for=datetime.now(timezone.utc) - timedelta(minutes=1))
+    warning_publication.media_url_snapshot = "https://cdn.shopify.com/creative-square.jpg"
+    db2.get(PinCreative, warning_publication.creative_id).rendered_url = warning_publication.media_url_snapshot
+    db2.get(PinCreative, warning_publication.creative_id).width = 1200
+    db2.get(PinCreative, warning_publication.creative_id).height = 1200
+    db2.commit()
+    with pytest.raises(DispatchAuthorizationError, match="QUALITY_WARNING"):
+        create_authorization(db2, warning_publication, actor="admin@example.test")
+
+    db3 = _db()
+    fail_publication = _ready_publication(db3)
+    fail_publication.title_snapshot = ""
+    db3.commit()
+    with pytest.raises(DispatchAuthorizationError, match="QUALITY_FAILED"):
+        create_authorization(db3, fail_publication, actor="admin@example.test")
+
+    db4 = _db()
+    future_publication = _ready_publication(db4, scheduled_for=datetime.now(timezone.utc) + timedelta(hours=1))
+    with pytest.raises(DispatchAuthorizationError, match="NOT_DUE"):
+        create_authorization(db4, future_publication, actor="admin@example.test")
+
+
+def test_authorization_creation_expires_stale_active_before_new_active():
+    db = _db()
+    publication = _ready_publication(db)
+    stale = _authorization(publication, suffix="stale")
+    stale.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    db.add(stale)
+    db.commit()
+    created = create_authorization(db, publication, actor="admin@example.test")
+    db.refresh(stale)
+    assert stale.status == "EXPIRED"
+    assert created.status == "ACTIVE"
+
+
+def test_authorization_validation_rejects_terminal_and_materially_changed_snapshots():
+    db = _db()
+    publication = _ready_publication(db)
+    auth = create_authorization(db, publication, actor="admin@example.test")
+
+    publication.title_snapshot = "Different title"
+    db.commit()
+    assert validate_authorization(db, publication, auth)["status"] == "AUTHORIZATION_MISMATCH"
+
+    publication.title_snapshot = "Fragrance gift pick"
+    auth.status = "REVOKED"
+    db.commit()
+    assert validate_authorization(db, publication, auth)["status"] == "AUTHORIZATION_REVOKED"
+    auth.status = "EXPIRED"
+    db.commit()
+    assert validate_authorization(db, publication, auth)["status"] == "AUTHORIZATION_EXPIRED"
+    auth.status = "CONSUMED"
+    db.commit()
+    assert validate_authorization(db, publication, auth)["status"] == "AUTHORIZATION_CONSUMED"
+
+
+def test_authorization_creation_ignores_provider_kill_switches(monkeypatch):
+    from app.services import publication_dispatch_authorization as auth_service
+
+    db = _db()
+    publication = _ready_publication(db, connection_scopes=["user_accounts:read", "boards:read", "pins:read"])
+    monkeypatch.setattr(auth_service, "get_settings", lambda: type("S", (), {"publishing_enabled": False})())
+    auth = create_authorization(db, publication, actor="admin@example.test")
+    assert auth.status == "ACTIVE"
+    assert "pins:write" not in db.get(PinterestConnection, publication.pinterest_connection_id).granted_scopes
+    readiness = readiness_result(db, publication)
+    assert readiness["manual_status"] == "READY_FOR_MANUAL_DISPATCH"
+    assert readiness["provider_status"] == "PUBLISHING_DISABLED"
