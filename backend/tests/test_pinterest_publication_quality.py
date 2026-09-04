@@ -186,6 +186,36 @@ def test_utm_url_required_and_must_match_destination_target():
     assert _failed_codes(
         _result(utm_url="https://diamondshelf.us/products/fragrance-pick/?utm_source=pinterest")
     ) == set()
+    assert _failed_codes(
+        _result(utm_url="https://diamondshelf.us:443/products/fragrance-pick?utm_source=pinterest")
+    ) == set()
+    assert _failed_codes(
+        _result(
+            destination_url="https://diamondshelf.us:443/products/fragrance-pick",
+            utm_url="https://diamondshelf.us/products/fragrance-pick?utm_source=pinterest",
+        )
+    ) == set()
+    assert "UTM_URL_TARGET_MATCH" in _failed_codes(
+        _result(utm_url="https://diamondshelf.us:8443/products/fragrance-pick?utm_source=pinterest")
+    )
+
+
+def test_malformed_ports_fail_quality_without_raising():
+    result = _result(destination_url="https://diamondshelf.us:abc/products/fragrance-pick")
+    assert result["status"] == "FAIL"
+    assert "DESTINATION_URL_PORT_VALID" in _failed_codes(result)
+
+    result = _result(utm_url="https://diamondshelf.us:abc/products/fragrance-pick?utm_source=pinterest")
+    assert result["status"] == "FAIL"
+    assert "UTM_URL_PORT_VALID" in _failed_codes(result)
+
+    result = _result(media_url_snapshot="https://cdn.shopify.com:abc/image.jpg")
+    assert result["status"] == "FAIL"
+    assert "MEDIA_URL_PORT_VALID" in _failed_codes(result)
+
+    result = _result(destination_url="https://diamondshelf.us:99999/products/fragrance-pick")
+    assert result["status"] == "FAIL"
+    assert "DESTINATION_URL_PORT_VALID" in _failed_codes(result)
 
 
 def test_utm_structure_requires_unique_nonempty_pinterest_source():

@@ -31,6 +31,7 @@ RECOMMENDED_HEIGHT = 1500
 CANONICAL_DESTINATION_HOSTS = {"diamondshelf.us", "www.diamondshelf.us"}
 SHORTENER_HOSTS = {"bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly"}
 RESERVED_HOST_SUFFIXES = (".localhost", ".local", ".test", ".invalid", ".example")
+INVALID_PORT = object()
 UNSUPPORTED_CLAIM_PATTERNS = (
     re.compile(r"\bguaranteed\b", re.I),
     re.compile(r"\bcures?\b", re.I),
@@ -134,6 +135,21 @@ def _host_is_public(host: str) -> bool:
     return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified or ip.is_multicast)
 
 
+def _effective_port(parsed: Any) -> int | None | object:
+    try:
+        explicit = parsed.port
+    except ValueError:
+        return INVALID_PORT
+    if explicit is not None:
+        return explicit
+    scheme = (parsed.scheme or "").lower()
+    if scheme == "https":
+        return 443
+    if scheme == "http":
+        return 80
+    return None
+
+
 def _url_target(value: str | None) -> tuple[str, str, int | None, str] | None:
     try:
         parsed = urlsplit(value or "")
@@ -141,10 +157,13 @@ def _url_target(value: str | None) -> tuple[str, str, int | None, str] | None:
         return None
     if not parsed.scheme or not parsed.hostname:
         return None
+    port = _effective_port(parsed)
+    if port is INVALID_PORT:
+        return None
     path = parsed.path or "/"
     if len(path) > 1:
         path = path.rstrip("/")
-    return (parsed.scheme.lower(), parsed.hostname.lower().rstrip("."), parsed.port, path)
+    return (parsed.scheme.lower(), parsed.hostname.lower().rstrip("."), port, path)
 
 
 def _url_checks(label: str, value: str | None, *, canonical_destination: bool, require_utm_source: bool = False) -> list[QualityCheck]:
@@ -153,9 +172,11 @@ def _url_checks(label: str, value: str | None, *, canonical_destination: bool, r
     except ValueError:
         parsed = None
     host = parsed.hostname.lower().rstrip(".") if parsed and parsed.hostname else None
+    port = _effective_port(parsed) if parsed else INVALID_PORT
     checks = [
         _check(f"{label}_HTTPS", "FAIL", bool(parsed and parsed.scheme == "https"), f"{label.lower()} must use HTTPS"),
         _check(f"{label}_HOST_PRESENT", "FAIL", bool(host), f"{label.lower()} must include a hostname"),
+        _check(f"{label}_PORT_VALID", "FAIL", port is not INVALID_PORT, f"{label.lower()} must not contain a malformed port"),
         _check(f"{label}_NO_CREDENTIALS", "FAIL", bool(parsed) and not parsed.username and not parsed.password, f"{label.lower()} must not contain credentials"),
         _check(f"{label}_PUBLIC_HOST", "FAIL", bool(host and _host_is_public(host)), f"{label.lower()} must not target localhost or private/internal IPs"),
     ]
