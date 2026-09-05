@@ -20,8 +20,25 @@ export function App() {
     if (!response.ok) { setLoginError('Invalid credentials or unavailable authentication service.'); return }
     setPassword(''); setAuthenticated(true)
   }
-  if (authenticated === null) return <div className="app-shell"><main><p>Checking authentication…</p></main></div>
-  if (!authenticated) return <div className="app-shell"><main><section className="panel" style={{maxWidth: 420, margin: '10vh auto'}}><p className="eyebrow">DIAMOND SHELF</p><h2>Sign in</h2><form onSubmit={login}><label>Username<input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" /></label><label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" /></label>{loginError && <p role="alert">{loginError}</p>}<button type="submit">Sign in</button></form></section></main></div>
+  if (authenticated === null) return <div className="login-shell"><main className="login-panel"><p role="status">Checking authentication…</p></main></div>
+  if (!authenticated) return <div className="login-shell">
+    <main className="login-panel">
+      <p className="eyebrow">DIAMOND SHELF</p>
+      <h2>Sign in</h2>
+      <form className="login-form" onSubmit={login}>
+        <div className="login-field">
+          <label className="login-label" htmlFor="username">Username</label>
+          <input className="login-input" id="username" type="text" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
+        </div>
+        <div className="login-field">
+          <label className="login-label" htmlFor="password">Password</label>
+          <input className="login-input" id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+        </div>
+        {loginError && <p className="login-error" role="alert">{loginError}</p>}
+        <button className="login-button" type="submit">Sign in</button>
+      </form>
+    </main>
+  </div>
   return <AuthenticatedDashboard />
 }
 
