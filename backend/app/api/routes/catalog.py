@@ -183,6 +183,33 @@ def _decimal_value(value):
     return float(value) if value is not None else None
 
 
+FILTER_OPTIONS_LIMIT = 1000
+
+
+def _clean_filter_column(column):
+    return func.trim(column, " \t\n\r\v\f")
+
+
+@router.get("/filter-options")
+def filter_options():
+    db = SessionLocal()
+    try:
+        def options(column):
+            cleaned = _clean_filter_column(column)
+            key = func.lower(cleaned)
+            return list(db.scalars(
+                select(func.min(cleaned))
+                .where(column.is_not(None), cleaned != "")
+                .group_by(key)
+                .order_by(key)
+                .limit(FILTER_OPTIONS_LIMIT)
+            ))
+
+        return {"vendors": options(Product.vendor), "product_types": options(Product.product_type)}
+    finally:
+        db.close()
+
+
 @router.get("/products")
 def list_products(
     search: str | None = None,
@@ -213,10 +240,10 @@ def list_products(
                 Product.handle.ilike(term),
                 Product.vendor.ilike(term),
             ))
-        if vendor:
-            filters.append(Product.vendor == vendor)
-        if product_type:
-            filters.append(Product.product_type == product_type)
+        if vendor and vendor.strip():
+            filters.append(func.lower(_clean_filter_column(Product.vendor)) == vendor.strip().lower())
+        if product_type and product_type.strip():
+            filters.append(func.lower(_clean_filter_column(Product.product_type)) == product_type.strip().lower())
         if stock_status == "in_stock":
             filters.append(Product.inventory_total > 0)
         elif stock_status == "out_of_stock":

@@ -125,3 +125,12 @@ export async function getProducts(
   params.set('limit', '50')
   return json(await fetch(`/api/catalog/products?${params}`, { signal }))
 }
+
+export type FilterOptions = {
+  vendors: string[]
+  product_types: string[]
+}
+
+export async function getFilterOptions(signal?: AbortSignal): Promise<FilterOptions> {
+  return json(await fetch('/api/catalog/filter-options', { signal }))
+}
