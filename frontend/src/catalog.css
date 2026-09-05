@@ -1578,6 +1578,30 @@
   grid-column: span 2;
 }
 
+.catalog-option-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  color: #aaa195;
+  font-size: 12px;
+}
+
+.catalog-option-field input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.catalog-option-field input:focus-visible {
+  outline: 2px solid #caa85e;
+  outline-offset: 2px;
+}
+
+.catalog-option-field small {
+  color: #f0b29d;
+  overflow-wrap: anywhere;
+}
+
 .catalog-filters input,
 .catalog-filters select {
   min-width: 0;

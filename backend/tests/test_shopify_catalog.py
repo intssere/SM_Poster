@@ -1,8 +1,11 @@
 import asyncio
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
 from app.models.domain import (
@@ -23,6 +26,125 @@ from app.services.product_intelligence import (
     stream_bulk_products,
 )
 from app.services.shopify_sync import CatalogSyncService, SyncAlreadyRunning
+
+
+@pytest.fixture
+def catalog_filter_client(monkeypatch):
+    from app.api.routes import catalog
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(catalog, "SessionLocal", factory)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Catalog filters must not invoke Shopify or synchronization")
+
+    for name in ("_gateway", "ShopifyGraphQLGateway", "ShopifyTokenProvider", "CatalogSyncService"):
+        monkeypatch.setattr(catalog, name, forbidden)
+    with factory() as db:
+        store = Store(name="Filter test", shop_domain="filters.example.test")
+        db.add(store)
+        db.flush()
+        rows = [
+            ("Adidas", "Fragrance", 8, 25, "ELIGIBLE", "COMPLETE"),
+            (" adidas ", " fragrance ", 0, 80, "INELIGIBLE", "PARTIAL"),
+            ("Other", "Hair Tools", 3, 30, "ELIGIBLE", "COMPLETE"),
+            (None, None, 0, 0, "INELIGIBLE", "UNKNOWN"),
+            ("", "", 0, 0, "INELIGIBLE", "UNKNOWN"),
+            (" \t\n", " \t\n", 0, 0, "INELIGIBLE", "UNKNOWN"),
+            ("A_%", "Type_%", 1, 10, "ELIGIBLE", "COMPLETE"),
+        ]
+        for index, (vendor, kind, stock, price, eligibility, normalization) in enumerate(rows):
+            product = Product(id=f"filter-{index}", store_id=store.id,
+                              shopify_product_id=str(index), title=f"Product {index}",
+                              handle=f"item-{index}", product_url="https://example.test/product",
+                              vendor=vendor, product_type=kind, inventory_total=stock, price_min=price)
+            db.add(product)
+            db.flush()
+            db.add(ProductIntelligence(product_id=product.id, eligibility_status=eligibility,
+                                       normalization_status=normalization))
+        db.commit()
+    application = FastAPI()
+    application.include_router(catalog.router, prefix="/api")
+    try:
+        with TestClient(application) as client:
+            yield client, factory
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("value", ["Adidas", "adidas", "ADIDAS", " Adidas ", "\tAdidas\n"])
+def test_catalog_vendor_normalized_exact(catalog_filter_client, value):
+    client, _ = catalog_filter_client
+    response = client.get("/api/catalog/products", params={"vendor": value})
+    assert response.status_code == 200
+    assert response.json()["total"] == 2
+
+
+@pytest.mark.parametrize("value", ["Fragrance", "fragrance", "FRAGRANCE", " Fragrance "])
+def test_catalog_product_type_normalized_exact(catalog_filter_client, value):
+    client, _ = catalog_filter_client
+    assert client.get("/api/catalog/products", params={"product_type": value}).json()["total"] == 2
+
+
+@pytest.mark.parametrize("field,value", [
+    ("vendor", "ADDIDAS"), ("vendor", "Adi"), ("vendor", "%"), ("vendor", "_"),
+    ("product_type", "Fragrnce"), ("product_type", "Frag"), ("product_type", "%"),
+    ("product_type", "_"),
+])
+def test_catalog_structured_filters_do_not_fuzzy_or_wildcard_match(catalog_filter_client, field, value):
+    client, _ = catalog_filter_client
+    assert client.get("/api/catalog/products", params={field: value}).json()["total"] == 0
+
+
+def test_catalog_literal_typo_and_wildcards_only_match_persisted_values(catalog_filter_client):
+    client, factory = catalog_filter_client
+    with factory() as db:
+        db.get(Product, "filter-2").vendor = "ADDIDAS"
+        db.commit()
+    assert client.get("/api/catalog/products", params={"vendor": "addidas"}).json()["total"] == 1
+    assert client.get("/api/catalog/products", params={"vendor": "A_%", "product_type": "Type_%"}).json()["total"] == 1
+
+
+@pytest.mark.parametrize("extra,expected", [
+    ({"product_type": "hair tools"}, 0), ({"product_type": " FRAGRANCE "}, 2),
+    ({"stock_status": "in_stock"}, 1), ({"eligibility": "eligible"}, 1),
+    ({"min_price": 50}, 1), ({"max_price": 20}, 0),
+    ({"normalization_status": "COMPLETE"}, 1),
+    ({"stock_status": "in_stock", "eligibility": "eligible", "max_price": 30, "product_type": "fragrance"}, 1),
+])
+def test_catalog_filters_preserve_and_semantics(catalog_filter_client, extra, expected):
+    client, _ = catalog_filter_client
+    assert client.get("/api/catalog/products", params={"vendor": "adidas", **extra}).json()["total"] == expected
+
+
+def test_catalog_general_search_and_pagination_unchanged(catalog_filter_client):
+    client, _ = catalog_filter_client
+    for search in (" PRODUCT ", "ITEM-", " ADID "):
+        expected = 2 if "ADID" in search else 7
+        assert client.get("/api/catalog/products", params={"search": search}).json()["total"] == expected
+    page = client.get("/api/catalog/products", params={"vendor": "adidas", "offset": 1, "limit": 1}).json()
+    assert page["total"] == 2 and len(page["items"]) == 1 and page["offset"] == 1
+
+
+def test_catalog_filter_options_clean_sorted_bounded_read_only(catalog_filter_client, monkeypatch):
+    from app.api.routes import catalog
+    client, factory = catalog_filter_client
+    with factory() as db:
+        before = db.execute(select(Product.__table__).order_by(Product.id)).all()
+    response = client.get("/api/catalog/filter-options")
+    assert response.status_code == 200
+    assert response.json() == {"vendors": ["A_%", "Adidas", "Other"], "product_types": ["Fragrance", "Hair Tools", "Type_%"]}
+    assert client.get("/api/catalog/filter-options").json() == response.json()
+    monkeypatch.setattr(catalog, "FILTER_OPTIONS_LIMIT", 2)
+    assert client.get("/api/catalog/filter-options").json() == {"vendors": ["A_%", "Adidas"], "product_types": ["Fragrance", "Hair Tools"]}
+    with factory() as db:
+        assert db.execute(select(Product.__table__).order_by(Product.id)).all() == before
+        db.get(Product, "filter-2").vendor = "New Brand"
+        db.commit()
+    monkeypatch.setattr(catalog, "FILTER_OPTIONS_LIMIT", 1000)
+    assert "New Brand" in client.get("/api/catalog/filter-options").json()["vendors"]
 
 
 def catalog_product(**overrides):

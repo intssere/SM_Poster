@@ -3,6 +3,8 @@ import { AlertCircle, CheckCircle2, PackageSearch, RefreshCw, Search } from 'luc
 
 import {
   CatalogProduct,
+  FilterOptions,
+  getFilterOptions,
   getIntelligenceSummary,
   getProducts,
   IntelligenceSummary,
@@ -59,6 +61,24 @@ export function ProductsPage() {
   const [appliedFilters, setAppliedFilters] = useState(emptyFilters)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState<string | null>(null)
+  const [options, setOptions] = useState<FilterOptions>({ vendors: [], product_types: [] })
+  const [optionsError, setOptionsError] = useState<string | null>(null)
+  const [filterErrors, setFilterErrors] = useState({ vendor: '', productType: '' })
+
+  const loadFilterOptions = useCallback(async (signal?: AbortSignal) => {
+    try {
+      setOptions(await getFilterOptions(signal))
+      setOptionsError(null)
+    } catch (error) {
+      if ((error as Error).name !== 'AbortError') setOptionsError('Filter options unavailable. Reload to try again.')
+    }
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void loadFilterOptions(controller.signal)
+    return () => controller.abort()
+  }, [loadFilterOptions])
 
   const loadProducts = useCallback(async (signal?: AbortSignal) => {
     setLoading(true)
@@ -94,24 +114,40 @@ export function ProductsPage() {
 
   useEffect(() => {
     if (!sync || !['QUEUED', 'RUNNING'].includes(sync.status)) return
+    let completionRefreshed = false
     const interval = window.setInterval(async () => {
       try {
         const current = await getSyncStatus()
         setSync(current)
-        if (!['QUEUED', 'RUNNING'].includes(current.status)) {
-          await Promise.all([loadStatus(), loadProducts()])
+        if (!['QUEUED', 'RUNNING'].includes(current.status) && !completionRefreshed) {
+          completionRefreshed = true
+          window.clearInterval(interval)
+          await Promise.all([loadStatus(), loadProducts(), loadFilterOptions()])
         }
       } catch (error) {
         setMessage((error as Error).message)
       }
     }, 2500)
     return () => window.clearInterval(interval)
-  }, [loadProducts, loadStatus, sync])
+  }, [loadProducts, loadStatus, loadFilterOptions, sync])
 
   function applyFilters(event: FormEvent) {
     event.preventDefault()
+    const canonical = (value: string, available: string[]) => {
+      const cleaned = value.trim()
+      return cleaned ? available.find((option) => option.toLowerCase() === cleaned.toLowerCase()) : ''
+    }
+    const vendor = canonical(filters.vendor, options.vendors)
+    const productType = canonical(filters.productType, options.product_types)
+    setFilterErrors({
+      vendor: vendor === undefined ? 'Choose an available brand / vendor.' : '',
+      productType: productType === undefined ? 'Choose an available product type.' : '',
+    })
+    if (vendor === undefined || productType === undefined) return
+    const selected = { ...filters, vendor, productType }
+    setFilters(selected)
     setOffset(0)
-    setAppliedFilters(filters)
+    setAppliedFilters(selected)
   }
 
   async function startSync() {
@@ -177,17 +213,26 @@ export function ProductsPage() {
 
     <form className="catalog-filters" onSubmit={applyFilters}>
       <label className="search-field"><Search size={16}/><input value={filters.search} onChange={(event) => setFilters({...filters, search: event.target.value})} placeholder="Search products"/></label>
-      <input value={filters.vendor} onChange={(event) => setFilters({...filters, vendor: event.target.value})} placeholder="Brand / vendor"/>
-      <input value={filters.productType} onChange={(event) => setFilters({...filters, productType: event.target.value})} placeholder="Product type"/>
+      <label className="catalog-option-field" htmlFor="catalog-vendor">Brand / vendor
+        <input id="catalog-vendor" list="catalog-vendors" autoComplete="off" value={filters.vendor} aria-invalid={!!filterErrors.vendor} aria-describedby={filterErrors.vendor ? 'catalog-vendor-error' : undefined} onChange={(event) => { setFilters({...filters, vendor: event.target.value}); setFilterErrors({...filterErrors, vendor: ''}) }} placeholder="Search available brands"/>
+        <datalist id="catalog-vendors">{options.vendors.map((value) => <option key={value} value={value}/>)}</datalist>
+        {filterErrors.vendor && <small id="catalog-vendor-error" role="alert">{filterErrors.vendor}</small>}
+      </label>
+      <label className="catalog-option-field" htmlFor="catalog-product-type">Product type
+        <input id="catalog-product-type" list="catalog-product-types" autoComplete="off" value={filters.productType} aria-invalid={!!filterErrors.productType} aria-describedby={filterErrors.productType ? 'catalog-type-error' : undefined} onChange={(event) => { setFilters({...filters, productType: event.target.value}); setFilterErrors({...filterErrors, productType: ''}) }} placeholder="Search available types"/>
+        <datalist id="catalog-product-types">{options.product_types.map((value) => <option key={value} value={value}/>)}</datalist>
+        {filterErrors.productType && <small id="catalog-type-error" role="alert">{filterErrors.productType}</small>}
+      </label>
       <select value={filters.stockStatus} onChange={(event) => setFilters({...filters, stockStatus: event.target.value})}><option value="">Any stock</option><option value="in_stock">In stock</option><option value="out_of_stock">Out of stock</option></select>
       <select value={filters.eligibility} onChange={(event) => setFilters({...filters, eligibility: event.target.value})}><option value="">Any eligibility</option><option value="eligible">Eligible</option><option value="ineligible">Ineligible</option></select>
       <select value={filters.normalizationStatus} onChange={(event) => setFilters({...filters, normalizationStatus: event.target.value})}><option value="">Any normalization</option><option value="COMPLETE">Complete</option><option value="PARTIAL">Partial</option><option value="UNKNOWN">Unknown</option></select>
       <input type="number" min="0" value={filters.minPrice} onChange={(event) => setFilters({...filters, minPrice: event.target.value})} placeholder="Min price"/>
       <input type="number" min="0" value={filters.maxPrice} onChange={(event) => setFilters({...filters, maxPrice: event.target.value})} placeholder="Max price"/>
       <button type="submit">Apply filters</button>
-      <button type="button" className="secondary-action" onClick={() => { setFilters(emptyFilters); setAppliedFilters(emptyFilters) }}>Clear</button>
+      <button type="button" className="secondary-action" onClick={() => { setFilters(emptyFilters); setAppliedFilters(emptyFilters); setFilterErrors({ vendor: '', productType: '' }); setOffset(0) }}>Clear</button>
     </form>
 
+    {optionsError && <p className="catalog-message" role="alert">{optionsError}</p>}
     {message && <p className="catalog-message">{message}</p>}
 
     <section className="catalog-panel">
