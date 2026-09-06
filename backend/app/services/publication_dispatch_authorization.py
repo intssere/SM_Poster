@@ -162,13 +162,16 @@ def manual_structural_readiness(
     *,
     now: datetime | None = None,
     expected_publication_state: PublicationStatus = PublicationStatus.SCHEDULED,
+    require_due: bool = True,
 ) -> dict[str, Any]:
     """Pure manual-readiness checks. Does not inspect/modify authorization."""
     now = normalize_persisted_utc(now or _now())
     scheduled_for = normalize_persisted_utc(publication.scheduled_for)
     if _status(publication.status) != expected_publication_state.value:
         return {"status": "INVALID_PUBLICATION_STATE", "ready": False}
-    if not scheduled_for or scheduled_for > now:
+    if not scheduled_for:
+        return {"status": "NOT_DUE", "ready": False}
+    if require_due and scheduled_for > now:
         return {"status": "NOT_DUE", "ready": False}
     if not _base_snapshot_complete(publication):
         return {"status": "INCOMPLETE_SNAPSHOT", "ready": False}
