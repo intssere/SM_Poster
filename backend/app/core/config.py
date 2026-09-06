@@ -15,6 +15,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("APP_SECRET_KEY", "SESSION_SECRET"),
     )
     publishing_enabled: bool = False
+    buffer_api_key: str | None = Field(default=None, repr=False, exclude=True)
+    buffer_api_base: str = "https://api.buffer.com"
+    buffer_organization_id: str | None = None
+    buffer_pinterest_channel_id: str | None = None
+    buffer_publishing_enabled: bool = False
     pinterest_write_scope_enabled: bool = False
     pinterest_single_pin_pilot_enabled: bool = False
     pinterest_single_pin_pilot_publication_id: str = ""
