@@ -32,6 +32,8 @@ def reconcile(db, publication_id: str, *, actor: str, action: str, confirmed: bo
     if publication.pinterest_pin_id: known.add(publication.pinterest_pin_id)
     if len(known) > 1: raise ReconciliationError("CONFLICTING_KNOWN_PROVIDER_PIN_IDS")
     if action == "PROVIDER_PIN_CONFIRMED":
+        if any(a.dispatch_provider == "buffer" and a.provider_operation_id for a in attempts):
+            raise ReconciliationError("KNOWN_PROVIDER_OPERATION_REQUIRES_RECONCILIATION")
         pin = _pin(provider_pin_id)
         reason = _validate_reason(reason)
         if known and pin not in known: raise ReconciliationError("KNOWN_PROVIDER_PIN_MISMATCH")
@@ -41,6 +43,8 @@ def reconcile(db, publication_id: str, *, actor: str, action: str, confirmed: bo
         if other_attempt: raise ReconciliationError("PROVIDER_PIN_ID_ALREADY_ASSIGNED")
         new_status, event_pin = PublicationStatus.PUBLISHED, pin
     elif action == "CANCELLED_UNKNOWN":
+        if any(a.provider_operation_id for a in attempts):
+            raise ReconciliationError("KNOWN_PROVIDER_OPERATION_REQUIRES_RECONCILIATION")
         reason = _validate_reason(reason, required=True)
         if known: raise ReconciliationError("KNOWN_PROVIDER_PIN_REQUIRES_CONFIRMATION")
         new_status, event_pin = PublicationStatus.CANCELLED, None

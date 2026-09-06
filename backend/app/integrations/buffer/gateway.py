@@ -78,7 +78,7 @@ class BufferPinterestPostPayload:
         public_url(self.image_url)
         return {
             "channelId": self.channel_id, "text": self.text,
-            "schedulingType": "automatic", "mode": "shareNow",
+            "schedulingType": "automatic", "mode": "shareNow", "needsApproval": False,
             "assets": [{"image": {"url": self.image_url, "metadata": {"altText": self.alt_text}}}],
             "metadata": {"pinterest": {"boardServiceId": self.board_service_id, "title": self.title, "url": self.url}},
         }
@@ -93,6 +93,26 @@ class BufferPostResult:
     due_at: str | None
     sent_at: str | None
     external_link: str | None
+
+
+@dataclass(frozen=True)
+class BufferPostSnapshot(BufferPostResult):
+    channel_service: str
+    text: str
+    pinterest_board_service_id: str
+    pinterest_title: str
+    pinterest_url: str
+    image_url: str
+    image_alt_text: str
+
+
+SINGLE_POST = """query ExactPost($input: PostInput!) {
+  post(input: $input) {
+    id status channelId channelService text createdAt dueAt sentAt externalLink
+    metadata { ... on PinterestPostMetadata { board { serviceId } title url } }
+    assets { __typename source ... on ImageAsset { image { altText } } }
+  }
+}"""
 
 
 CHANNEL_FIELDS = """id name displayName service isDisconnected isLocked metadata {
@@ -157,9 +177,9 @@ class BufferGateway:
         except (httpx.HTTPError, ValueError, TypeError, AttributeError):
             raise failure("BUFFER_RESPONSE_UNCERTAIN" if write else "BUFFER_READ_FAILED") from None
 
-    def _text(self, value, *, identifier=False):
+    def _text(self, value, *, identifier=False, content=False):
         if (not isinstance(value, str) or not value.strip() or len(value) > 2048
-                or self._key and self._key in value or any(ord(c) < 32 for c in value)
+                or self._key and self._key in value or any(ord(c) < 32 and not (content and c in "\n\r\t") for c in value)
                 or identifier and not re.fullmatch(r"[A-Za-z0-9_-]{1,255}", value)):
             raise ValueError
         return value
@@ -263,3 +283,31 @@ class BufferGateway:
             return self._post_result(result["post"], payload.channel_id)
         except (KeyError, TypeError, ValueError, AttributeError, BufferConfigurationError):
             raise BufferAmbiguousFailure("BUFFER_RESPONSE_UNCERTAIN") from None
+
+    async def post(self, post_id: str) -> BufferPostSnapshot:
+        """One exact read. Never scan history, retry, or return raw provider data."""
+        try:
+            self._text(post_id, identifier=True)
+        except (ValueError, TypeError):
+            raise BufferReadError("BUFFER_OPERATION_ID_REQUIRED") from None
+        data = await self._request(SINGLE_POST, {"input": {"id": post_id}})
+        try:
+            item = data["post"]
+            channel_id = self._text(item["channelId"], identifier=True)
+            result = self._post_result(item, channel_id)
+            if result.buffer_post_id != post_id or item["channelService"] != "pinterest":
+                raise ValueError
+            metadata, assets = item["metadata"], item["assets"]
+            if not isinstance(assets, list) or len(assets) != 1 or assets[0]["__typename"] != "ImageAsset":
+                raise ValueError
+            url = self._text(metadata["url"])
+            image_url = self._text(assets[0]["source"])
+            public_url(url)
+            public_url(image_url)
+            return BufferPostSnapshot(**result.__dict__, channel_service="pinterest",
+                text=self._text(item["text"], content=True),
+                pinterest_board_service_id=self._text(metadata["board"]["serviceId"], identifier=True),
+                pinterest_title=self._text(metadata["title"]), pinterest_url=url,
+                image_url=image_url, image_alt_text=self._text(assets[0]["image"]["altText"]))
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError, BufferConfigurationError):
+            raise BufferReadError("BUFFER_READ_INVALID") from None

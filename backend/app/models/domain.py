@@ -467,10 +467,20 @@ class PublicationAttempt(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     provider_pin_id: Mapped[str | None] = mapped_column(String(255))
+    dispatch_provider: Mapped[str] = mapped_column(String(40), nullable=False, default="pinterest_direct", server_default="pinterest_direct")
+    provider_operation_id: Mapped[str | None] = mapped_column(String(255))
+    provider_operation_status: Mapped[str | None] = mapped_column(String(30))
+    provider_external_link: Mapped[str | None] = mapped_column(Text)
+    provider_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    provider_last_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_code: Mapped[str | None] = mapped_column(String(100))
     safe_response_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    __table_args__ = (UniqueConstraint("publication_id", "attempt_number", name="uq_publication_attempt_number"),)
+    __table_args__ = (
+        UniqueConstraint("publication_id", "attempt_number", name="uq_publication_attempt_number"),
+        Index("uq_publication_attempt_provider_operation", "dispatch_provider", "provider_operation_id", unique=True,
+              sqlite_where=text("provider_operation_id IS NOT NULL"), postgresql_where=text("provider_operation_id IS NOT NULL")),
+    )
 
 
 class PublicationDispatchAuthorization(Base):
@@ -533,11 +543,14 @@ class PublicationReconciliationEvent(Base):
     previous_status: Mapped[str] = mapped_column(String(30), nullable=False)
     new_status: Mapped[str] = mapped_column(String(30), nullable=False)
     provider_pin_id: Mapped[str | None] = mapped_column(String(255))
+    provider: Mapped[str] = mapped_column(String(40), nullable=False, default="pinterest_direct", server_default="pinterest_direct")
+    provider_operation_id: Mapped[str | None] = mapped_column(String(255))
+    provider_operation_status: Mapped[str | None] = mapped_column(String(30))
     reason: Mapped[str | None] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True, nullable=False)
     __table_args__ = (
         CheckConstraint(
-            "action IN ('PROVIDER_PIN_CONFIRMED', 'CANCELLED_UNKNOWN')",
+            "action IN ('PROVIDER_PIN_CONFIRMED', 'CANCELLED_UNKNOWN', 'PROVIDER_FAILURE_CONFIRMED')",
             name="ck_publication_reconciliation_action",
         ),
         CheckConstraint(
@@ -546,7 +559,8 @@ class PublicationReconciliationEvent(Base):
         ),
         CheckConstraint(
             "((action = 'PROVIDER_PIN_CONFIRMED' AND new_status = 'PUBLISHED') OR "
-            "(action = 'CANCELLED_UNKNOWN' AND new_status = 'CANCELLED'))",
+            "(action = 'CANCELLED_UNKNOWN' AND new_status = 'CANCELLED') OR "
+            "(action = 'PROVIDER_FAILURE_CONFIRMED' AND new_status = 'PUBLISH_FAILED'))",
             name="ck_publication_reconciliation_transition",
         ),
     )
