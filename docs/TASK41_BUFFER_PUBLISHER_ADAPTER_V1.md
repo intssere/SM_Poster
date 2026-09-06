@@ -6,6 +6,12 @@
 
 ## Baseline and purpose
 
+Phase 1 was merged in PR #27 at `9bdfe304f6f65f74606ec2fff674b59dd527d2cd`
+(tree `94d2f8111ec792dd64ca50034a4a681c0c4f1221`). The account below is
+historical Phase 1 scope. Phase 2 adds internal, default-off persistence and
+manual reconciliation; see [Phase 2 design](TASK41_BUFFER_PHASE2_PERSISTENCE_RECONCILIATION.md).
+It remains unstaged for independent review and does not authorize live writes.
+
 This unstaged Phase 1 implementation starts from main
 `0080b733a006ae7916ea9346cb2bdce554cb9caa`, tree
 `6f6f6ddb478b3df66ee4877e5c680f79df5cfeae`, on
@@ -81,6 +87,7 @@ route, manual dispatch, publisher, worker or frontend calls this gateway.
 | assets[0].image.metadata.altText | publication.alt_text_snapshot |
 | schedulingType | automatic |
 | mode | shareNow |
+| needsApproval | false (explicit required Boolean; corrected in Phase 2) |
 
 The builder is pure and neither queries nor mutates the database. Missing or
 blank values fail; content is never truncated, rewritten, regenerated, or

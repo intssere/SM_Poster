@@ -10,7 +10,8 @@ ALLOWED_TRANSITIONS: dict[PublicationStatus, set[PublicationStatus]] = {
         PublicationStatus.PUBLISH_UNKNOWN,
     },
     PublicationStatus.PUBLISH_FAILED: {PublicationStatus.SCHEDULED, PublicationStatus.CANCELLED},
-    PublicationStatus.PUBLISH_UNKNOWN: {PublicationStatus.PUBLISHED, PublicationStatus.CANCELLED},
+    # Failed is only resolved by explicit, verified provider reconciliation.
+    PublicationStatus.PUBLISH_UNKNOWN: {PublicationStatus.PUBLISHED, PublicationStatus.PUBLISH_FAILED, PublicationStatus.CANCELLED},
     PublicationStatus.PUBLISHED: set(),
     PublicationStatus.CANCELLED: set(),
 }

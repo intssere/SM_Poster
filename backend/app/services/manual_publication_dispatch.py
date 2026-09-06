@@ -115,8 +115,11 @@ def atomic_authorized_claim(
     authorization: PublicationDispatchAuthorization,
     *,
     now: datetime | None = None,
+    dispatch_provider: str = "pinterest_direct",
 ) -> PublicationAttempt | None:
     """Consume authorization, claim publication, and create STARTED attempt once."""
+    if dispatch_provider not in {"pinterest_direct", "buffer"}:
+        raise ManualDispatchError("INVALID_DISPATCH_PROVIDER")
     now = normalize_persisted_utc(now or datetime.now(timezone.utc))
     scheduled_for = normalize_persisted_utc(publication.scheduled_for)
     if not scheduled_for or scheduled_for > now:
@@ -165,6 +168,7 @@ def atomic_authorized_claim(
             publication_id=publication.id,
             attempt_number=attempt_no,
             status="STARTED",
+            dispatch_provider=dispatch_provider,
             request_fingerprint=request_fingerprint_for(claimed_publication or publication),
             safe_response_metadata={},
         )

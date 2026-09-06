@@ -29,7 +29,7 @@ def test_exact_snapshot_mapping_is_pure():
     p = publication()
     before = dict(p.__dict__)
     result = build_pinterest_payload(p, settings()).to_input()
-    assert result == {"channelId": "channel", "text": "Exact description", "schedulingType": "automatic", "mode": "shareNow",
+    assert result == {"channelId": "channel", "text": "Exact description", "schedulingType": "automatic", "mode": "shareNow", "needsApproval": False,
         "assets": [{"image": {"url": p.media_url_snapshot, "metadata": {"altText": "Exact alt text"}}}],
         "metadata": {"pinterest": {"boardServiceId": "board-123", "title": "Exact title", "url": p.utm_url}}}
     assert p.__dict__ == before

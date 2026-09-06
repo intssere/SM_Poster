@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     buffer_organization_id: str | None = None
     buffer_pinterest_channel_id: str | None = None
     buffer_publishing_enabled: bool = False
+    buffer_single_pin_pilot_enabled: bool = False
+    buffer_single_pin_pilot_publication_id: str = ""
+    buffer_single_pin_pilot_publication_fingerprint: str = ""
+    buffer_single_pin_pilot_request_fingerprint: str = ""
     pinterest_write_scope_enabled: bool = False
     pinterest_single_pin_pilot_enabled: bool = False
     pinterest_single_pin_pilot_publication_id: str = ""
