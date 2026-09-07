@@ -21,13 +21,14 @@ from app.services.publication_reconciliation import reconcile, ReconciliationErr
 from app.services.publication_duplicates import evaluate_publication_duplicates
 from app.services.pinterest_publisher import PublicationReconciliationError
 from test_manual_publication_dispatch import _db, _ready_publication
+from test_buffer_phase3b_execution_gate import evidence
 
 SECRET = "fake-buffer-phase2-secret-not-real"
 
 
 @pytest.fixture
-def case():
-    Session, engine = _db()
+def case(tmp_path):
+    Session, engine = _db(tmp_path / "buffer-phase2.db")
     with Session() as db:
         p = _ready_publication(db, scopes=["user_accounts:read", "boards:read", "pins:read"])
         auth = create_authorization(db, p, actor="operator")
@@ -108,7 +109,10 @@ def run(c, reconciliation=False):
             gateway = BufferGateway(c.settings, client=client)
             if reconciliation:
                 return await reconcile_buffer(c.db, c.p.id, actor="operator", settings=c.settings, gateway=gateway)
-            return await dispatch_buffer(c.db, c.p, settings=c.settings, gateway=gateway)
+            return await dispatch_buffer(c.db, c.p, settings=c.settings, gateway=gateway,
+                execution_evidence=evidence(c.p, c.settings, observed_at=datetime.now(timezone.utc),
+                    write_credential_authorized=True, provider_destination_live_verified=True,
+                    media_live_fetch_verified=True))
     return asyncio.run(invoke())
 
 

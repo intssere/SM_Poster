@@ -15,6 +15,10 @@ from app.services.buffer_single_pin_pilot import validate_pilot
 from app.services.buffer_pinterest_adapter import verify_destination, build_pinterest_payload
 from app.services.buffer_publication_reconciliation import reconcile_buffer, BufferReconciliationError
 from app.services.pinterest_publisher import PublicationReconciliationError, normalize_persisted_utc
+from app.services.buffer_pilot_execution_gate import (
+    BufferPilotExecutionEvidence, FINAL_EXECUTION_READY,
+    evaluate_buffer_pilot_execution_readiness,
+)
 
 
 def _configuration(settings):
@@ -61,14 +65,21 @@ def _persist(db, publication_id, attempt_id, status, code, settings, *, result=N
     return True
 
 
-async def dispatch_buffer(db, publication, *, now=None, settings=None, gateway=None):
+async def dispatch_buffer(db, publication, *, now=None, settings=None, gateway=None,
+                          execution_evidence: BufferPilotExecutionEvidence | None = None):
     settings = settings or get_settings()
     now = normalize_persisted_utc(now or datetime.now(timezone.utc))
-    authorization = active_authorization(db, publication.id)
-    validated = validate_authorization(db, publication, authorization, now=now)
+    with db.no_autoflush:
+        authorization = active_authorization(db, publication.id)
+        validated = validate_authorization(db, publication, authorization, now=now)
+        ok, reason = validate_pilot(db, publication, settings)
+        readiness = evaluate_buffer_pilot_execution_readiness(
+            db, publication.id, evidence=execution_evidence, settings=settings, now=now,
+        )
+    if readiness["execution_status"] != FINAL_EXECUTION_READY:
+        raise ManualDispatchError("BUFFER_EXECUTION_GATE_LOCKED")
     if not validated["valid"]:
         raise ManualDispatchError(validated["status"])
-    ok, reason = validate_pilot(db, publication, settings)
     if not ok:
         raise ManualDispatchError(reason)
     _configuration(settings)
