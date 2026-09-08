@@ -356,6 +356,8 @@ class OpenAIImageProvider:
     """OpenAI image generation restricted to background-only base64 output."""
 
     name = "openai"
+    BACKGROUND_SIZE = "1024x1536"
+    BACKGROUND_QUALITY = "medium"
 
     def __init__(
         self,
@@ -389,7 +391,8 @@ class OpenAIImageProvider:
                 "be mistaken for the product. Leave a clean, uncluttered center foreground for the authentic "
                 "Shopify product image to be composited by the application. " + style_prompt
             ),
-            "size": "1024x1536",
+            "size": self.BACKGROUND_SIZE,
+            "quality": self.BACKGROUND_QUALITY,
             "n": 1,
             "output_format": "png",
         })

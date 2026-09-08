@@ -18,7 +18,7 @@ from app.services.ai_creative_generation import (
     AIGeneratedAssetStorage,
 )
 from app.services.ai_providers import ImageGenerationResult, TextGenerationResult
-from app.services.ai_regeneration import AISettingsService
+from app.services.ai_regeneration import AISettingsService, _cost, _pricing
 from app.services.creative_rendering import CreativeRenderService, CreativeStorage
 
 from test_creative_rendering import png
@@ -172,26 +172,26 @@ def test_background_validation_and_per_request_ceiling_fail_without_variants(tmp
     db.close()
 
 
-def test_gpt_image_2_is_fail_closed_without_an_explicit_price(tmp_path):
-    db, product, proposal_service, draft_id, service = prepared(tmp_path, "image-2-unpriced")
-    provider = FakeImageProvider()
-    service.image_provider_factory = lambda _: provider
-    AISettingsService(proposal_service.session_factory).update(
-        enabled=True,
-        provider_mode="hosted_paid",
-        decorative_backgrounds_enabled=True,
-    )
+def test_gpt_image_2_medium_portrait_has_safe_default_price_and_unknown_shapes_fail_closed(tmp_path):
+    db, product, proposal_service, draft_id, service = prepared(tmp_path, "image-2-priced")
+    AISettingsService(proposal_service.session_factory).update()
+    settings = db.scalar(select(AISettings))
+    classifier_cost = _cost(1000, 120, _pricing(settings, settings.hosted_model))
 
+    estimate = service._image_cost(settings)
+    assert estimate == Decimal("0.041") + classifier_cost
+    service._paid_preflight(db, settings, estimate)
+    assert service._image_cost(settings, size="1024x1024") is None
+    assert service._image_cost(settings, quality="high") is None
     try:
-        service.generate_background(draft_id, "quiet_luxury")
+        service._paid_preflight(db, settings, service._image_cost(settings, quality="high"))
     except AICreativeGenerationError as exc:
         assert "pricing is unknown" in str(exc)
     else:
-        raise AssertionError("Unpriced gpt-image-2 must be blocked before a provider call")
+        raise AssertionError("Unsupported image quality must fail before a provider call")
 
-    assert provider.calls == 0
-    assert db.scalar(select(func.count(AIGeneratedAsset.id))) == 0
-    assert db.scalar(select(func.count(ContentRevision.id))) == 0
+    settings.image_model = "unknown-image-model"
+    assert service._image_cost(settings) is None
     db.close()
 
 

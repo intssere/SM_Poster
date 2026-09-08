@@ -17,6 +17,7 @@ from sqlalchemy import func, select, text
 from app.db.session import SessionLocal
 from app.models.domain import AIGeneratedAsset, AIRequestTelemetry, ContentRevision, PinCreative
 from app.services.ai_providers import (
+    OpenAIImageProvider,
     ProviderUnavailable,
     TextGenerationResult,
     image_provider_for_settings,
@@ -113,9 +114,9 @@ VIDEO_SPEC_SCHEMA = {
         "scenes",
     ],
 }
-# No gpt-image-2 price was supplied. Keep the new default fail-closed rather
-# than silently charging against a guessed per-image price.
-DEFAULT_IMAGE_COSTS = {"gpt-image-1": Decimal("0.042"), "gpt-image-1-mini": Decimal("0.011")}
+DEFAULT_IMAGE_COSTS = {
+    ("gpt-image-2", "1024x1536", "medium"): Decimal("0.041"),
+}
 SAFE_CREATIVE_WORDS = {
     "a", "an", "and", "are", "as", "at", "authentic", "background", "be", "board", "by",
     "caption", "catalog", "center", "close", "composition",
@@ -295,11 +296,18 @@ class AICreativeGenerationService:
             raise AICreativeGenerationError("Monthly hosted AI budget is exhausted.")
 
     @staticmethod
-    def _image_cost(settings: Any) -> Decimal | None:
+    def _image_cost(
+        settings: Any,
+        size: str = OpenAIImageProvider.BACKGROUND_SIZE,
+        quality: str = OpenAIImageProvider.BACKGROUND_QUALITY,
+    ) -> Decimal | None:
+        default = DEFAULT_IMAGE_COSTS.get((settings.image_model, size, quality))
+        if default is None:
+            return None
         configured = (settings.pricing_metadata or {}).get(settings.image_model, {})
         value = configured.get("per_image") if isinstance(configured, dict) else None
         if value is None:
-            value = DEFAULT_IMAGE_COSTS.get(settings.image_model)
+            value = default
         classifier_cost = _cost(1000, 120, _pricing(settings, settings.hosted_model))
         if value is None or classifier_cost is None:
             return None
