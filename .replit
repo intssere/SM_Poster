@@ -10,6 +10,11 @@ AI_PROVIDER = "none"
 APP_ENV = "development"
 PUBLISHING_ENABLED = "false"
 
+[deployment]
+deploymentTarget = "autoscale"
+build = ["npm", "--prefix", "frontend", "run", "build"]
+run = ["sh", "-c", "(cd backend && exec uvicorn app.main:app --host 0.0.0.0 --port 8000) & exec npm --prefix frontend run preview -- --host 0.0.0.0 --port ${PORT:-5000}"]
+
 [workflows]
 runButton = "Project"
 
