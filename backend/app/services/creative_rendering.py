@@ -32,6 +32,14 @@ from app.models.domain import (
 from app.services.fingerprints import creative_fingerprint
 
 CANVAS = (1000, 1500)
+DESIGN_TOKEN_VERSION = 2
+PRODUCT_STAGE_BOX = (150, 180, 850, 840)
+GIFT_SET_PRODUCT_STAGE_BOX = (150, 210, 850, 840)
+TEXT_PANEL_BOX = (50, 1060, 950, 1450)
+GENERIC_MASTHEAD_TEXT = "DIAMOND SHELF"
+GENERIC_FOOTER_TEXT = "CURATED OBJECTS • CONSIDERED LIVING"
+FRAGRANCE_MASTHEAD_TEXT = "DIAMOND SHELF • FRAGRANCE EDIT"
+FRAGRANCE_FOOTER_TEXT = "FINE FRAGRANCE • CURATED WITH INTENTION"
 MAX_SOURCE_BYTES = 8 * 1024 * 1024
 DOWNLOAD_TIMEOUT_SECONDS = 8
 TEMPLATES = {
@@ -312,7 +320,7 @@ def _luminance(color: tuple[int, int, int, int]) -> float:
 
 def _local_text_tokens(canvas: Image.Image) -> dict[str, str]:
     """Choose text tokens from the reserved copy area, not global image colour."""
-    sample = canvas.convert("RGBA").crop((60, 1010, 940, 1430)).resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+    sample = canvas.convert("RGBA").crop((60, 1070, 940, 1430)).resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
     dark_surface = _luminance(sample) < 0.48
     return {
         "surface": "#1D2024" if dark_surface else "#FCFAF6",
@@ -359,7 +367,7 @@ def render_png(
     # protected text zone.  Decorative AI imagery never supplies product pixels.
     draw = ImageDraw.Draw(canvas, "RGBA")
     product, resolved_cutout = (prepared_product, cutout) if prepared_product is not None and cutout is not None else edge_connected_near_white_cutout(source)
-    image_box = (90, 145 if template != "gift_guide_gift_set" else 185, 910, 935)
+    image_box = GIFT_SET_PRODUCT_STAGE_BOX if template == "gift_guide_gift_set" else PRODUCT_STAGE_BOX
     if not resolved_cutout["applied"]:
         shadow = (image_box[0] + 10, image_box[1] + 14, image_box[2] + 10, image_box[3] + 14)
         draw.rounded_rectangle(shadow, radius=34, fill=(20, 22, 24, 24))
@@ -371,28 +379,31 @@ def render_png(
     y = image_box[1] if fitted.height < 180 else image_box[3] - fitted.height
     canvas.alpha_composite(fitted, (x, y))
     local = _local_text_tokens(canvas)
-    draw.rounded_rectangle((50, 1000, 950, 1450), radius=28, fill=_with_alpha(local["surface"], 240))
-    draw.rectangle((80, 1050, 220, 1058), fill=local["accent"])
+    draw.rounded_rectangle(TEXT_PANEL_BOX, radius=28, fill=_with_alpha(local["surface"], 236))
+    draw.rectangle((80, 1098, 220, 1106), fill=local["accent"])
     # A small, high-contrast masthead establishes the brand without competing
     # with the catalog product or editorial headline.
-    draw.text((80, 1082), "DIAMOND SHELF  /  EDIT", font=_font(True, 19), fill=local["accent"])
+    is_fragrance = spec.get("product_category") == "fragrance"
+    masthead = FRAGRANCE_MASTHEAD_TEXT if is_fragrance else GENERIC_MASTHEAD_TEXT
+    footer = FRAGRANCE_FOOTER_TEXT if is_fragrance else GENERIC_FOOTER_TEXT
+    draw.text((80, 1122), masthead, font=_font(True, 19), fill=local["accent"])
     headline, headline_font = _responsive_lines(
-        draw, spec["headline"], bold=True, max_width=840, max_lines=3, maximum=58, minimum=38
+        draw, spec["headline"], bold=True, max_width=840, max_lines=3, maximum=54, minimum=36
     )
     sub, sub_font = _responsive_lines(
-        draw, spec.get("supporting_text", spec.get("subheadline", "")), bold=False, max_width=840, max_lines=2, maximum=31, minimum=22
+        draw, spec.get("supporting_text", spec.get("subheadline", "")), bold=False, max_width=840, max_lines=2, maximum=28, minimum=20
     )
-    y = 1130
+    y = 1168
     for line in headline:
         draw.text((80, y), line, font=headline_font, fill=local["ink"])
-        y += headline_font.size + 13
-    y += 12
+        y += headline_font.size + 11
+    y += 8
     for line in sub:
         draw.text((80, y), line, font=sub_font, fill=local["muted"])
-        y += sub_font.size + 11
+        y += sub_font.size + 9
     if y > 1405:
         raise CreativeRenderError("Creative text overflows the canvas.")
-    draw.text((80, 1415), "CURATED OBJECTS • CONSIDERED LIVING", font=_font(True, 16), fill=local["accent"])
+    draw.text((80, 1418), footer, font=_font(True, 16), fill=local["accent"])
     output = io.BytesIO()
     canvas.convert("RGB").save(output, format="PNG", optimize=False)
     return output.getvalue()
@@ -592,6 +603,7 @@ class CreativeRenderService:
                 "text_fingerprint": text_fingerprint,
                 "template_key": template_key,
                 "template_version": template.version,
+                "design_token_version": DESIGN_TOKEN_VERSION,
                 "source_url": image.source_url,
                 "expected_checksum": expected_checksum,
             }, sort_keys=True).encode()).hexdigest()
@@ -616,13 +628,14 @@ class CreativeRenderService:
                 prepared_product, cutout = edge_connected_near_white_cutout(source)
 
                 spec = {
-                    "version": 1,
-                    "design_token_version": 1,
+                    "version": DESIGN_TOKEN_VERSION,
+                    "design_token_version": DESIGN_TOKEN_VERSION,
                     "draft_id": draft.id,
                     "proposal_id": draft.id,
                     "concept_id": concept.id,
                     "product_id": product.id,
                     "brand": rationale.get("facts_used", {}).get("brand") or product.vendor,
+                    "product_category": rationale.get("facts_used", {}).get("normalization_category"),
                     "image": {
                         "id": image.id,
                         "shopify_media_id": image.shopify_media_id,
@@ -728,9 +741,10 @@ class CreativeRenderService:
             supporting_text = copy.get("title") or draft.title
             text_hash = copy.get("text_fingerprint") or draft.text_fingerprint
             spec = {
-                "version": 1, "design_token_version": 1,
+                "version": DESIGN_TOKEN_VERSION, "design_token_version": DESIGN_TOKEN_VERSION,
                 "draft_id": draft.id, "proposal_id": draft.id, "concept_id": concept.id,
                 "product_id": product.id, "brand": rationale.get("facts_used", {}).get("brand") or product.vendor,
+                "product_category": rationale.get("facts_used", {}).get("normalization_category"),
                 "image": {
                     "id": image.id, "shopify_media_id": image.shopify_media_id,
                     "provenance_url": image.source_url, "checksum_sha256": source_sha,
