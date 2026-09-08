@@ -2,6 +2,13 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
+import hashlib
+from types import SimpleNamespace
+from contextlib import nullcontext
+from app.db.session import get_db
+from app.api.routes import proposals as proposals_routes
+
+from app.services.public_creative_media import verified_png
 
 from app.core import auth
 
@@ -36,6 +43,56 @@ def test_api_auth_integration_and_cookie_security(auth_client):
     assert "httponly" in cookie and "samesite=strict" in cookie
     assert client.get("/api/utilities/product-score").status_code != 401
     assert client.get("/api/auth/status").json()["authenticated"] is True
+
+
+def test_verified_png_returns_exact_bytes_and_rejects_tampering(tmp_path):
+    payload = b"\x89PNG\r\n\x1a\nverified-pixels"
+    digest = hashlib.sha256(payload).hexdigest()
+    creative = SimpleNamespace(id="creative-1", sha256=digest, render_status="RENDERED")
+    (tmp_path / "creative-1.png").write_bytes(payload)
+    assert verified_png(creative, digest, root=tmp_path) == payload
+    (tmp_path / "creative-1.png").write_bytes(payload + b"tampered")
+    assert verified_png(creative, digest, root=tmp_path) is None
+
+
+def test_public_creative_route_is_exact_anonymous_get_head_boundary(auth_client, monkeypatch, tmp_path):
+    payload = b"\x89PNG\r\n\x1a\nroute-test-pixels"
+    digest = hashlib.sha256(payload).hexdigest()
+    creative = SimpleNamespace(id="creative-route", sha256=digest, render_status="RENDERED")
+    (tmp_path / "creative-route.png").write_bytes(payload)
+
+    class FakeDB:
+        no_autoflush = nullcontext()
+        def get(self, model, row_id):
+            return creative if row_id == creative.id else None
+
+    from app.main import app
+    app.dependency_overrides[get_db] = lambda: FakeDB()
+    monkeypatch.setattr(proposals_routes, "verified_png", lambda row, requested_digest: verified_png(row, requested_digest, root=tmp_path))
+    try:
+        client = auth_client
+        url = f"/api/pins/public-creatives/{creative.id}/{digest}.png"
+        response = client.get(url)
+        assert response.status_code == 200 and response.content == payload
+        assert response.headers["content-type"] == "image/png"
+        assert int(response.headers["content-length"]) == len(payload)
+        assert all(v in response.headers["cache-control"] for v in ("public", "max-age=31536000", "immutable"))
+        assert response.headers["x-content-type-options"] == "nosniff"
+        head = client.head(url)
+        assert head.status_code == 200 and head.content == b""
+        assert int(head.headers["content-length"]) == len(payload)
+        assert client.get(f"/api/pins/public-creatives/{creative.id}/{'b' * 64}.png").status_code == 404
+        assert client.get(f"/api/pins/public-creatives/other/{digest}.png").status_code == 404
+        creative.render_status = "PENDING"
+        assert client.get(url).status_code == 404
+        creative.render_status = "RENDERED"
+        (tmp_path / "creative-route.png").write_bytes(payload + b"tampered")
+        assert client.get(url).status_code == 404
+        (tmp_path / "creative-route.png").write_bytes(payload)
+        assert client.get("/api/pins/summary").status_code == 401
+        assert client.post(url, headers={"Origin": "http://localhost:5000"}).status_code == 401
+    finally:
+        app.dependency_overrides.pop(get_db, None)
 
 
 def test_exposed_cookie_and_replit_origin(monkeypatch):

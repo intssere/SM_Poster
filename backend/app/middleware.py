@@ -5,6 +5,7 @@ from starlette.responses import JSONResponse
 
 from app.core.auth import auth_configured, auth_is_bypassed, current_user
 from app.core.config import get_settings
+from app.services.public_creative_media import PUBLIC_CREATIVE_PATH
 
 
 PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/status", "/api/channels/pinterest/callback"}
@@ -22,7 +23,8 @@ class AdminAuthMiddleware(BaseHTTPMiddleware):
                 return JSONResponse({"detail": "Origin is not allowed."}, status_code=403)
             if request.method not in {"GET", "HEAD", "OPTIONS"} and origin is None and path not in {"/api/auth/login"}:
                 return JSONResponse({"detail": "Origin header is required."}, status_code=403)
-            if path not in PUBLIC_PATHS:
+            public_creative = request.method in {"GET", "HEAD"} and PUBLIC_CREATIVE_PATH.fullmatch(path)
+            if path not in PUBLIC_PATHS and not public_creative:
                 if settings.is_exposed and not auth_configured():
                     return JSONResponse({"detail": "Authentication is not configured."}, status_code=503)
                 if not auth_is_bypassed() and not current_user(request):

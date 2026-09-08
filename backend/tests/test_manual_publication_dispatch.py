@@ -33,7 +33,7 @@ def _db(path=None):
     return sessionmaker(bind=engine, expire_on_commit=False), engine
 
 
-def _ready_publication(db, *, scopes=None, scheduled_for=None, fingerprint="p"):
+def _ready_publication(db, *, scopes=None, scheduled_for=None, fingerprint="p", dispatch_provider="pinterest_direct"):
     now = datetime.now(timezone.utc)
     template = CreativeTemplate(id=f"template-{fingerprint}", key="product_classification", version=1, name="Template")
     source = ProductImage(id=f"source-{fingerprint}", product_id=f"product-{fingerprint}", source_url="https://cdn.shopify.com/source.jpg", width=1000, height=1500)
@@ -90,7 +90,28 @@ def _ready_publication(db, *, scopes=None, scheduled_for=None, fingerprint="p"):
         status=PublicationStatus.SCHEDULED,
         scheduled_for=scheduled_for or (now - timedelta(minutes=1)),
     )
-    db.add_all([template, source, creative, approval, connection, board, publication])
+    if dispatch_provider == "buffer":
+        from app.models.domain import Board, PinConcept, PinDraft, ContentAngle
+        local = Board(id=f"local-{fingerprint}", store_id="store", name="Fragrance", slug=fingerprint,
+                      active=True, pinterest_board_id=board.external_board_id)
+        angle = ContentAngle(id=f"angle-{fingerprint}", key=f"angle-{fingerprint}", name="Angle")
+        concept = PinConcept(id=f"concept-{fingerprint}", store_id="store", product_id=source.product_id,
+                             content_angle_id=angle.id, board_id=local.id, fingerprint=f"concept-{fingerprint}")
+        draft = PinDraft(id=creative.draft_id, concept_id=concept.id, title=publication.title_snapshot,
+                         description=publication.description_snapshot, alt_text=publication.alt_text_snapshot,
+                         destination_url=publication.destination_url, utm_url=publication.utm_url,
+                         text_fingerprint="t" * 64)
+        creative.render_status = "RENDERED"
+        creative.sha256 = "a" * 64
+        creative.rendered_url = f"https://cdn.shopify.com/api/pins/public-creatives/{creative.id}/{creative.sha256}.png"
+        publication.media_url_snapshot = creative.rendered_url
+        publication.board_id = local.id
+        publication.pinterest_connection_id = None
+        publication.pinterest_board_record_id = None
+        db.add_all([local, angle, concept, draft])
+    else:
+        db.add_all([connection, board])
+    db.add_all([template, source, creative, approval, publication])
     db.commit()
     return publication
 

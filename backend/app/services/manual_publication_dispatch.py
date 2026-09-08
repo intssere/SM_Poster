@@ -188,6 +188,7 @@ def validate_post_claim(
     attempt: PublicationAttempt,
     *,
     now: datetime | None = None,
+    dispatch_provider: str = "pinterest_direct",
 ) -> dict[str, Any]:
     if authorization.status != "CONSUMED" or authorization.consumed_at is None:
         return {"valid": False, "status": "AUTHORIZATION_NOT_CONSUMED"}
@@ -209,6 +210,7 @@ def validate_post_claim(
         authorization,
         now=now or datetime.now(timezone.utc),
         expected_publication_state=PublicationStatus.PUBLISHING,
+        dispatch_provider=dispatch_provider,
     )
     if not result["valid"]:
         return result

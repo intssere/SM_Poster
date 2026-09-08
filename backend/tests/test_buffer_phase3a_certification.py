@@ -1,3 +1,4 @@
+from app.models.domain import Board
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -51,7 +52,7 @@ def settings(**overrides):
 def case():
     SessionLocal, engine = _db()
     with SessionLocal() as db:
-        publication = _ready_publication(db, scopes=["user_accounts:read", "boards:read", "pins:read"])
+        publication = _ready_publication(db, dispatch_provider="buffer", scopes=["user_accounts:read", "boards:read", "pins:read"])
         yield db, publication
     engine.dispose()
 
@@ -110,8 +111,8 @@ def test_task39_require_due_default_remains_unchanged(case):
     db, publication = case
     publication.scheduled_for = NOW + timedelta(hours=1)
     db.commit()
-    assert manual_structural_readiness(db, publication, now=NOW)["status"] == "NOT_DUE"
-    assert manual_structural_readiness(db, publication, now=NOW, require_due=False)["ready"] is True
+    assert manual_structural_readiness(db, publication, dispatch_provider="buffer", now=NOW)["status"] == "NOT_DUE"
+    assert manual_structural_readiness(db, publication, dispatch_provider="buffer", now=NOW, require_due=False)["ready"] is True
 
 
 def test_certification_performs_zero_http_gateway_or_database_mutation(case, monkeypatch):
@@ -149,7 +150,7 @@ def test_certification_no_autoflush_preserves_unrelated_dirty_object():
     db = SessionLocal()
     audit = SessionLocal()
     try:
-        publication = _ready_publication(db, scopes=["user_accounts:read", "boards:read", "pins:read"])
+        publication = _ready_publication(db, dispatch_provider="buffer", scopes=["user_accounts:read", "boards:read", "pins:read"])
         source = db.get(ProductImage, publication.source_image_id)
         source.alt_text = "dirty unrelated pending change"
         flushes = []
@@ -225,9 +226,9 @@ def test_static_certification_blocks_identity_and_destination_drift(case, mutati
     elif mutation == "missing_source":
         db.delete(db.get(ProductImage, publication.source_image_id))
     elif mutation == "board_external":
-        db.get(PinterestBoard, publication.pinterest_board_record_id).external_board_id = "other-board"
+        db.get(Board, publication.board_id).pinterest_board_id = "other-board"
     elif mutation == "connection_status":
-        db.get(PinterestConnection, publication.pinterest_connection_id).status = "DISCONNECTED"
+        db.get(Board, publication.board_id).active = False
     elif mutation == "incomplete_snapshot":
         publication.title_snapshot = None
     db.commit()
@@ -343,7 +344,7 @@ def test_reconciliation_history_blocks_static_certification(case):
 @pytest.mark.parametrize("status", ["ACTIVE", "EXPIRED", "REVOKED", "CONSUMED"])
 def test_authorization_status_is_safe_and_nonblocking(case, status):
     db, publication = case
-    auth = create_authorization(db, publication, actor="operator")
+    auth = create_authorization(db, publication, dispatch_provider="buffer", actor="operator")
     if status == "EXPIRED":
         auth.expires_at = NOW - timedelta(minutes=1)
     elif status != "ACTIVE":

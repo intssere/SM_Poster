@@ -71,7 +71,7 @@ async def dispatch_buffer(db, publication, *, now=None, settings=None, gateway=N
     now = normalize_persisted_utc(now or datetime.now(timezone.utc))
     with db.no_autoflush:
         authorization = active_authorization(db, publication.id)
-        validated = validate_authorization(db, publication, authorization, now=now)
+        validated = validate_authorization(db, publication, authorization, now=now, dispatch_provider="buffer")
         ok, reason = validate_pilot(db, publication, settings)
         readiness = evaluate_buffer_pilot_execution_readiness(
             db, publication.id, evidence=execution_evidence, settings=settings, now=now,
@@ -98,7 +98,7 @@ async def dispatch_buffer(db, publication, *, now=None, settings=None, gateway=N
         db.refresh(publication)
         db.refresh(authorization)
         db.refresh(attempt)
-        if not validate_post_claim(db, publication, authorization, attempt, now=now)["valid"]:
+        if not validate_post_claim(db, publication, authorization, attempt, now=now, dispatch_provider="buffer")["valid"]:
             raise ManualDispatchError("BUFFER_POSTCLAIM_VALIDATION_FAILED")
         ok, reason = validate_pilot(db, publication, settings, attempt=attempt)
         if not ok:
@@ -109,7 +109,7 @@ async def dispatch_buffer(db, publication, *, now=None, settings=None, gateway=N
         db.refresh(publication)
         db.refresh(authorization)
         db.refresh(attempt)
-        if not validate_post_claim(db, publication, authorization, attempt, now=now)["valid"]:
+        if not validate_post_claim(db, publication, authorization, attempt, now=now, dispatch_provider="buffer")["valid"]:
             raise ManualDispatchError("BUFFER_POSTCLAIM_VALIDATION_FAILED")
         ok, reason = validate_pilot(db, publication, settings, attempt=attempt)
         if not ok:

@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
-from app.models.domain import CreativeTemplate, PinCreative, PinPublication, PinterestBoard, ProductImage
+from app.models.domain import Board, PinDraft, PinConcept, CreativeTemplate, PinCreative, PinPublication, PinterestBoard, ProductImage
+from app.services.public_creative_media import public_creative_url_matches
 
 PINTEREST_QUALITY_V1 = "PINTEREST_QUALITY_V1"
 
@@ -201,7 +202,7 @@ def _url_checks(label: str, value: str | None, *, canonical_destination: bool, r
     return checks
 
 
-def _creative_checks(db: Any, publication: PinPublication) -> list[QualityCheck]:
+def _creative_checks(db: Any, publication: PinPublication, *, dispatch_provider="pinterest_direct", settings=None) -> list[QualityCheck]:
     creative = db.get(PinCreative, publication.creative_id) if publication.creative_id else None
     template = db.get(CreativeTemplate, publication.template_id) if publication.template_id else None
     source_image = db.get(ProductImage, publication.source_image_id) if publication.source_image_id else None
@@ -221,9 +222,9 @@ def _creative_checks(db: Any, publication: PinPublication) -> list[QualityCheck]
             _check("SOURCE_IMAGE_MATCH", "FAIL", creative.source_image_id == publication.source_image_id, "creative source image must match immutable snapshot"),
             _check("CREATIVE_FINGERPRINT_MATCH", "FAIL", creative.creative_fingerprint == publication.creative_fingerprint, "creative fingerprint must match immutable snapshot"),
             _check("CREATIVE_MEDIA_URL_PRESENT", "FAIL", bool((creative.rendered_url or "").strip()), "creative must have a rendered media URL"),
-            _check("CREATIVE_MEDIA_URL_MATCH", "FAIL", creative.rendered_url == publication.media_url_snapshot, "creative rendered URL must match immutable publication media snapshot"),
+            _check("CREATIVE_MEDIA_URL_MATCH", "FAIL", creative.rendered_url == publication.media_url_snapshot or (dispatch_provider == "buffer" and public_creative_url_matches(creative, publication.media_url_snapshot, settings=settings)), "creative rendered URL must match immutable publication media snapshot"),
             _check("CREATIVE_TEMPLATE_ID_MATCH", "FAIL", creative.template_id == publication.template_id, "creative template id must match immutable snapshot"),
-            _check("CREATIVE_RENDER_COMPLETE", "FAIL", creative.render_status == "COMPLETE", "creative render must be complete before quality pass"),
+            _check("CREATIVE_RENDER_COMPLETE", "FAIL", creative.render_status == ("RENDERED" if dispatch_provider == "buffer" else "COMPLETE"), "creative render must be complete before quality pass"),
             _check("CREATIVE_DIMENSIONS_VALID", "FAIL", bool((creative.width or 0) > 0 and (creative.height or 0) > 0), "creative dimensions must be known and positive", width=creative.width, height=creative.height),
         ])
     if creative is not None and (creative.width or 0) > 0 and (creative.height or 0) > 0:
@@ -232,7 +233,13 @@ def _creative_checks(db: Any, publication: PinPublication) -> list[QualityCheck]
     return checks
 
 
-def _board_relevance_checks(db: Any, publication: PinPublication) -> list[QualityCheck]:
+def _board_relevance_checks(db: Any, publication: PinPublication, *, dispatch_provider="pinterest_direct") -> list[QualityCheck]:
+    if dispatch_provider == "buffer":
+        board = db.get(Board, publication.board_id) if publication.board_id else None
+        draft = db.get(PinDraft, publication.draft_id)
+        concept = db.get(PinConcept, draft.concept_id) if draft else None
+        valid = bool(board and board.active and concept and concept.board_id == board.id and concept.store_id == board.store_id)
+        return [_check("BUFFER_BOARD_SELECTION_MATCH", "FAIL", valid, "board must match the persisted proposal and store")]
     board = db.get(PinterestBoard, publication.pinterest_board_record_id) if publication.pinterest_board_record_id else None
     if not board:
         return [_check("BOARD_RELEVANCE_UNKNOWN", "WARNING", False, "board relevance has no persisted Pinterest board context")]
@@ -245,8 +252,10 @@ def _board_relevance_checks(db: Any, publication: PinPublication) -> list[Qualit
     return [_check("BOARD_RELEVANCE_PASS" if passed else "BOARD_ROUTING_LABEL_MISMATCH", "WARNING", passed, "board routing label should align with publication copy", routing_label=board.routing_label)]
 
 
-def validate_publication_quality(db: Any, publication: PinPublication) -> dict[str, Any]:
+def validate_publication_quality(db: Any, publication: PinPublication, *, dispatch_provider="pinterest_direct", settings=None) -> dict[str, Any]:
     checks: list[QualityCheck] = []
+    if dispatch_provider not in {"pinterest_direct", "buffer"}:
+        return {"status": "FAIL", "policy_version": PINTEREST_QUALITY_V1, "checks": [_check("INVALID_DISPATCH_PROVIDER", "FAIL", False, "invalid provider").as_dict()]}
     checks.extend(_text_checks("TITLE", publication.title_snapshot, PIN_TITLE_MAX))
     checks.extend(_text_checks("DESCRIPTION", publication.description_snapshot, PIN_DESCRIPTION_MAX))
     checks.extend(_text_checks("ALT", publication.alt_text_snapshot, PIN_ALT_TEXT_MAX))
@@ -268,8 +277,8 @@ def validate_publication_quality(db: Any, publication: PinPublication) -> dict[s
         _check("PUBLICATION_CREATIVE_FINGERPRINT_PRESENT", "FAIL", bool(publication.creative_fingerprint), "publication must snapshot creative fingerprint"),
         _check("PUBLICATION_TEMPLATE_PRESENT", "FAIL", bool(publication.template_id and publication.template_key and publication.template_version is not None), "publication must snapshot complete template identity"),
     ])
-    checks.extend(_creative_checks(db, publication))
-    checks.extend(_board_relevance_checks(db, publication))
+    checks.extend(_creative_checks(db, publication, dispatch_provider=dispatch_provider, settings=settings))
+    checks.extend(_board_relevance_checks(db, publication, dispatch_provider=dispatch_provider))
 
     failed = any((not check.passed) and check.severity == "FAIL" for check in checks)
     warned = any((not check.passed) and check.severity == "WARNING" for check in checks)

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.models.domain import (
     PinApproval,
+    Board, PinDraft, PinConcept,
     PinCreative,
     AuditLog,
     PinPublication,
@@ -30,6 +31,7 @@ from app.services.pinterest_publication_quality import (
 )
 from app.services.pinterest_publisher import media_publishable, normalize_persisted_utc
 from app.services.publication_duplicates import SAFE_TO_CONTINUE, evaluate_publication_duplicates
+from app.services.public_creative_media import public_creative_url_matches
 
 AUTHORIZATION_TTL = timedelta(minutes=15)
 CONFIRMATION_TEXT_VERSION = "CONFIRM_DISPATCH_V1"
@@ -132,13 +134,13 @@ def revoke_authorization(
     return authorization
 
 
-def _base_snapshot_complete(publication: PinPublication) -> bool:
+def _base_snapshot_complete(publication: PinPublication, dispatch_provider="pinterest_direct") -> bool:
     return all(
         (
             publication.publication_fingerprint,
             publication.text_fingerprint,
-            publication.pinterest_connection_id,
-            publication.pinterest_board_record_id,
+            publication.board_id if dispatch_provider == "buffer" else publication.pinterest_connection_id,
+            publication.board_id if dispatch_provider == "buffer" else publication.pinterest_board_record_id,
             publication.pinterest_board_id_snapshot,
             publication.title_snapshot,
             publication.description_snapshot,
@@ -163,9 +165,12 @@ def manual_structural_readiness(
     now: datetime | None = None,
     expected_publication_state: PublicationStatus = PublicationStatus.SCHEDULED,
     require_due: bool = True,
+    dispatch_provider: str = "pinterest_direct",
 ) -> dict[str, Any]:
     """Pure manual-readiness checks. Does not inspect/modify authorization."""
     now = normalize_persisted_utc(now or _now())
+    if dispatch_provider not in {"pinterest_direct", "buffer"}:
+        return {"status": "INVALID_DISPATCH_PROVIDER", "ready": False}
     scheduled_for = normalize_persisted_utc(publication.scheduled_for)
     if _status(publication.status) != expected_publication_state.value:
         return {"status": "INVALID_PUBLICATION_STATE", "ready": False}
@@ -173,17 +178,27 @@ def manual_structural_readiness(
         return {"status": "NOT_DUE", "ready": False}
     if require_due and scheduled_for > now:
         return {"status": "NOT_DUE", "ready": False}
-    if not _base_snapshot_complete(publication):
+    if not _base_snapshot_complete(publication, dispatch_provider):
         return {"status": "INCOMPLETE_SNAPSHOT", "ready": False}
 
-    connection = db.get(PinterestConnection, publication.pinterest_connection_id)
-    if not connection or connection.status != "CONNECTED":
-        return {"status": "DESTINATION_INVALID", "ready": False}
-    board = db.get(PinterestBoard, publication.pinterest_board_record_id)
-    if not board or board.connection_id != connection.id or not board.is_active or not board.is_eligible:
-        return {"status": "DESTINATION_INVALID", "ready": False}
-    if board.external_board_id != publication.pinterest_board_id_snapshot:
-        return {"status": "DESTINATION_INVALID", "ready": False}
+    if dispatch_provider == "buffer":
+        board = db.get(Board, publication.board_id)
+        draft = db.get(PinDraft, publication.draft_id)
+        concept = db.get(PinConcept, draft.concept_id) if draft else None
+        if (publication.pinterest_connection_id or publication.pinterest_board_record_id
+                or not board or not board.active or not board.pinterest_board_id
+                or board.pinterest_board_id != publication.pinterest_board_id_snapshot
+                or not concept or concept.board_id != publication.board_id or concept.store_id != board.store_id):
+            return {"status": "DESTINATION_INVALID", "ready": False}
+    else:
+        connection = db.get(PinterestConnection, publication.pinterest_connection_id)
+        if not connection or connection.status != "CONNECTED":
+            return {"status": "DESTINATION_INVALID", "ready": False}
+        board = db.get(PinterestBoard, publication.pinterest_board_record_id)
+        if not board or board.connection_id != connection.id or not board.is_active or not board.is_eligible:
+            return {"status": "DESTINATION_INVALID", "ready": False}
+        if board.external_board_id != publication.pinterest_board_id_snapshot:
+            return {"status": "DESTINATION_INVALID", "ready": False}
 
     approval = db.get(PinApproval, publication.approval_id) if publication.approval_id else None
     if (
@@ -201,12 +216,16 @@ def manual_structural_readiness(
         or creative.draft_id != publication.draft_id
         or creative.source_image_id != publication.source_image_id
         or creative.creative_fingerprint != publication.creative_fingerprint
-        or creative.rendered_url != publication.media_url_snapshot
+        or (creative.rendered_url != publication.media_url_snapshot and not
+            (dispatch_provider == "buffer" and public_creative_url_matches(creative, publication.media_url_snapshot)))
     ):
         return {"status": "CREATIVE_INVALID", "ready": False}
     if not media_publishable(publication.media_url_snapshot):
         return {"status": "MEDIA_NOT_PUBLISHABLE", "ready": False}
-    return {"status": "READY_FOR_MANUAL_DISPATCH", "ready": True}
+    result = {"status": "READY_FOR_MANUAL_DISPATCH", "ready": True}
+    if dispatch_provider == "buffer":
+        result["dispatch_provider"] = "buffer"
+    return result
 
 
 def provider_readiness(db: Session, publication: PinPublication) -> dict[str, Any]:
@@ -262,6 +281,7 @@ def create_authorization(
     *,
     actor: str,
     now: datetime | None = None,
+    dispatch_provider: str = "pinterest_direct",
 ) -> PublicationDispatchAuthorization:
     now = normalize_persisted_utc(now or _now())
     if not actor:
@@ -269,13 +289,13 @@ def create_authorization(
     expire_stale_active_authorizations(db, publication.id, now=now)
     db.flush()
 
-    quality = validate_publication_quality(db, publication)
+    quality = validate_publication_quality(db, publication, dispatch_provider=dispatch_provider)
     if quality["status"] != "PASS":
         raise DispatchAuthorizationError("QUALITY_WARNING" if quality["status"] == "WARNING" else "QUALITY_FAILED")
     duplicate = evaluate_publication_duplicates(db, publication)
     if duplicate["status"] != SAFE_TO_CONTINUE:
         raise DispatchAuthorizationError(duplicate["status"])
-    manual = manual_structural_readiness(db, publication, now=now)
+    manual = manual_structural_readiness(db, publication, now=now, dispatch_provider=dispatch_provider)
     if not manual["ready"]:
         raise DispatchAuthorizationError(manual["status"])
     if active_authorization(db, publication.id):
@@ -313,13 +333,14 @@ def validate_authorization_snapshot_binding(
     *,
     now: datetime | None = None,
     expected_publication_state: PublicationStatus = PublicationStatus.SCHEDULED,
+    dispatch_provider: str = "pinterest_direct",
 ) -> dict[str, Any]:
     now = normalize_persisted_utc(now or _now())
     if authorization.publication_fingerprint != publication.publication_fingerprint:
         return {"valid": False, "status": "AUTHORIZATION_MISMATCH"}
-    quality = validate_publication_quality(db, publication)
+    quality = validate_publication_quality(db, publication, dispatch_provider=dispatch_provider)
     duplicate = evaluate_publication_duplicates(db, publication)
-    manual = manual_structural_readiness(db, publication, now=now, expected_publication_state=expected_publication_state)
+    manual = manual_structural_readiness(db, publication, now=now, expected_publication_state=expected_publication_state, dispatch_provider=dispatch_provider)
     if authorization.quality_policy_version != PINTEREST_QUALITY_V1:
         return {"valid": False, "status": "AUTHORIZATION_MISMATCH"}
     if quality != authorization.quality_snapshot:
@@ -337,6 +358,7 @@ def validate_authorization(
     authorization: PublicationDispatchAuthorization | None,
     *,
     now: datetime | None = None,
+    dispatch_provider: str = "pinterest_direct",
 ) -> dict[str, Any]:
     now = normalize_persisted_utc(now or _now())
     if not authorization:
@@ -348,7 +370,7 @@ def validate_authorization(
     expires_at = normalize_persisted_utc(authorization.expires_at)
     if not expires_at or expires_at <= now:
         return {"valid": False, "status": "AUTHORIZATION_EXPIRED"}
-    result = validate_authorization_snapshot_binding(db, publication, authorization, now=now)
+    result = validate_authorization_snapshot_binding(db, publication, authorization, now=now, dispatch_provider=dispatch_provider)
     if not result["valid"]:
         return result
     result["status"] = "ACTIVE"

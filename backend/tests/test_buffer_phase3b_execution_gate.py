@@ -1,3 +1,4 @@
+from app.models.domain import Board
 import json
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
@@ -82,8 +83,7 @@ def evidence(publication, settings_value=None, **overrides):
 def case(tmp_path):
     SessionLocal, engine = _db(tmp_path / "phase3b-case.db")
     with SessionLocal() as db:
-        publication = _ready_publication(
-            db,
+        publication = _ready_publication(db, dispatch_provider="buffer",
             scopes=["user_accounts:read", "boards:read", "pins:read"],
             scheduled_for=NOW - timedelta(minutes=1),
         )
@@ -121,13 +121,12 @@ def _fresh_persisted_case(tmp_path, *, fingerprint="fresh"):
     SessionLocal, engine = _db(tmp_path / f"{fingerprint}.db")
     setup = SessionLocal()
     try:
-        publication = _ready_publication(
-            setup,
+        publication = _ready_publication(setup, dispatch_provider="buffer",
             scopes=["user_accounts:read", "boards:read", "pins:read"],
             scheduled_for=NOW - timedelta(minutes=1),
             fingerprint=fingerprint,
         )
-        authorization = create_authorization(setup, publication, actor="operator", now=NOW)
+        authorization = create_authorization(setup, publication, dispatch_provider="buffer", actor="operator", now=NOW)
         live = live_settings(publication)
         ev = evidence(
             publication,
@@ -136,7 +135,7 @@ def _fresh_persisted_case(tmp_path, *, fingerprint="fresh"):
             provider_destination_live_verified=True,
             media_live_fetch_verified=True,
         )
-        return SessionLocal, engine, publication.id, authorization.id, publication.pinterest_board_record_id, live, ev
+        return SessionLocal, engine, publication.id, authorization.id, publication.board_id, live, ev
     finally:
         setup.close()
 
@@ -185,7 +184,7 @@ def test_current_false_flags_keep_valid_static_candidate_locked(case):
 
 def test_no_evidence_is_locked_after_flags_and_authorization_are_valid(case):
     db, publication = case
-    create_authorization(db, publication, actor="operator", now=NOW)
+    create_authorization(db, publication, dispatch_provider="buffer", actor="operator", now=NOW)
     result = evaluate(db, publication, settings_value=live_settings(publication))
     assert_locked(result, "EXECUTION_EVIDENCE_REQUIRED")
     assert result["static_status"] == "STATIC_CANDIDATE_READY"
@@ -215,7 +214,7 @@ def test_evidence_dataclass_is_frozen_and_defaults_false(case):
 def test_evidence_identity_mismatch_blocks(case, field, value):
     db, publication = case
     live = live_settings(publication)
-    create_authorization(db, publication, actor="operator", now=NOW)
+    create_authorization(db, publication, dispatch_provider="buffer", actor="operator", now=NOW)
     result = evaluate(db, publication, evidence(publication, live, **{field: value}), live)
     assert_locked(result, "EXECUTION_EVIDENCE_MISMATCH")
 
@@ -224,7 +223,7 @@ def test_evidence_identity_mismatch_blocks(case, field, value):
 def test_missing_future_or_stale_evidence_timestamp_blocks(case, observed_at):
     db, publication = case
     live = live_settings(publication)
-    create_authorization(db, publication, actor="operator", now=NOW)
+    create_authorization(db, publication, dispatch_provider="buffer", actor="operator", now=NOW)
     result = evaluate(db, publication, evidence(publication, live, observed_at=observed_at), live)
     assert_locked(result, "EXECUTION_EVIDENCE_STALE")
 
@@ -233,7 +232,7 @@ def test_missing_future_or_stale_evidence_timestamp_blocks(case, observed_at):
 def test_malformed_evidence_timestamp_is_bounded_invalid(case, observed_at):
     db, publication = case
     live = live_settings(publication)
-    create_authorization(db, publication, actor="operator", now=NOW)
+    create_authorization(db, publication, dispatch_provider="buffer", actor="operator", now=NOW)
     result = evaluate(db, publication, evidence(publication, live, observed_at=observed_at), live)
     assert_locked(result, "EXECUTION_EVIDENCE_INVALID")
     assert result["evidence"]["observed_at"] == "<invalid>"
@@ -243,7 +242,7 @@ def test_malformed_evidence_timestamp_is_bounded_invalid(case, observed_at):
 def test_fresh_evidence_reaches_external_boolean_gates(case):
     db, publication = case
     live = live_settings(publication)
-    create_authorization(db, publication, actor="operator", now=NOW)
+    create_authorization(db, publication, dispatch_provider="buffer", actor="operator", now=NOW)
     result = evaluate(db, publication, evidence(publication, live), live)
     assert_locked(result, "WRITE_CREDENTIAL_NOT_AUTHORIZED")
 
@@ -251,7 +250,7 @@ def test_fresh_evidence_reaches_external_boolean_gates(case):
 def test_buffer_api_key_presence_never_implies_write_authorization(case):
     db, publication = case
     live = live_settings(publication, buffer_api_key=SECRET)
-    create_authorization(db, publication, actor="operator", now=NOW)
+    create_authorization(db, publication, dispatch_provider="buffer", actor="operator", now=NOW)
     result = evaluate(db, publication, evidence(publication, live), live)
     assert_locked(result, "WRITE_CREDENTIAL_NOT_AUTHORIZED")
     assert_secret_absent(result)
@@ -271,7 +270,7 @@ def test_buffer_api_key_presence_never_implies_write_authorization(case):
 def test_external_evidence_booleans_are_independent(case, overrides, reason):
     db, publication = case
     live = live_settings(publication)
-    create_authorization(db, publication, actor="operator", now=NOW)
+    create_authorization(db, publication, dispatch_provider="buffer", actor="operator", now=NOW)
     result = evaluate(db, publication, evidence(publication, live, **overrides), live)
     assert_locked(result, reason)
 
@@ -286,7 +285,7 @@ def test_external_evidence_booleans_are_independent(case, overrides, reason):
 )
 def test_each_protected_gate_false_blocks(case, flag, reason):
     db, publication = case
-    create_authorization(db, publication, actor="operator", now=NOW)
+    create_authorization(db, publication, dispatch_provider="buffer", actor="operator", now=NOW)
     live = live_settings(publication, **{flag: False})
     result = evaluate(db, publication, evidence(publication, live), live)
     assert_locked(result, reason)
@@ -294,7 +293,7 @@ def test_each_protected_gate_false_blocks(case, flag, reason):
 
 def test_buffer_pilot_binding_mismatch_blocks(case):
     db, publication = case
-    create_authorization(db, publication, actor="operator", now=NOW)
+    create_authorization(db, publication, dispatch_provider="buffer", actor="operator", now=NOW)
     live = live_settings(publication, buffer_single_pin_pilot_request_fingerprint="wrong")
     result = evaluate(db, publication, evidence(publication, live), live)
     assert_locked(result, "BUFFER_PILOT_BINDING_MISMATCH")
@@ -331,7 +330,7 @@ def test_due_candidate_passes_due_check_and_waits_for_authorization(case):
 def test_authorization_states_are_bounded(case, mutation, reason):
     db, publication = case
     if mutation != "missing":
-        auth = create_authorization(db, publication, actor="operator", now=NOW)
+        auth = create_authorization(db, publication, dispatch_provider="buffer", actor="operator", now=NOW)
         if mutation == "expired-time":
             auth.expires_at = NOW - timedelta(seconds=1)
         elif mutation == "expired-status":
@@ -404,7 +403,7 @@ def test_dirty_unrelated_orm_object_does_not_autoflush_or_persist():
     db = SessionLocal()
     audit = SessionLocal()
     try:
-        publication = _ready_publication(db, scopes=["user_accounts:read", "boards:read", "pins:read"])
+        publication = _ready_publication(db, dispatch_provider="buffer", scopes=["user_accounts:read", "boards:read", "pins:read"])
         source = db.get(ProductImage, publication.source_image_id)
         source.alt_text = "dirty pending change"
         live = live_settings(publication)
@@ -427,12 +426,11 @@ def test_sqlite_memory_active_transaction_fails_closed_without_rollback():
     db = SessionLocal()
     audit = SessionLocal()
     try:
-        publication = _ready_publication(
-            db,
+        publication = _ready_publication(db, dispatch_provider="buffer",
             scopes=["user_accounts:read", "boards:read", "pins:read"],
             scheduled_for=NOW - timedelta(minutes=1),
         )
-        create_authorization(db, publication, actor="operator", now=NOW)
+        create_authorization(db, publication, dispatch_provider="buffer", actor="operator", now=NOW)
         source = db.get(ProductImage, publication.source_image_id)
         source.alt_text = "flushed but uncommitted"
         db.flush()
@@ -465,13 +463,12 @@ def test_sqlite_memory_active_transaction_fails_closed_without_rollback():
 def test_connection_bound_session_fails_closed_without_taking_transaction_control(tmp_path):
     SessionLocal, engine = _db(tmp_path / "connection-bound.db")
     with SessionLocal() as setup:
-        publication = _ready_publication(
-            setup,
+        publication = _ready_publication(setup, dispatch_provider="buffer",
             scopes=["user_accounts:read", "boards:read", "pins:read"],
             scheduled_for=NOW - timedelta(minutes=1),
             fingerprint="connection-bound",
         )
-        create_authorization(setup, publication, actor="operator", now=NOW)
+        create_authorization(setup, publication, dispatch_provider="buffer", actor="operator", now=NOW)
         publication_id = publication.id
         source_id = publication.source_image_id
         live = live_settings(publication)
@@ -517,14 +514,13 @@ def test_connection_bound_session_fails_closed_without_taking_transaction_contro
 def test_evaluator_never_constructs_gateway_http_or_mutates(tmp_path, monkeypatch):
     SessionLocal, engine = _db(tmp_path / "no-provider.db")
     db = SessionLocal()
-    publication = _ready_publication(
-        db,
+    publication = _ready_publication(db, dispatch_provider="buffer",
         scopes=["user_accounts:read", "boards:read", "pins:read"],
         scheduled_for=NOW - timedelta(minutes=1),
         fingerprint="no-provider",
     )
     live = live_settings(publication)
-    create_authorization(db, publication, actor="operator", now=NOW)
+    create_authorization(db, publication, dispatch_provider="buffer", actor="operator", now=NOW)
     calls = []
 
     def fail(*args, **kwargs):
@@ -604,8 +600,8 @@ def test_evaluation_fresh_reads_destination_eligibility_drift(tmp_path):
     session_a = SessionLocal()
     session_b = SessionLocal()
     try:
-        cached_board = session_a.get(PinterestBoard, board_id)
-        assert cached_board.is_eligible is True
+        cached_board = session_a.get(Board, board_id)
+        assert cached_board.active is True
         ready = evaluate_buffer_pilot_execution_readiness(
             session_a,
             publication_id,
@@ -615,7 +611,7 @@ def test_evaluation_fresh_reads_destination_eligibility_drift(tmp_path):
         )
         assert ready["execution_status"] == FINAL_EXECUTION_READY
 
-        session_b.get(PinterestBoard, board_id).is_eligible = False
+        session_b.get(Board, board_id).active = False
         session_b.commit()
 
         result = evaluate_buffer_pilot_execution_readiness(
@@ -675,7 +671,7 @@ def test_evaluation_fresh_reads_authorization_status_drift(tmp_path):
 def test_hypothetical_all_valid_evidence_produces_final_execution_ready(case):
     db, publication = case
     live = live_settings(publication)
-    create_authorization(db, publication, actor="operator", now=NOW)
+    create_authorization(db, publication, dispatch_provider="buffer", actor="operator", now=NOW)
     result = evaluate(
         db,
         publication,
