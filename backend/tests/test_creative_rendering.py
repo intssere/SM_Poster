@@ -1,7 +1,7 @@
 """Focused, network-free coverage for local creative rendering."""
 from io import BytesIO
 
-from PIL import Image
+from PIL import Image, ImageDraw
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
@@ -12,7 +12,10 @@ from app.models.domain import (
 )
 from app.api.routes import proposals as proposal_routes
 from app.services.creative_rendering import (
-    CreativeRenderService, CreativeStorage, edge_connected_near_white_cutout, render_png,
+    DESIGN_TOKEN_VERSION, FRAGRANCE_FOOTER_TEXT, FRAGRANCE_MASTHEAD_TEXT,
+    GENERIC_FOOTER_TEXT, GENERIC_MASTHEAD_TEXT, GIFT_SET_PRODUCT_STAGE_BOX,
+    PRODUCT_STAGE_BOX, TEXT_PANEL_BOX, CreativeRenderService, CreativeStorage,
+    edge_connected_near_white_cutout, render_png,
 )
 from app.services.fingerprints import creative_fingerprint
 from app.services.pin_proposals import PinProposalService
@@ -68,12 +71,75 @@ def test_exact_canvas_png_determinism_fingerprint_and_all_templates(tmp_path):
         assert creative.render_spec["image"]["cutout"]["mask_method"] == "edge_connected_near_white_v1"
         assert creative.render_spec["image"]["cutout"]["independent_opaque_background_evidence"] is False
         assert creative.render_spec["image"]["cutout"]["safety_rejection_reason"] == "opaque_background_not_independently_verified"
-        assert creative.render_spec["design_token_version"] == 1
+        assert creative.render_spec["design_token_version"] == DESIGN_TOKEN_VERSION
+        assert creative.render_spec["product_category"] == "fragrance"
     # Rendering has never altered catalog provenance/checksum.
     assert image.source_sha256 == original_checksum
     spec = {"a": 1}
     assert creative_fingerprint(source_image_sha256="a" * 64, template_key="x", template_version=1, text_hash="b" * 64, layout_parameters=spec) == creative_fingerprint(source_image_sha256="a" * 64, template_key="x", template_version=1, text_hash="b" * 64, layout_parameters=spec)
     db.close()
+
+
+def test_polished_geometry_and_design_version():
+    assert DESIGN_TOKEN_VERSION == 2
+    assert PRODUCT_STAGE_BOX == (150, 180, 850, 840)
+    assert GIFT_SET_PRODUCT_STAGE_BOX == (150, 210, 850, 840)
+    assert TEXT_PANEL_BOX == (50, 1060, 950, 1450)
+    assert (PRODUCT_STAGE_BOX[2] - PRODUCT_STAGE_BOX[0]) < 820
+    assert (PRODUCT_STAGE_BOX[3] - PRODUCT_STAGE_BOX[1]) < 790
+    assert (TEXT_PANEL_BOX[3] - TEXT_PANEL_BOX[1]) < 450
+
+
+def test_fragrance_and_generic_branding_are_category_gated(monkeypatch):
+    drawn_text: list[str] = []
+    original_text = ImageDraw.ImageDraw.text
+
+    def capture_text(self, xy, text, *args, **kwargs):
+        drawn_text.append(text)
+        return original_text(self, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture_text)
+    source = Image.new("RGBA", (240, 120), (30, 80, 120, 255))
+    base = {
+        "template_key": "luxury_product_spotlight",
+        "headline": "A refined product feature",
+        "supporting_text": "Authentic catalog selection",
+    }
+
+    render_png({**base, "product_category": "fragrance"}, source)
+    assert FRAGRANCE_MASTHEAD_TEXT in drawn_text
+    assert FRAGRANCE_FOOTER_TEXT in drawn_text
+    assert GENERIC_MASTHEAD_TEXT not in drawn_text
+    assert GENERIC_FOOTER_TEXT not in drawn_text
+
+    drawn_text.clear()
+    render_png({**base, "product_category": "beauty"}, source)
+    assert GENERIC_MASTHEAD_TEXT in drawn_text
+    assert GENERIC_FOOTER_TEXT in drawn_text
+    assert FRAGRANCE_MASTHEAD_TEXT not in drawn_text
+    assert FRAGRANCE_FOOTER_TEXT not in drawn_text
+
+    drawn_text.clear()
+    render_png(base, source)
+    assert GENERIC_MASTHEAD_TEXT in drawn_text
+    assert GENERIC_FOOTER_TEXT in drawn_text
+    assert FRAGRANCE_MASTHEAD_TEXT not in drawn_text
+    assert FRAGRANCE_FOOTER_TEXT not in drawn_text
+
+
+def test_design_version_changes_fingerprint_from_v1():
+    common = {
+        "source_image_sha256": "a" * 64,
+        "template_key": "luxury_product_spotlight",
+        "template_version": 1,
+        "text_hash": "b" * 64,
+    }
+    v1 = creative_fingerprint(**common, layout_parameters={"design_token_version": 1})
+    polished = creative_fingerprint(
+        **common,
+        layout_parameters={"design_token_version": DESIGN_TOKEN_VERSION},
+    )
+    assert polished != v1
 
 
 def test_contain_and_text_overflow_are_deterministic(tmp_path):
