@@ -60,7 +60,7 @@ async def sync_boards(db, connection: PinterestConnection, client=None):
     for _ in range(MAX_BOARD_PAGES):
         if bookmark in seen_bookmarks: raise RuntimeError("Pinterest board pagination invalid")
         if bookmark: seen_bookmarks.add(bookmark)
-        payload = await safe_get("/v5/boards", {"bookmark": bookmark} if bookmark else None)
+        payload = await safe_get("/boards", {"bookmark": bookmark} if bookmark else None)
         items, bookmark = _page(payload); boards.extend(items)
         if not bookmark: break
     else: raise RuntimeError("Pinterest board pagination limit exceeded")
@@ -94,7 +94,7 @@ async def sync_boards(db, connection: PinterestConnection, client=None):
         for _ in range(MAX_SECTION_PAGES):
             if bookmark_s in section_bookmarks: raise RuntimeError("Pinterest section pagination invalid")
             if bookmark_s: section_bookmarks.add(bookmark_s)
-            section_payload = await safe_get(f"/v5/boards/{external}/sections", {"bookmark": bookmark_s} if bookmark_s else None)
+            section_payload = await safe_get(f"/boards/{external}/sections", {"bookmark": bookmark_s} if bookmark_s else None)
             section_items, bookmark_s = _page(section_payload)
             for x in section_items:
                 if not isinstance(x, dict) or not isinstance(x.get("id"), (str, int)) or isinstance(x.get("id"), bool) or not str(x.get("id")).strip(): raise RuntimeError("Pinterest section response invalid")
