@@ -12,6 +12,7 @@ dist/
 screenshots/
 storage/
 backend/generated-creatives/
+backend/generated-ai-assets/
 /.pytest-tmp*/
 /backend/.pytest-tmp*/
 /backend/test.db

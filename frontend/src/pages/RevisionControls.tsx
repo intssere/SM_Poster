@@ -7,8 +7,15 @@ import {
   PinProposal,
   proposalVersionPreviewUrl,
   regenerateProposal,
+  rejectProposalVersion,
   selectProposalVersion,
 } from '../api/proposals'
+import {
+  canGenerateReviewCreative,
+  canRejectReviewCreative,
+  canSelectReviewCreative,
+  reviewCreativeButtonState,
+} from './reviewCreativeState'
 
 
 const TEMPLATES = [
@@ -99,6 +106,7 @@ export function RevisionControls({
   const [compareId, setCompareId] = useState<string>('original')
   const [working, setWorking] = useState<'copy' | 'creative' | 'content_variant' | 'image_background' | 'video_script' | 'storyboard' | 'select' | null>(null)
   const [message, setMessage] = useState<{ kind: 'error' | 'success'; text: string } | null>(null)
+  const [creativeProgress, setCreativeProgress] = useState(0)
 
   useEffect(() => {
     setTemplate(alternativeTemplate)
@@ -107,6 +115,19 @@ export function RevisionControls({
 
   const compared = versions.find((version) => (version.id || 'original') === compareId) || active
   const original = versions.find((version) => version.kind === 'ORIGINAL') || versions[0]
+  const comparedIsGeneratedBackground = compared?.kind === 'IMAGE_BACKGROUND'
+
+  useEffect(() => {
+    if (working !== 'image_background') {
+      setCreativeProgress(0)
+      return
+    }
+    setCreativeProgress(12)
+    const timer = window.setInterval(() => {
+      setCreativeProgress((value) => Math.min(value + 7, 86))
+    }, 420)
+    return () => window.clearInterval(timer)
+  }, [working])
 
   async function regenerate(kind: 'copy' | 'creative' | 'content_variant' | 'image_background' | 'video_script' | 'storyboard') {
     setWorking(kind)
@@ -114,9 +135,9 @@ export function RevisionControls({
     try {
       const result = await regenerateProposal(proposal.id, kind, {
         templateKey: kind === 'creative' ? template : undefined,
-        styleKey: kind === 'image_background' ? backgroundStyle : undefined,
+        styleKey: kind === 'creative' || kind === 'image_background' ? backgroundStyle : undefined,
         channel,
-        count: kind === 'creative' ? 1 : variantCount,
+         count: kind === 'image_background' || kind === 'creative' ? 1 : variantCount,
       })
       const revisions = 'variants' in result ? result.variants : [result]
       const revision = revisions[revisions.length - 1]
@@ -148,6 +169,24 @@ export function RevisionControls({
     }
   }
 
+  async function rejectVersion() {
+    if (!canRejectReviewCreative(compared, working)) return
+    setWorking('select')
+    setMessage(null)
+    try {
+      await rejectProposalVersion(proposal.id, compared.id!)
+      await onChanged()
+      setMessage({ kind: 'success', text: `Version ${compared.version} was rejected. The proposal remains unchanged; nothing was published.` })
+    } catch (error) {
+      setMessage({ kind: 'error', text: (error as Error).message })
+    } finally {
+      setWorking(null)
+    }
+  }
+
+  const generateEligible = canGenerateReviewCreative(proposal.approval_status, settings)
+  const generateState = reviewCreativeButtonState(working, versions, generateEligible, creativeProgress)
+
   return <section className={compact ? 'revision-controls compact' : 'revision-controls'}>
     <div className="revision-control-heading">
       <div><p className="eyebrow">VERSION WORKSPACE</p><strong>Active version {proposal.active_version || 1}</strong></div>
@@ -155,7 +194,7 @@ export function RevisionControls({
     </div>
     <p className="revision-safety"><ShieldAlert size={13} />AI is optional. Disabled mode uses a deterministic fact-safe fallback; every result stays in review.</p>
     <div className="revision-actions">
-      <label>Variants
+       <label>Variants
         <select value={variantCount} onChange={(event) => setVariantCount(Number(event.target.value))} disabled={working !== null}>
           {[1, 2, 3, 4].map((count) => <option key={count} value={count}>{count}</option>)}
         </select>
@@ -169,27 +208,23 @@ export function RevisionControls({
         <RefreshCw size={14} className={working === 'copy' ? 'spin' : ''} />
         {working === 'copy' ? 'Creating copy' : 'Regenerate copy'}
       </button>
-      <label>Template
+       <label>Template
         <select value={template} onChange={(event) => setTemplate(event.target.value)} disabled={working !== null}>
           {TEMPLATES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
         </select>
       </label>
-      <button onClick={() => void regenerate('creative')} disabled={working !== null || template === (active?.creative_template_key || proposal.creative_template_key)}>
-        <ImagePlus size={14} className={working === 'creative' ? 'spin' : ''} />
-        {working === 'creative' ? 'Rendering variant' : 'Try creative variant'}
+       <label className="creative-style-select">Style
+         <select value={backgroundStyle} onChange={(event) => setBackgroundStyle(event.target.value)} disabled={working !== null}>
+           {BACKGROUND_STYLES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+         </select>
+       </label>
+       <button className="generate-creative-action" onClick={() => void regenerate('image_background')} disabled={generateState.disabled}>
+         <ImagePlus size={14} className={generateState.loading ? 'spin' : ''} />
+           {generateState.label}
       </button>
       <button onClick={() => void regenerate('content_variant')} disabled={working !== null}>
         <Layers3 size={14} className={working === 'content_variant' ? 'spin' : ''} />
         {working === 'content_variant' ? 'Creating content' : 'Content bundle'}
-      </button>
-      <label>Background
-        <select value={backgroundStyle} onChange={(event) => setBackgroundStyle(event.target.value)} disabled={working !== null}>
-          {BACKGROUND_STYLES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-        </select>
-      </label>
-      <button onClick={() => void regenerate('image_background')} disabled={working !== null || !settings?.decorative_backgrounds_enabled || settings?.effective_mode !== 'hosted_paid'}>
-        <ImagePlus size={14} className={working === 'image_background' ? 'spin' : ''} />
-        {working === 'image_background' ? 'Generating background' : 'Background variant'}
       </button>
       <button onClick={() => void regenerate('video_script')} disabled={working !== null}>
         <Clapperboard size={14} className={working === 'video_script' ? 'spin' : ''} />
@@ -213,21 +248,25 @@ export function RevisionControls({
     </div>
     {compared && original && <>
       <div className="version-preview-panel">
-        <div className="version-preview-heading">
-          <div><p className="eyebrow">SELECTED VERSION PREVIEW</p><strong>v{compared.version} · {compared.kind.toLowerCase()}</strong></div>
-          <span>Read-only · deterministic renderer · authentic Shopify image</span>
+       <div className="version-preview-heading">
+           <div><p className="eyebrow">SELECTED VERSION PREVIEW</p><strong>v{compared.version} · {compared.kind.toLowerCase()}</strong></div>
+           <span>{comparedIsGeneratedBackground ? 'Persisted creative asset · review only' : 'Read-only copy preview · authentic Shopify image'}</span>
         </div>
         <div className="version-preview-grid">
           <div className="version-source-proof">
             <div className="creative-label">Authentic source <span>Shopify catalog</span></div>
             <img src={proposal.image_url} alt={`Authentic Shopify source for ${proposal.product_title}`} />
           </div>
-          <div className="version-render-proof">
-            <div className="creative-label">Selected copy preview <span>not persisted</span></div>
-            <img loading="lazy" key={compareId} src={proposalVersionPreviewUrl(proposal.id, compared.id)} alt={`Deterministic Pinterest preview for version ${compared.version}`} />
+           <div className="version-render-proof">
+             <div className="creative-label">{comparedIsGeneratedBackground ? 'Persisted creative' : 'Selected copy preview'} <span>{comparedIsGeneratedBackground ? 'generated asset' : 'deterministic renderer'}</span></div>
+             {comparedIsGeneratedBackground
+               ? compared.creative?.image_url
+                 ? <img loading="lazy" key={compareId} src={compared.creative.image_url} alt={`Persisted creative for version ${compared.version}`} />
+                 : <div className="creative-empty"><ImagePlus size={22} /><span>Persisted creative unavailable</span></div>
+               : <img loading="lazy" key={compareId} src={proposalVersionPreviewUrl(proposal.id, compared.id)} alt={`Copy preview for version ${compared.version}`} />}
           </div>
         </div>
-        <p className="revision-safety"><ShieldAlert size={13} />This preview changes with the comparison control. It creates no AI image, creative asset, selection, approval, or publication.</p>
+         <p className="revision-safety"><ShieldAlert size={13} />Comparison is read-only. Selecting a generated creative is separate; approval and publishing remain unchanged.</p>
       </div>
       <div className="version-copy-comparison">
         <section>
@@ -243,14 +282,20 @@ export function RevisionControls({
           {compared.content_payload && <pre className="video-spec-preview">{JSON.stringify(compared.content_payload, null, 2)}</pre>}
         </section>
       </div>
-      <div className="version-activation">
-        <div><strong>Version activation is a separate review action</strong><span>Activating copy does not approve it and publishing remains disabled.</span></div>
-        <button className="select-version" onClick={() => void selectVersion()} disabled={working !== null || compared.active}>
-          <Check size={14} />{compared.active ? 'Active version' : 'Select this version'}
-        </button>
-      </div>
+       <div className="version-activation">
+         <div><strong>Version activation is a separate review action</strong><span>Activating a version does not approve it and publishing remains disabled.</span></div>
+         <div className="version-review-actions">
+            {comparedIsGeneratedBackground && <button className="reject-version" onClick={() => void rejectVersion()} disabled={!canRejectReviewCreative(compared, working)}>
+             <ShieldAlert size={14} />Reject revision
+            </button>}
+            <button className="select-version" onClick={() => void selectVersion()} disabled={!canSelectReviewCreative(compared, working)}>
+              <Check size={14} />{compared.active ? 'Active version' : comparedIsGeneratedBackground ? 'Use this creative' : 'Select this version'}
+           </button>
+          </div>
+        </div>
     </>} </>
     : <p className="revision-empty">No copy revisions yet. The persisted original remains active.</p>}
-    {message && <p className={`revision-message ${message.kind}`} role="status">{message.text}</p>}
+     {generateState.loading && <div className="creative-progress" role="status" aria-live="polite"><span><strong>Building a review-only creative</strong><small>Verified product imagery stays untouched · style: {readable(backgroundStyle)}</small></span><b style={{ width: `${creativeProgress}%` }} /></div>}
+     {message && <p className={`revision-message ${message.kind}`} role="status">{message.text}</p>}
   </section>
 }

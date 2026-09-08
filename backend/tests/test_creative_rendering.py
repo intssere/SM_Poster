@@ -11,7 +11,9 @@ from app.models.domain import (
     PinPublication, Product, ProductImage, Store,
 )
 from app.api.routes import proposals as proposal_routes
-from app.services.creative_rendering import CreativeRenderService, CreativeStorage, render_png
+from app.services.creative_rendering import (
+    CreativeRenderService, CreativeStorage, edge_connected_near_white_cutout, render_png,
+)
 from app.services.fingerprints import creative_fingerprint
 from app.services.pin_proposals import PinProposalService
 
@@ -62,6 +64,10 @@ def test_exact_canvas_png_determinism_fingerprint_and_all_templates(tmp_path):
         assert Image.open(BytesIO(data)).size == (1000, 1500)
         assert creative.render_spec["template_key"] == key
         assert creative.render_spec["image"]["checksum_sha256"]
+        assert isinstance(creative.render_spec["image"]["cutout"]["applied"], bool)
+        assert creative.render_spec["image"]["cutout"]["mask_method"] == "edge_connected_near_white_v1"
+        assert creative.render_spec["image"]["cutout"]["independent_opaque_background_evidence"] is False
+        assert creative.render_spec["image"]["cutout"]["safety_rejection_reason"] == "opaque_background_not_independently_verified"
         assert creative.render_spec["design_token_version"] == 1
     # Rendering has never altered catalog provenance/checksum.
     assert image.source_sha256 == original_checksum
@@ -84,6 +90,115 @@ def test_contain_and_text_overflow_are_deterministic(tmp_path):
         assert "text" in str(exc).lower() or "overflow" in str(exc).lower()
     else:
         raise AssertionError("Expected controlled text overflow failure")
+
+
+def test_edge_connected_cutout_removes_only_connected_near_white_pixels():
+    source = Image.new("RGBA", (9, 9), (250, 250, 248, 255))
+    # This near-white center is enclosed by product pixels and must not be
+    # treated as background simply because of its colour.
+    for x in range(2, 7):
+        for y in range(2, 7):
+            source.putpixel((x, y), (40, 80, 120, 255))
+    source.putpixel((4, 4), (250, 250, 248, 255))
+
+    cutout, provenance = edge_connected_near_white_cutout(
+        source, trusted_opaque_background=True
+    )
+
+    assert provenance["applied"] is True
+    assert provenance["mask_method"] == "edge_connected_near_white_v1"
+    assert provenance["safety_validated"] is True
+    assert provenance["independent_opaque_background_evidence"] is True
+    assert provenance["alpha_mask_composited"] is True
+    assert provenance["retained_pixels_recolored"] is False
+    assert cutout.getpixel((0, 0))[3] == 0
+    assert cutout.getpixel((4, 4)) == (250, 250, 248, 255)
+    assert cutout.getpixel((3, 3)) == (40, 80, 120, 255)
+
+
+def test_non_cuttable_source_uses_premium_card_fallback_and_layout_is_deterministic():
+    source = Image.new("RGBA", (240, 120), (30, 80, 120, 255))
+    prepared, provenance = edge_connected_near_white_cutout(
+        source, trusted_opaque_background=True
+    )
+    spec = {
+        "template_key": "luxury_product_spotlight",
+        "headline": "A restrained editorial product feature",
+        "supporting_text": "Authentic catalog selection",
+    }
+
+    first = render_png(spec, source, prepared_product=prepared, cutout=provenance)
+    second = render_png(spec, source, prepared_product=prepared, cutout=provenance)
+
+    assert provenance["applied"] is False
+    assert provenance["fallback_treatment"] == "premium_source_card_v1"
+    assert first == second
+    assert Image.open(BytesIO(first)).size == (1000, 1500)
+    # The card is visibly rendered around the unchanged source image.
+    assert Image.open(BytesIO(first)).getpixel((91, 930)) != (30, 80, 120)
+
+
+def test_edge_touching_light_foreground_fails_closed_to_source_card():
+    source = Image.new("RGBA", (40, 40), (252, 252, 251, 255))
+    # A light cropped product reaches the left edge.  It is intentionally not
+    # eligible for local background removal, even though the rest is white.
+    for x in range(0, 22):
+        for y in range(9, 31):
+            source.putpixel((x, y), (245, 245, 243, 255))
+
+    prepared, provenance = edge_connected_near_white_cutout(
+        source, trusted_opaque_background=True
+    )
+
+    assert provenance["applied"] is False
+    assert provenance["safety_rejection_reason"] == "edge_touching_foreground"
+    assert provenance["fallback_treatment"] == "premium_source_card_v1"
+    assert prepared.getpixel((0, 20)) == (245, 245, 243, 255)
+
+
+def test_mostly_near_white_edge_touching_product_with_dark_label_fails_closed():
+    source = Image.new("RGBA", (60, 60), (255, 255, 255, 255))
+    # The product body itself is near-white and reaches the left edge.  Only
+    # its small dark central label is distinguishable from the background.
+    # Removing every connected near-white sample would erase the product body.
+    for x in range(0, 50):
+        for y in range(5, 55):
+            source.putpixel((x, y), (249, 249, 249, 255))
+    for x in range(22, 37):
+        for y in range(22, 37):
+            source.putpixel((x, y), (35, 35, 35, 255))
+
+    prepared, provenance = edge_connected_near_white_cutout(
+        source, trusted_opaque_background=True
+    )
+
+    assert provenance["applied"] is False
+    assert provenance["safety_rejection_reason"] == "insufficient_retained_foreground"
+    assert provenance["retained_foreground_ratio"] < 0.10
+    assert provenance["alpha_mask_composited"] is False
+    assert provenance["retained_pixels_recolored"] is False
+    assert prepared.tobytes() == source.tobytes()
+
+
+def test_default_production_cutout_rejects_opaque_40px_light_body_with_dark_label():
+    source = Image.new("RGBA", (40, 40), (255, 255, 255, 255))
+    # Near-white product body touches the left edge; only a 15x16 dark label
+    # distinguishes it from the fully opaque white surroundings.
+    for x in range(0, 34):
+        for y in range(2, 38):
+            source.putpixel((x, y), (249, 249, 249, 255))
+    for x in range(12, 27):
+        for y in range(12, 28):
+            source.putpixel((x, y), (35, 35, 35, 255))
+
+    prepared, provenance = edge_connected_near_white_cutout(source)
+
+    assert provenance["applied"] is False
+    assert provenance["independent_opaque_background_evidence"] is False
+    assert provenance["safety_rejection_reason"] == "opaque_background_not_independently_verified"
+    assert provenance["fallback_treatment"] == "premium_source_card_v1"
+    assert provenance["alpha_mask_composited"] is False
+    assert prepared.tobytes() == source.tobytes()
 
 
 def test_provenance_failures_and_idempotence_do_not_mutate_proposal_state(tmp_path):
