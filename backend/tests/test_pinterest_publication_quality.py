@@ -2,7 +2,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db.base import Base
-from app.models.domain import CreativeTemplate, PinCreative, PinPublication, PinterestBoard, ProductImage, PublicationStatus
+from app.models.domain import CreativeTemplate, PinCreative, PinPublication, PinterestBoard, ProductImage, PublicationStatus, Board, PinConcept, PinDraft, ContentAngle
 from app.services.pinterest_publication_quality import (
     PIN_ALT_TEXT_MAX,
     PIN_DESCRIPTION_MAX,
@@ -95,6 +95,63 @@ def _result(**overrides):
     db = _db()
     publication = _publication(db, **overrides)
     return validate_publication_quality(db, publication)
+
+
+def test_default_provider_mode_is_direct_and_unknown_mode_fails_closed():
+    db = _db(); publication = _publication(db)
+    assert validate_publication_quality(db, publication)["status"] == "PASS"
+    result = validate_publication_quality(db, publication, dispatch_provider="unknown")
+    assert result["status"] == "FAIL"
+    assert "INVALID_DISPATCH_PROVIDER" in _failed_codes(result)
+
+
+def test_buffer_mode_rejects_missing_or_arbitrary_generic_board():
+    db = _db(); publication = _publication(db)
+    publication.board_id = "missing"
+    publication.pinterest_connection_id = None
+    publication.pinterest_board_record_id = None
+    result = validate_publication_quality(db, publication, dispatch_provider="buffer")
+    assert result["status"] != "PASS"
+    publication.board_id = None
+    assert validate_publication_quality(db, publication, dispatch_provider="buffer")["status"] != "PASS"
+
+
+def test_buffer_mode_requires_exact_concept_board_and_active_store_match():
+    db = _db(); publication = _publication(db)
+    angle = ContentAngle(id="angle-buffer", key="angle-buffer", name="Angle")
+    board = Board(id="generic-board", store_id="store-1", name="Fragrance", slug="fragrance", active=True, pinterest_board_id="board-1")
+    concept = PinConcept(id="concept-buffer", store_id="store-1", product_id="product-1", content_angle_id=angle.id, board_id=board.id, fingerprint="b" * 64)
+    draft = PinDraft(id=publication.draft_id, concept_id=concept.id, title=publication.title_snapshot, description=publication.description_snapshot, alt_text=publication.alt_text_snapshot, destination_url=publication.destination_url, utm_url=publication.utm_url, text_fingerprint="t" * 64)
+    publication.board_id = board.id; publication.pinterest_connection_id = None; publication.pinterest_board_record_id = None; publication.pinterest_board_id_snapshot = "board-1"
+    db.get(PinCreative, publication.creative_id).render_status = "RENDERED"
+    db.add_all([angle, board, concept, draft]); db.commit()
+    assert validate_publication_quality(db, publication, dispatch_provider="buffer")["status"] == "PASS"
+    concept.board_id = "other"; db.commit()
+    assert validate_publication_quality(db, publication, dispatch_provider="buffer")["status"] != "PASS"
+
+
+def test_buffer_mode_accepts_digest_public_media_only_for_same_rendered_creative():
+    db = _db(); publication = _publication(db)
+    creative = db.get(PinCreative, publication.creative_id)
+    creative.render_status = "RENDERED"; creative.sha256 = "a" * 64
+    from app.services.public_creative_media import public_creative_url
+    from app.core.config import Settings
+    settings = Settings(_env_file=None, DATABASE_URL="sqlite+pysqlite:///:memory:", public_media_base_url="https://cdn.shopify.com")
+    publication.media_url_snapshot = public_creative_url(creative, settings=settings)
+    angle = ContentAngle(id="angle-buffer-digest", key="angle-buffer-digest", name="Angle")
+    board = Board(id="generic-board-digest", store_id="store-1", name="Fragrance", slug="fragrance-digest", active=True, pinterest_board_id="board-digest")
+    concept = PinConcept(id="concept-buffer-digest", store_id="store-1", product_id="product-1", content_angle_id=angle.id, board_id=board.id, fingerprint="c" * 64)
+    draft = PinDraft(id=publication.draft_id, concept_id=concept.id, title=publication.title_snapshot, description=publication.description_snapshot, alt_text=publication.alt_text_snapshot, destination_url=publication.destination_url, utm_url=publication.utm_url, text_fingerprint="t" * 64)
+    publication.board_id = board.id; publication.pinterest_board_id_snapshot = board.pinterest_board_id; publication.pinterest_connection_id = None; publication.pinterest_board_record_id = None
+    db.add_all([angle, board, concept, draft])
+    db.commit()
+    assert validate_publication_quality(db, publication, dispatch_provider="buffer", settings=settings)["status"] == "PASS"
+    publication.media_url_snapshot = publication.media_url_snapshot.replace("/" + "a" * 64 + ".png", "/" + "b" * 64 + ".png")
+    assert validate_publication_quality(db, publication, dispatch_provider="buffer", settings=settings)["status"] != "PASS"
+    publication.media_url_snapshot = publication.media_url_snapshot.replace("creative-p", "other-creative")
+    assert validate_publication_quality(db, publication, dispatch_provider="buffer", settings=settings)["status"] != "PASS"
+    publication.media_url_snapshot = "https://cdn.shopify.com/arbitrary.jpg"
+    assert validate_publication_quality(db, publication, dispatch_provider="buffer", settings=settings)["status"] != "PASS"
 
 
 def _codes(result, *, failed=True):

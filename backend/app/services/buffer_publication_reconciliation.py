@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import select, update
 from app.core.config import get_settings
 from app.integrations.buffer.gateway import BufferGateway, public_url, BufferReadError, BufferConfigurationError
-from app.models.domain import PinPublication, PublicationAttempt, PublicationReconciliationEvent, PublicationStatus
+from app.models.domain import Board, PinConcept, PinDraft, PinPublication, PublicationAttempt, PublicationReconciliationEvent, PublicationStatus
 from app.services.publication_scheduler import request_fingerprint_for
 from app.services.pinterest_publisher import PublicationReconciliationError
 
@@ -62,8 +62,20 @@ def _entry(db, publication_id, settings):
     if len(known) > 1:
         raise BufferReconciliationError("CONFLICTING_KNOWN_PROVIDER_PIN_IDS")
     metadata = attempt.safe_response_metadata or {}
+    board = db.get(Board, publication.board_id) if publication.board_id else None
+    draft = db.get(PinDraft, publication.draft_id) if publication.draft_id else None
+    concept = db.get(PinConcept, draft.concept_id) if draft else None
+    buffer_identity_valid = (
+        board is not None and board.active and bool(board.pinterest_board_id)
+        and publication.pinterest_connection_id is None
+        and publication.pinterest_board_record_id is None
+        and bool(publication.pinterest_board_id_snapshot)
+        and board.pinterest_board_id == publication.pinterest_board_id_snapshot
+        and concept is not None and concept.board_id == publication.board_id
+        and concept.store_id == board.store_id
+    )
     if (not publication.publication_fingerprint or not publication.creative_id or not publication.revision_id
-            or not publication.pinterest_connection_id or not publication.pinterest_board_record_id
+            or not buffer_identity_valid
             or attempt.request_fingerprint != request_fingerprint_for(publication)
             or not settings.buffer_organization_id or not settings.buffer_pinterest_channel_id
             or metadata.get("buffer_organization_id") != settings.buffer_organization_id

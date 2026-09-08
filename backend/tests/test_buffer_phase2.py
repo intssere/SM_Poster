@@ -30,8 +30,8 @@ SECRET = "fake-buffer-phase2-secret-not-real"
 def case(tmp_path):
     Session, engine = _db(tmp_path / "buffer-phase2.db")
     with Session() as db:
-        p = _ready_publication(db, scopes=["user_accounts:read", "boards:read", "pins:read"])
-        auth = create_authorization(db, p, actor="operator")
+        p = _ready_publication(db, dispatch_provider="buffer", scopes=["user_accounts:read", "boards:read", "pins:read"])
+        auth = create_authorization(db, p, actor="operator", dispatch_provider="buffer")
         settings = Settings(_env_file=None, DATABASE_URL="sqlite+pysqlite:///:memory:",
             buffer_api_key=SECRET, buffer_organization_id="org", buffer_pinterest_channel_id="channel",
             buffer_api_base="https://api.buffer.com", publishing_enabled=True, buffer_publishing_enabled=True,

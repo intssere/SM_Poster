@@ -35,6 +35,7 @@ def normalize_user_schedule(value):
         raise PublicationIdentityError("scheduled_for must include timezone")
     return value.astimezone(timezone.utc)
 from app.services.fingerprints import publication_identity_fingerprint
+from app.services.public_creative_media import snapshot_media_url
 
 
 class PublicationIdentityError(ValueError):
@@ -157,7 +158,7 @@ class PublicationIdentityService:
                 utm_url=utm_url,
                 pinterest_connection_id=connection.id if connection else None,
                 pinterest_board_record_id=pinterest_board.id if pinterest_board else None,
-                pinterest_board_id_snapshot=pinterest_board.external_board_id if pinterest_board else None,
+                pinterest_board_id_snapshot=pinterest_board.external_board_id if pinterest_board else board.pinterest_board_id,
             )
             if db.scalar(
                 select(PinPublication).where(
@@ -186,7 +187,7 @@ class PublicationIdentityService:
                 title_snapshot=revision.title if revision else draft.title,
                 description_snapshot=revision.description if revision else draft.description,
                 alt_text_snapshot=revision.alt_text if revision else draft.alt_text,
-                media_url_snapshot=creative.rendered_url,
+                media_url_snapshot=(creative.rendered_url if connection and pinterest_board else snapshot_media_url(creative, settings=get_settings())),
                 integration_account_id=account.id if account else None,
                 destination_url=destination,
                 utm_url=utm_url,

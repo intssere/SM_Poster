@@ -28,6 +28,10 @@ from app.services.publication_dispatch_authorization import (
     readiness_result,
     validate_authorization,
 )
+from test_manual_publication_dispatch import (
+    _db as _phase3d_db,
+    _ready_publication as _phase3d_ready_publication,
+)
 
 
 def _db():
@@ -551,4 +555,32 @@ def test_two_session_authorization_creation_race_is_bounded(tmp_path, monkeypatc
     finally:
         session_a.close()
         session_b.close()
+        engine.dispose()
+
+
+def test_buffer_authorization_is_provider_bound_and_invalid_as_direct():
+    SessionLocal, engine = _phase3d_db()
+    try:
+        with SessionLocal() as db:
+            publication = _phase3d_ready_publication(db, dispatch_provider="buffer", scopes=["user_accounts:read", "boards:read", "pins:read"])
+            authorization = create_authorization(db, publication, actor="admin@example.test", dispatch_provider="buffer")
+            assert authorization.readiness_snapshot["dispatch_provider"] == "buffer"
+            assert validate_authorization(db, publication, authorization, dispatch_provider="buffer")["valid"] is True
+            cross = validate_authorization(db, publication, authorization, dispatch_provider="pinterest_direct")
+            assert cross["valid"] is False and cross["status"] == "AUTHORIZATION_MISMATCH"
+    finally:
+        engine.dispose()
+
+
+def test_direct_authorization_is_provider_bound_and_invalid_as_buffer():
+    SessionLocal, engine = _phase3d_db()
+    try:
+        with SessionLocal() as db:
+            publication = _phase3d_ready_publication(db, scopes=["user_accounts:read", "boards:read", "pins:read"])
+            authorization = create_authorization(db, publication, actor="admin@example.test")
+            assert "dispatch_provider" not in authorization.readiness_snapshot
+            assert validate_authorization(db, publication, authorization)["valid"] is True
+            cross = validate_authorization(db, publication, authorization, dispatch_provider="buffer")
+            assert cross["valid"] is False and cross["status"] == "AUTHORIZATION_MISMATCH"
+    finally:
         engine.dispose()

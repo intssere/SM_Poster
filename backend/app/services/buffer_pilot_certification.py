@@ -208,12 +208,12 @@ def certify_buffer_pilot_candidate(
         if not source_image:
             return _blocked(dossier, "SOURCE_IMAGE_INVALID")
 
-        manual = manual_structural_readiness(db, publication, now=now, require_due=False)
+        manual = manual_structural_readiness(db, publication, now=now, require_due=False, dispatch_provider="buffer")
         if not manual["ready"]:
             return _blocked(dossier, manual["status"])
         dossier["pinterest_destination"]["local_binding_valid"] = True
 
-        quality = validate_publication_quality(db, publication)
+        quality = validate_publication_quality(db, publication, dispatch_provider="buffer")
         dossier["quality"] = {
             "status": quality["status"],
             "policy_version": quality.get("policy_version"),

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends, Request
+from app.db.session import get_db
+from app.models.domain import PinCreative
+from app.services.public_creative_media import verified_png
 from fastapi.responses import FileResponse, Response
 
 from app.schemas.pins import (
@@ -21,6 +24,18 @@ from app.services.pin_proposals import PinProposalService
 
 
 router = APIRouter(prefix="/pins", tags=["pin-proposals"])
+
+
+@router.get("/public-creatives/{creative_id}/{digest}.png", operation_id="public_creative_image_get")
+@router.head("/public-creatives/{creative_id}/{digest}.png", include_in_schema=False)
+def public_creative_image(creative_id: str, digest: str, request: Request, db=Depends(get_db)):
+    with db.no_autoflush:
+        contents = verified_png(db.get(PinCreative, creative_id), digest)
+    if contents is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return Response(content=contents if request.method == "GET" else b"", media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=31536000, immutable",
+                             "Content-Length": str(len(contents)), "X-Content-Type-Options": "nosniff"})
 
 
 @router.get("/summary")

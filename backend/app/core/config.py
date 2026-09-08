@@ -15,6 +15,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("APP_SECRET_KEY", "SESSION_SECRET"),
     )
     publishing_enabled: bool = False
+    public_media_base_url: str | None = None
     buffer_api_key: str | None = Field(default=None, repr=False, exclude=True)
     buffer_api_base: str = "https://api.buffer.com"
     buffer_organization_id: str | None = None

@@ -203,7 +203,7 @@ def _evaluate_buffer_pilot_execution_readiness_from_persistence(
     publication = db.get(PinPublication, publication_id)
     request_fingerprint = request_fingerprint_for(publication)
 
-    manual = manual_structural_readiness(db, publication, now=now, require_due=True)
+    manual = manual_structural_readiness(db, publication, now=now, require_due=True, dispatch_provider="buffer")
     if not manual["ready"]:
         return _locked(
             static_status=static["status"],
@@ -224,7 +224,7 @@ def _evaluate_buffer_pilot_execution_readiness_from_persistence(
         ) | {"static": static}
 
     authorization = latest_authorization(db, publication.id)
-    auth = validate_authorization(db, publication, authorization, now=now)
+    auth = validate_authorization(db, publication, authorization, now=now, dispatch_provider="buffer")
     if not auth["valid"]:
         return _locked(
             static_status=static["status"],
