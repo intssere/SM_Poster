@@ -297,6 +297,7 @@ def test_openai_image_adapter_requires_inline_output_and_background_safety_gate(
     assert image_call[1]["Authorization"] == f"Bearer {secret}"
     assert image_call[2]["model"] == "gpt-image-2"
     assert image_call[2]["size"] == "1024x1536"
+    assert image_call[2]["quality"] == "medium"
     assert image_call[2]["n"] == 1
     assert "response_format" not in image_call[2]
     assert image_call[2]["output_format"] == "png"
