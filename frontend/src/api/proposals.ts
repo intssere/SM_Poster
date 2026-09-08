@@ -285,6 +285,16 @@ export async function decideProposal(id: string, decision: 'approve' | 'reject',
   )
 }
 
+export async function returnProposalToReview(id: string): Promise<{
+  id: string
+  approval_status: 'REVIEW'
+  publishing_enabled: false
+}> {
+  return json(await fetch(`/api/pins/proposals/${encodeURIComponent(id)}/return-to-review`, {
+    method: 'POST',
+  }))
+}
+
 export async function getProposalQa(): Promise<ProposalReport> {
   return json(await fetch('/api/pins/proposals/qa'))
 }

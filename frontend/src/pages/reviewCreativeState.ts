@@ -21,6 +21,10 @@ export function canGenerateReviewCreative(
     && settings.capabilities.decorative_backgrounds
 }
 
+export function canReturnRejectedProposal(proposalStatus: string, working: string | null): boolean {
+  return proposalStatus === 'REJECTED' && working === null
+}
+
 export function hasGeneratedBackground(versions: ReviewCreativeVersion[]): boolean {
   return versions.some((version) => version.kind === 'IMAGE_BACKGROUND')
 }

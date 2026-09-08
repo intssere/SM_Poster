@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   canGenerateReviewCreative,
   canRejectReviewCreative,
+  canReturnRejectedProposal,
   canSelectReviewCreative,
   reviewCreativeButtonState,
 } from './reviewCreativeState.ts'
@@ -19,9 +20,18 @@ const originalRevision = { id: null, kind: 'ORIGINAL', active: false, status: 'R
 
 test('generation is available only for eligible review-only hosted background proposals', () => {
   assert.equal(canGenerateReviewCreative('REVIEW', settings), true)
+  assert.equal(canGenerateReviewCreative('REJECTED', settings), false)
   assert.equal(canGenerateReviewCreative('APPROVED', settings), false)
   assert.equal(canGenerateReviewCreative('REVIEW', { ...settings, decorative_backgrounds_enabled: false }), false)
   assert.equal(canGenerateReviewCreative('REVIEW', { ...settings, effective_mode: 'disabled' }), false)
+})
+
+test('recovery is available only for idle rejected proposals and restores creative eligibility after refresh', () => {
+  assert.equal(canReturnRejectedProposal('REJECTED', null), true)
+  assert.equal(canReturnRejectedProposal('REJECTED', 'return_to_review'), false)
+  assert.equal(canReturnRejectedProposal('REVIEW', null), false)
+  assert.equal(canGenerateReviewCreative('REJECTED', settings), false)
+  assert.equal(canGenerateReviewCreative('REVIEW', settings), true)
 })
 
 test('generation button exposes progress and becomes regenerate after a background exists', () => {

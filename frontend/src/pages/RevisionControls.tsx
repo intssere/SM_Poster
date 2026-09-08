@@ -8,11 +8,13 @@ import {
   proposalVersionPreviewUrl,
   regenerateProposal,
   rejectProposalVersion,
+  returnProposalToReview,
   selectProposalVersion,
 } from '../api/proposals'
 import {
   canGenerateReviewCreative,
   canRejectReviewCreative,
+  canReturnRejectedProposal,
   canSelectReviewCreative,
   reviewCreativeButtonState,
 } from './reviewCreativeState'
@@ -104,7 +106,7 @@ export function RevisionControls({
   const [channel, setChannel] = useState<(typeof CHANNELS)[number][0]>('pinterest')
   const [variantCount, setVariantCount] = useState(2)
   const [compareId, setCompareId] = useState<string>('original')
-  const [working, setWorking] = useState<'copy' | 'creative' | 'content_variant' | 'image_background' | 'video_script' | 'storyboard' | 'select' | null>(null)
+  const [working, setWorking] = useState<'copy' | 'creative' | 'content_variant' | 'image_background' | 'video_script' | 'storyboard' | 'select' | 'return_to_review' | null>(null)
   const [message, setMessage] = useState<{ kind: 'error' | 'success'; text: string } | null>(null)
   const [creativeProgress, setCreativeProgress] = useState(0)
 
@@ -184,6 +186,21 @@ export function RevisionControls({
     }
   }
 
+  async function returnToReview() {
+    if (!canReturnRejectedProposal(proposal.approval_status, working)) return
+    setWorking('return_to_review')
+    setMessage(null)
+    try {
+      await returnProposalToReview(proposal.id)
+      await onChanged()
+      setMessage({ kind: 'success', text: 'Proposal returned to REVIEW. No creative was generated, approved, or published.' })
+    } catch (error) {
+      setMessage({ kind: 'error', text: (error as Error).message })
+    } finally {
+      setWorking(null)
+    }
+  }
+
   const generateEligible = canGenerateReviewCreative(proposal.approval_status, settings)
   const generateState = reviewCreativeButtonState(working, versions, generateEligible, creativeProgress)
 
@@ -194,6 +211,10 @@ export function RevisionControls({
     </div>
     <p className="revision-safety"><ShieldAlert size={13} />AI is optional. Disabled mode uses a deterministic fact-safe fallback; every result stays in review.</p>
     <div className="revision-actions">
+      {proposal.approval_status === 'REJECTED' && <button className="return-to-review-action" onClick={() => void returnToReview()} disabled={!canReturnRejectedProposal(proposal.approval_status, working)}>
+        <RefreshCw size={14} className={working === 'return_to_review' ? 'spin' : ''} />
+        {working === 'return_to_review' ? 'Returning to review' : 'Return to Review'}
+      </button>}
        <label>Variants
         <select value={variantCount} onChange={(event) => setVariantCount(Number(event.target.value))} disabled={working !== null}>
           {[1, 2, 3, 4].map((count) => <option key={count} value={count}>{count}</option>)}

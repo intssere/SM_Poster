@@ -209,6 +209,16 @@ def approve_proposal(draft_id: str, body: ProposalDecision | None = None):
         raise HTTPException(status_code=status_code, detail=message) from exc
 
 
+@router.post("/proposals/{draft_id}/return-to-review")
+def return_proposal_to_review(draft_id: str):
+    try:
+        return PinProposalService().return_to_review(draft_id)
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if "not found" in message.lower() else 409
+        raise HTTPException(status_code=status_code, detail=message) from exc
+
+
 @router.post("/proposals/{draft_id}/reject")
 def reject_proposal(draft_id: str, body: ProposalDecision | None = None):
     try:
