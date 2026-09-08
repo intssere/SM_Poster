@@ -8,7 +8,7 @@ import json
 import socket
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -157,7 +157,195 @@ def _lines(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, m
     return out
 
 
-def render_png(spec: dict[str, Any], source: Image.Image, background: Image.Image | None = None) -> bytes:
+def _is_near_white(pixel: tuple[int, int, int, int]) -> bool:
+    """Return true only for deliberately conservative studio-background pixels."""
+    red, green, blue, alpha = pixel
+    return alpha > 245 and min(red, green, blue) >= 248 and max(red, green, blue) - min(red, green, blue) <= 8
+
+
+def edge_connected_near_white_cutout(
+    source: Image.Image,
+    *,
+    trusted_opaque_background: bool = False,
+) -> tuple[Image.Image, dict[str, Any]]:
+    """Remove only near-white pixels proven connected to the source image edge.
+
+    This is intentionally not an object detector.  A pixel can only be removed
+    if it passes the conservative colour test *and* is reachable from an edge
+    pixel through pixels that pass that same test.  All retained RGBA samples
+    are copied verbatim, so product pixels are never recoloured.
+    """
+    image = source.convert("RGBA")
+    if not trusted_opaque_background:
+        # RGB values and full opacity are not independent evidence of a
+        # background.  A white product can be indistinguishable from a white
+        # studio sweep, so production Shopify inputs fail closed by default.
+        return image, {
+            "applied": False,
+            "mask_method": "edge_connected_near_white_v1",
+            "confidence": 0.0,
+            "retained_foreground_ratio": 1.0,
+            "retained_foreground_bounds_ratio": {"width": 1.0, "height": 1.0},
+            "retained_foreground_centrally_bounded": False,
+            "safety_validated": False,
+            "safety_rejection_reason": "opaque_background_not_independently_verified",
+            "independent_opaque_background_evidence": False,
+            "fallback_treatment": "premium_source_card_v1",
+            "alpha_mask_composited": False,
+            "retained_pixels_recolored": False,
+        }
+    width, height = image.size
+    pixels = image.load()
+    edge: deque[tuple[int, int]] = deque()
+    visited: set[tuple[int, int]] = set()
+    for x in range(width):
+        edge.extend(((x, 0), (x, height - 1)))
+    for y in range(1, max(1, height - 1)):
+        edge.extend(((0, y), (width - 1, y)))
+    while edge:
+        x, y = edge.popleft()
+        if (x, y) in visited or not _is_near_white(pixels[x, y]):
+            continue
+        visited.add((x, y))
+        if x:
+            edge.append((x - 1, y))
+        if x + 1 < width:
+            edge.append((x + 1, y))
+        if y:
+            edge.append((x, y - 1))
+        if y + 1 < height:
+            edge.append((x, y + 1))
+
+    total = width * height
+    removed = len(visited)
+    retained = total - removed
+    # A non-background sample on an image edge is a likely cropped/edge-touching
+    # product.  We cannot safely infer its silhouette locally, so fail closed.
+    edge_foreground = any(
+        not _is_near_white(pixels[x, y])
+        for x in range(width)
+        for y in (0, height - 1)
+    ) or any(
+        not _is_near_white(pixels[x, y])
+        for y in range(1, max(1, height - 1))
+        for x in (0, width - 1)
+    )
+    foreground_count = 0
+    left, right, top, bottom = width, -1, height, -1
+    for y in range(height):
+        for x in range(width):
+            if not _is_near_white(pixels[x, y]):
+                foreground_count += 1
+                left, right = min(left, x), max(right, x)
+                top, bottom = min(top, y), max(bottom, y)
+    foreground_ratio = foreground_count / total
+    if foreground_count:
+        foreground_width_ratio = (right - left + 1) / width
+        foreground_height_ratio = (bottom - top + 1) / height
+    else:
+        foreground_width_ratio = foreground_height_ratio = 0.0
+    margin_x, margin_y = max(1, int(width * 0.02)), max(1, int(height * 0.02))
+    centrally_bounded = bool(
+        foreground_count
+        and left >= margin_x
+        and right < width - margin_x
+        and top >= margin_y
+        and bottom < height - margin_y
+    )
+    substantial_foreground = (
+        foreground_ratio >= 0.10
+        and foreground_width_ratio >= 0.18
+        and foreground_height_ratio >= 0.18
+        and centrally_bounded
+    )
+    # Reject ambiguous all-white/near-empty sources and tiny, low-confidence
+    # regions.  Fallback preserves the original image unchanged in a card.
+    coverage = removed / total
+    retained_ratio = retained / total
+    applied = (
+        not edge_foreground
+        and substantial_foreground
+        and 0.03 <= coverage <= 0.94
+        and retained_ratio >= 0.04
+    )
+    safety_reason = (
+        "edge_touching_foreground"
+        if edge_foreground
+        else "insufficient_retained_foreground"
+        if not substantial_foreground
+        else "insufficient_confident_background"
+        if not applied
+        else None
+    )
+    metadata = {
+        "applied": applied,
+        "mask_method": "edge_connected_near_white_v1",
+        "confidence": round(coverage, 6),
+        "retained_foreground_ratio": round(foreground_ratio, 6),
+        "retained_foreground_bounds_ratio": {
+            "width": round(foreground_width_ratio, 6),
+            "height": round(foreground_height_ratio, 6),
+        },
+        "retained_foreground_centrally_bounded": centrally_bounded,
+        "safety_validated": applied,
+        "safety_rejection_reason": safety_reason,
+        "independent_opaque_background_evidence": True,
+        "fallback_treatment": None if applied else "premium_source_card_v1",
+        "alpha_mask_composited": applied,
+        "retained_pixels_recolored": False,
+    }
+    if not applied:
+        return image, metadata
+    result = image.copy()
+    alpha = result.getchannel("A")
+    alpha_pixels = alpha.load()
+    for x, y in visited:
+        alpha_pixels[x, y] = 0
+    result.putalpha(alpha)
+    return result, metadata
+
+
+def _luminance(color: tuple[int, int, int, int]) -> float:
+    red, green, blue, _ = color
+    return (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255
+
+
+def _local_text_tokens(canvas: Image.Image) -> dict[str, str]:
+    """Choose text tokens from the reserved copy area, not global image colour."""
+    sample = canvas.convert("RGBA").crop((60, 1010, 940, 1430)).resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+    dark_surface = _luminance(sample) < 0.48
+    return {
+        "surface": "#1D2024" if dark_surface else "#FCFAF6",
+        "ink": "#F9F7F2" if dark_surface else "#17191C",
+        "muted": "#D9D5CC" if dark_surface else "#5D5A54",
+        "accent": "#D7A567" if dark_surface else "#9A5F2C",
+    }
+
+
+def _with_alpha(hex_color: str, alpha: int) -> tuple[int, int, int, int]:
+    return tuple(int(hex_color[index:index + 2], 16) for index in (1, 3, 5)) + (alpha,)
+
+
+def _responsive_lines(
+    draw: ImageDraw.ImageDraw, text: str, *, bold: bool, max_width: int, max_lines: int, maximum: int, minimum: int
+) -> tuple[list[str], ImageFont.FreeTypeFont]:
+    for size in range(maximum, minimum - 1, -2):
+        font = _font(bold, size)
+        try:
+            return _lines(draw, text, font, max_width, max_lines), font
+        except CreativeRenderError:
+            continue
+    raise CreativeRenderError("Creative text cannot fit the selected template.")
+
+
+def render_png(
+    spec: dict[str, Any],
+    source: Image.Image,
+    background: Image.Image | None = None,
+    *,
+    prepared_product: Image.Image | None = None,
+    cutout: dict[str, Any] | None = None,
+) -> bytes:
     template = spec["template_key"]
     tokens = TEMPLATES.get(template)
     if not tokens:
@@ -167,28 +355,44 @@ def render_png(spec: dict[str, Any], source: Image.Image, background: Image.Imag
         if background is not None
         else Image.new("RGBA", CANVAS, tokens["background"])
     )
-    draw = ImageDraw.Draw(canvas)
-    # All four paths share deterministic geometry but retain distinct token palettes.
-    image_box = (80, 140 if template != "gift_guide_gift_set" else 180, 920, 870)
-    fitted = ImageOps.contain(source.convert("RGBA"), (image_box[2] - image_box[0], image_box[3] - image_box[1]), Image.Resampling.LANCZOS)
+    # The upper 60% is a product stage; the lower region is a deterministic,
+    # protected text zone.  Decorative AI imagery never supplies product pixels.
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    product, resolved_cutout = (prepared_product, cutout) if prepared_product is not None and cutout is not None else edge_connected_near_white_cutout(source)
+    image_box = (90, 145 if template != "gift_guide_gift_set" else 185, 910, 935)
+    if not resolved_cutout["applied"]:
+        shadow = (image_box[0] + 10, image_box[1] + 14, image_box[2] + 10, image_box[3] + 14)
+        draw.rounded_rectangle(shadow, radius=34, fill=(20, 22, 24, 24))
+        draw.rounded_rectangle(image_box, radius=34, fill=(255, 253, 249, 218), outline=(154, 95, 44, 80), width=2)
+    fitted = ImageOps.contain(product, (image_box[2] - image_box[0] - 40, image_box[3] - image_box[1] - 36), Image.Resampling.LANCZOS)
     x = image_box[0] + ((image_box[2] - image_box[0]) - fitted.width) // 2
-    y = image_box[1] + ((image_box[3] - image_box[1]) - fitted.height) // 2
+    # Wide catalog crops read as an editorial banner; taller objects sit on a
+    # consistent visual baseline to retain generous negative space.
+    y = image_box[1] if fitted.height < 180 else image_box[3] - fitted.height
     canvas.alpha_composite(fitted, (x, y))
-    draw.rectangle((80, 940, 180, 950), fill=tokens["accent"])
-    headline_font, sub_font = _font(True, 54), _font(False, 30)
-    headline = _lines(draw, spec["headline"], headline_font, 840, 3)
-    sub = _lines(draw, spec.get("supporting_text", spec.get("subheadline", "")), sub_font, 840, 3)
-    y = 990
+    local = _local_text_tokens(canvas)
+    draw.rounded_rectangle((50, 1000, 950, 1450), radius=28, fill=_with_alpha(local["surface"], 240))
+    draw.rectangle((80, 1050, 220, 1058), fill=local["accent"])
+    # A small, high-contrast masthead establishes the brand without competing
+    # with the catalog product or editorial headline.
+    draw.text((80, 1082), "DIAMOND SHELF  /  EDIT", font=_font(True, 19), fill=local["accent"])
+    headline, headline_font = _responsive_lines(
+        draw, spec["headline"], bold=True, max_width=840, max_lines=3, maximum=58, minimum=38
+    )
+    sub, sub_font = _responsive_lines(
+        draw, spec.get("supporting_text", spec.get("subheadline", "")), bold=False, max_width=840, max_lines=2, maximum=31, minimum=22
+    )
+    y = 1130
     for line in headline:
-        draw.text((80, y), line, font=headline_font, fill=tokens["ink"])
-        y += 67
-    y += 20
+        draw.text((80, y), line, font=headline_font, fill=local["ink"])
+        y += headline_font.size + 13
+    y += 12
     for line in sub:
-        draw.text((80, y), line, font=sub_font, fill=tokens["ink"])
-        y += 42
-    if y > 1430:
+        draw.text((80, y), line, font=sub_font, fill=local["muted"])
+        y += sub_font.size + 11
+    if y > 1405:
         raise CreativeRenderError("Creative text overflows the canvas.")
-    draw.text((80, 1440), "DIAMOND SHELF", font=_font(True, 20), fill=tokens["accent"])
+    draw.text((80, 1415), "CURATED OBJECTS • CONSIDERED LIVING", font=_font(True, 16), fill=local["accent"])
     output = io.BytesIO()
     canvas.convert("RGB").save(output, format="PNG", optimize=False)
     return output.getvalue()
@@ -409,6 +613,7 @@ class CreativeRenderService:
                 source_sha = hashlib.sha256(raw).hexdigest()
                 if expected_checksum and expected_checksum != source_sha:
                     raise CreativeRenderError("Downloaded image does not match the persisted source checksum.")
+                prepared_product, cutout = edge_connected_near_white_cutout(source)
 
                 spec = {
                     "version": 1,
@@ -424,8 +629,11 @@ class CreativeRenderService:
                         "provenance_url": image.source_url,
                         "checksum_sha256": source_sha,
                         "checksum_basis": "persisted_read_only_preview",
+                        "source_bytes_unchanged": True,
+                        "alpha_mask_composited": cutout["applied"],
                         "width": source.width,
                         "height": source.height,
+                        "cutout": cutout,
                     },
                     "canvas": {"width": 1000, "height": 1500},
                     "template_key": template_key,
@@ -436,7 +644,7 @@ class CreativeRenderService:
                     "board": rationale.get("board_mapping"),
                     "tokens": TEMPLATES.get(template_key),
                 }
-                png = render_png(spec, source)
+                png = render_png(spec, source, prepared_product=prepared_product, cutout=cutout)
                 with _PREVIEW_CACHE_LOCK:
                     _PREVIEW_CACHE[cache_key] = png
                     _PREVIEW_CACHE.move_to_end(cache_key)
@@ -514,6 +722,7 @@ class CreativeRenderService:
             source_sha = hashlib.sha256(raw).hexdigest()
             if expected_checksum and expected_checksum != source_sha:
                 raise CreativeRenderError("Downloaded image does not match the persisted source checksum.")
+            prepared_product, cutout = edge_connected_near_white_cutout(source)
             copy = copy_snapshot or {}
             headline = copy.get("headline") or rationale["headline"]
             supporting_text = copy.get("title") or draft.title
@@ -526,7 +735,10 @@ class CreativeRenderService:
                     "id": image.id, "shopify_media_id": image.shopify_media_id,
                     "provenance_url": image.source_url, "checksum_sha256": source_sha,
                     "checksum_basis": "persisted" if image_data.get("source_sha256") or image.source_sha256 else "first_verified_render",
+                    "source_bytes_unchanged": True,
+                    "alpha_mask_composited": cutout["applied"],
                     "width": source.width, "height": source.height,
+                    "cutout": cutout,
                 },
                 "canvas": {"width": 1000, "height": 1500}, "template_key": template_key,
                 "template_version": template.version, "headline": rationale["headline"],
@@ -543,7 +755,9 @@ class CreativeRenderService:
             creative = existing or PinCreative(draft_id=draft.id, template_id=template.id, source_image_id=image.id, creative_fingerprint=fingerprint, width=1000, height=1500)
             if not existing: db.add(creative); db.flush()
             started = time.monotonic()
-            png = render_png(spec, source, background=background)
+            png = render_png(
+                spec, source, background=background, prepared_product=prepared_product, cutout=cutout
+            )
             if self.storage is None:
                 self.storage = CreativeStorage()
             creative.sha256, creative.rendered_url = hashlib.sha256(png).hexdigest(), self.storage.write_png(creative.id, png)

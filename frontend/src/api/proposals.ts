@@ -57,7 +57,7 @@ export type ContentVersion = {
   id: string | null
   version: number
   kind: 'ORIGINAL' | 'COPY' | 'CREATIVE' | 'CONTENT' | 'IMAGE_BACKGROUND' | 'VIDEO_SPEC'
-  status: 'REVIEW'
+  status: 'REVIEW' | 'REJECTED'
   parent_revision_id?: string | null
   active: boolean
   headline: string
@@ -285,6 +285,16 @@ export async function decideProposal(id: string, decision: 'approve' | 'reject',
   )
 }
 
+export async function returnProposalToReview(id: string): Promise<{
+  id: string
+  approval_status: 'REVIEW'
+  publishing_enabled: false
+}> {
+  return json(await fetch(`/api/pins/proposals/${encodeURIComponent(id)}/return-to-review`, {
+    method: 'POST',
+  }))
+}
+
 export async function getProposalQa(): Promise<ProposalReport> {
   return json(await fetch('/api/pins/proposals/qa'))
 }
@@ -345,7 +355,7 @@ export async function regenerateProposal(
       template_key: options.templateKey,
       style_key: options.styleKey,
       channel: options.channel || 'pinterest',
-      count: options.count || 1,
+       count: options.count || 1,
     }),
   }))
 }
@@ -359,4 +369,18 @@ export async function selectProposalVersion(id: string, versionId: string): Prom
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ version_id: versionId }),
   }))
+}
+
+export async function rejectProposalVersion(id: string, versionId: string): Promise<{
+  id: string
+  approval_status: string
+  publishing_enabled: boolean
+}> {
+  return json(await fetch(
+    `/api/pins/proposals/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}/reject`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    },
+  ))
 }

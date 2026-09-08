@@ -7,6 +7,8 @@ from app.models.domain import (
     Board,
     Campaign,
     ContentAngle,
+    ContentRevision,
+    ContentVersionSelection,
     CreativeTemplate,
     KeywordCluster,
     PinApproval,
@@ -18,6 +20,7 @@ from app.models.domain import (
     ProductImage,
     ProductIntelligence,
     Store,
+    AuditLog,
 )
 from app.services.pin_proposals import PinProposalService
 
@@ -292,6 +295,122 @@ def test_approval_requires_review_and_creates_audit_decision():
         assert "Only proposals in REVIEW" in str(exc)
     else:
         raise AssertionError("Expected a second decision to be rejected")
+    db.close()
+
+
+def test_return_to_review_preserves_rejection_history_and_revision_state_and_audits():
+    db, store, service = setup_service()
+    add_product(db, store, suffix="return")
+    draft_id = service.generate_controlled_batch(
+        product_limit=1, max_proposals_per_product=1
+    )["representative_proposals"][0]["id"]
+    draft = db.get(PinDraft, draft_id)
+    concept = db.get(PinConcept, draft.concept_id)
+    image = db.scalar(select(ProductImage).where(ProductImage.product_id == concept.product_id))
+    revision = ContentRevision(
+        draft_id=draft.id,
+        version=2,
+        revision_kind="COPY",
+        status="REJECTED",
+        headline="Rejected revision",
+        title=draft.title,
+        description=draft.description,
+        alt_text=draft.alt_text,
+        cta="Discover",
+        content_angle="Editorial Product Pick",
+        content_angle_key="editorial-product-pick",
+        creative_template="Editorial Product Pick",
+        creative_template_key="editorial_product_pick",
+        destination_url=draft.destination_url,
+        utm_url=draft.utm_url,
+        keywords=[],
+        facts_used={},
+        warnings=[],
+        missing_facts=[],
+        unsupported_claims=[],
+        provenance={},
+        text_fingerprint=draft.text_fingerprint,
+        source_image_id=image.id,
+        provider_mode="deterministic",
+        generation_mode="test",
+        reason="test",
+    )
+    db.add(revision)
+    db.flush()
+    service.decide(draft_id, "REJECTED", "Needs another review.")
+
+    result = service.return_to_review(draft_id)
+
+    db.expire_all()
+    assert result == {"id": draft_id, "approval_status": "REVIEW", "publishing_enabled": False}
+    assert db.get(PinDraft, draft_id).status == DraftStatus.READY_FOR_REVIEW
+    assert db.get(ContentRevision, revision.id).status == "REJECTED"
+    assert db.scalar(select(ContentVersionSelection).where(
+        ContentVersionSelection.draft_id == draft_id
+    )) is None
+    assert [approval.decision for approval in db.scalars(
+        select(PinApproval).where(PinApproval.draft_id == draft_id)
+    )] == ["REJECTED"]
+    audit = db.scalar(select(AuditLog).where(
+        AuditLog.entity_id == draft_id,
+        AuditLog.action == "PROPOSAL_RETURNED_TO_REVIEW",
+    ))
+    assert audit is not None
+    assert audit.metadata_json == {
+        "from_status": "REJECTED",
+        "to_status": "READY_FOR_REVIEW",
+        "historical_rejection_count": 1,
+    }
+    db.close()
+
+
+def test_return_to_review_requires_rejected_proposal():
+    db, store, service = setup_service()
+    add_product(db, store, suffix="state")
+    draft_id = service.generate_controlled_batch(
+        product_limit=1, max_proposals_per_product=1
+    )["representative_proposals"][0]["id"]
+
+    try:
+        service.return_to_review(draft_id)
+    except ValueError as exc:
+        assert "Only rejected proposals" in str(exc)
+    else:
+        raise AssertionError("Expected a non-rejected proposal to be refused")
+    db.close()
+
+
+def test_return_to_review_refuses_approved_history_or_publication():
+    db, store, service = setup_service()
+    add_product(db, store, suffix="approved")
+    draft_id = service.generate_controlled_batch(
+        product_limit=1, max_proposals_per_product=1
+    )["representative_proposals"][0]["id"]
+    db.get(PinDraft, draft_id).status = DraftStatus.REJECTED
+    db.add(PinApproval(draft_id=draft_id, decision="APPROVED", decided_by="test"))
+    db.commit()
+
+    try:
+        service.return_to_review(draft_id)
+    except ValueError as exc:
+        assert "Approved proposals" in str(exc)
+    else:
+        raise AssertionError("Expected approved history to be refused")
+
+    db.query(PinApproval).delete()
+    creative = add_review_creative(db, draft_id)
+    db.add(PinPublication(
+        draft_id=draft_id,
+        creative_id=creative.id,
+        publication_fingerprint="p" * 64,
+    ))
+    db.commit()
+    try:
+        service.return_to_review(draft_id)
+    except ValueError as exc:
+        assert "Published or scheduled" in str(exc)
+    else:
+        raise AssertionError("Expected publication history to be refused")
     db.close()
 
 

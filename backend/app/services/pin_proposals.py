@@ -7,11 +7,12 @@ from decimal import Decimal
 import re
 from typing import Any, Callable
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.db.session import SessionLocal
 from app.models.domain import (
     AIRequestTelemetry,
+    AuditLog,
     Board,
     Campaign,
     ContentAngle,
@@ -24,6 +25,7 @@ from app.models.domain import (
     PinConcept,
     PinCreative,
     PinDraft,
+    PinPublication,
     Product,
     ProductImage,
     ProductIntelligence,
@@ -1336,6 +1338,59 @@ class PinProposalService:
             ))
             db.commit()
             return {"id": draft.id, "approval_status": decision, "publishing_enabled": False}
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def return_to_review(self, draft_id: str) -> dict[str, Any]:
+        """Return an unpublishable rejected proposal to the human review queue.
+
+        This intentionally changes only the proposal state.  Revisions,
+        selections, and the decision history are immutable review records.
+        """
+        db = self.session_factory()
+        try:
+            draft = db.scalar(
+                select(PinDraft)
+                .where(PinDraft.id == draft_id)
+                .with_for_update()
+            )
+            if not draft:
+                raise ValueError("Proposal was not found.")
+            if draft.status != DraftStatus.REJECTED:
+                raise ValueError("Only rejected proposals can be returned to REVIEW.")
+            if db.scalar(
+                select(PinApproval.id).where(
+                    PinApproval.draft_id == draft.id,
+                    PinApproval.decision == "APPROVED",
+                )
+            ):
+                raise ValueError("Approved proposals cannot be returned to REVIEW.")
+            if db.scalar(select(PinPublication.id).where(PinPublication.draft_id == draft.id)):
+                raise ValueError("Published or scheduled proposals cannot be returned to REVIEW.")
+
+            rejection_count = db.scalar(
+                select(func.count(PinApproval.id)).where(
+                    PinApproval.draft_id == draft.id,
+                    PinApproval.decision == "REJECTED",
+                )
+            ) or 0
+            draft.status = DraftStatus.READY_FOR_REVIEW
+            db.add(AuditLog(
+                actor="manual_dashboard_action",
+                action="PROPOSAL_RETURNED_TO_REVIEW",
+                entity_type="PinDraft",
+                entity_id=draft.id,
+                metadata_json={
+                    "from_status": DraftStatus.REJECTED.value,
+                    "to_status": DraftStatus.READY_FOR_REVIEW.value,
+                    "historical_rejection_count": int(rejection_count),
+                },
+            ))
+            db.commit()
+            return {"id": draft.id, "approval_status": "REVIEW", "publishing_enabled": False}
         except Exception:
             db.rollback()
             raise

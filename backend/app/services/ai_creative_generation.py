@@ -436,8 +436,15 @@ class AICreativeGenerationService:
                 source_image_id=image.id, background_asset_id=asset.id,
                 provenance={
                     "product_image": _verified_image(image, product.id, rationale),
+                    "product_cutout": ((creative.render_spec or {}).get("image") or {}).get("cutout"),
                     "generated_background": asset.provenance | {"asset_id": asset.id, "sha256": sha},
-                    "authentic_product_image_composited_unchanged": True,
+                    "authentic_product_source_checksum_preserved": True,
+                    "authentic_product_image_composited_unchanged": not bool(
+                        (((creative.render_spec or {}).get("image") or {}).get("cutout") or {}).get("applied")
+                    ),
+                    "alpha_mask_composited": bool(
+                        (((creative.render_spec or {}).get("image") or {}).get("cutout") or {}).get("applied")
+                    ),
                 },
                 provider_mode="hosted_paid", generation_mode="provider_generated_background",
                 generation_type="image_background", intended_channel=channel,

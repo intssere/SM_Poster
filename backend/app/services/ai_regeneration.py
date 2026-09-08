@@ -1263,3 +1263,45 @@ class AIRegenerationService:
             raise
         finally:
             db.close()
+
+    def reject_image_background_revision(self, draft_id: str, revision_id: str) -> dict[str, Any]:
+        """Reject one reviewable generated background without deciding its proposal.
+
+        This deliberately does not create an approval record or mutate the
+        proposal status.  A previously proposal-rejected draft is also allowed:
+        operators can close the selected visual variant without reopening it.
+        """
+        db = self.session_factory()
+        try:
+            draft = db.get(PinDraft, draft_id)
+            if not draft:
+                raise AIRegenerationError("Proposal was not found.")
+            if draft.status not in {DraftStatus.READY_FOR_REVIEW, DraftStatus.REJECTED}:
+                raise AIRegenerationError("Only REVIEW or rejected proposals can reject an image-background revision.")
+            revision = db.get(ContentRevision, revision_id)
+            if not revision or revision.draft_id != draft_id:
+                raise AIRegenerationError("Revision was not found for this proposal.")
+            if revision.revision_kind != "IMAGE_BACKGROUND" or revision.generation_type != "image_background":
+                raise AIRegenerationError("Only image-background revisions can be rejected by this action.")
+            if revision.status != "REVIEW":
+                raise AIRegenerationError("Only revisions in REVIEW can be rejected.")
+
+            selection = db.scalar(select(ContentVersionSelection).where(
+                ContentVersionSelection.draft_id == draft_id
+            ))
+            if selection and selection.revision_id == revision.id:
+                # No selection means the immutable original is active.
+                db.delete(selection)
+            revision.status = "REJECTED"
+            db.commit()
+            return self.revision_payload(
+                revision,
+                db.get(PinCreative, revision.creative_id) if revision.creative_id else None,
+                None,
+                db.get(AIRequestTelemetry, revision.ai_telemetry_id) if revision.ai_telemetry_id else None,
+            )
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()

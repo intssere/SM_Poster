@@ -137,10 +137,9 @@ def regenerate_proposal(draft_id: str, body: RegenerationRequest):
             if body.kind == "image_background":
                 if not body.style_key:
                     raise AICreativeGenerationError("A background style is required.")
-                variants = [
-                    generation.generate_background(draft_id, body.style_key, body.channel)
-                    for _ in range(body.count)
-                ]
+                if body.count != 1:
+                    raise AICreativeGenerationError("Image-background variants are generated one at a time.")
+                variants = [generation.generate_background(draft_id, body.style_key, body.channel)]
             else:
                 variants = [
                     generation.generate_structured(draft_id, body.kind, body.channel)
@@ -156,6 +155,16 @@ def regenerate_proposal(draft_id: str, body: RegenerationRequest):
 def select_proposal_version(draft_id: str, body: VersionSelectionRequest):
     try:
         return AIRegenerationService().select_version(draft_id, body.version_id)
+    except AIRegenerationError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@router.post("/proposals/{draft_id}/versions/{revision_id}/reject")
+def reject_image_background_revision(draft_id: str, revision_id: str):
+    """Reject only a REVIEW generated-background revision; never decide the proposal."""
+    try:
+        return AIRegenerationService().reject_image_background_revision(draft_id, revision_id)
     except AIRegenerationError as exc:
         status_code = 404 if "not found" in str(exc).lower() else 409
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
@@ -194,6 +203,16 @@ def approve_proposal(draft_id: str, body: ProposalDecision | None = None):
             body.note if body else None,
             body.creative_id if body else None,
         )
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if "not found" in message.lower() else 409
+        raise HTTPException(status_code=status_code, detail=message) from exc
+
+
+@router.post("/proposals/{draft_id}/return-to-review")
+def return_proposal_to_review(draft_id: str):
+    try:
+        return PinProposalService().return_to_review(draft_id)
     except ValueError as exc:
         message = str(exc)
         status_code = 404 if "not found" in message.lower() else 409
