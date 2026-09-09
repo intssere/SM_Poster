@@ -8,6 +8,22 @@
 This runbook describes the controlled procedure only. Merging code does not
 authorize a live Pin.
 
+## Authoritative Phase 0 baseline
+
+The current merged baseline is main commit
+`19442de9ba7644bf9217669873d4a614e622fb26`, tree
+`ab6a06bffa550b712582bb7888a77539a86ba91b`, with one Alembic head, `0016`.
+The active Autoscale deployment and production API/database were certified
+healthy. Default App Storage was accessible; all 12 production rendered
+creatives had valid deterministic digest-matching PNG objects and all 12 public
+digest-addressed HEAD/GET checks passed. Production had zero publications,
+attempts, provider operations, provider submissions, or live writes.
+
+The intended connected business account is `diamondshelfllc` (internal
+connection `47d8462c-1a0e-48e0-b607-54b99dee5231`). Its persisted grants are
+exactly `user_accounts:read`, `boards:read`, and `pins:read`; `pins:write` and
+`boards:write` are absent. This is read-only evidence, not Gate A authorization.
+
 ## Purpose and protected defaults
 
 The pilot prepares exactly one reviewed Pin while preserving human approval and

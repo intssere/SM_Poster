@@ -12,22 +12,34 @@ reconnect OAuth, create a Pin, or change runtime behavior.
 
 PHASE 0 DESIGN = PASS
 PHASE 1A DEFAULT-OFF IMPLEMENTATION = PASS
+PR #39 MERGED AND PRODUCTION READINESS CERTIFIED = PASS
 GATE A = NOT AUTHORIZED
 GATE B = NOT AUTHORIZED
 
-Certified branch head: `4580b5eadee9babf23aab5e574503c4ecb154e0a`.
+Authoritative merged baseline: main commit
+`19442de9ba7644bf9217669873d4a614e622fb26`, tree
+`ab6a06bffa550b712582bb7888a77539a86ba91b`.
 Task #40 is not complete and live publishing is not authorized.
 
 ## Baseline and protected state
 
-Design baseline: main commit `73b2d0c5455f0c85d9c0ab8bae7908ff5231defe`,
-tree `7d96013385b6b01360beaf6b27a26d821d3ca71f`, Alembic `0015`.
+The current clean main and locally known `origin/main` both point to the
+authoritative merged baseline above. Alembic has one head, `0016`.
 `PUBLISHING_ENABLED=false` is the repository default and remains authoritative.
-Live OAuth requested scopes are exactly `user_accounts:read`, `boards:read`, and
-`pins:read`; `pins:write` and `boards:write` are not requested. There is no
+Production OAuth grants for the intended connected business account are exactly
+`user_accounts:read`, `boards:read`, and `pins:read`; `pins:write` and
+`boards:write` are absent. Default OAuth requests remain those same read scopes.
+There is no
 autonomous worker, automatic `PUBLISH_UNKNOWN` retry, browser automation, or
 live provider request. The Task #39 operator runbook and single-Pin readiness
 document remain required operational references.
+
+The completed read-only production certification found a successful Autoscale
+deployment, healthy API/database, accessible default App Storage, 12/12
+production rendered creatives covered by valid digest-matching PNG objects and
+12/12 digest-addressed public HEAD/GET checks passing. Production had zero
+publications, attempts, provider operations, submissions, or live writes. These
+facts certify the baseline only; they do not authorize Gate A or Gate B.
 
 ## Existing provider call flow
 
@@ -177,7 +189,8 @@ metadata, and no automatic retry. No test contacts `api.pinterest.com`.
 No database migration is required for Phase 0. Existing
 `PublicationDispatchAuthorization`, `PublicationAttempt`, reconciliation, and
 immutable publication snapshot records provide the required binding, TTL,
-single-use, audit, and outcome durability. Alembic remains `0015`.
+single-use, audit, and outcome durability. Alembic remains at the single head
+`0016`.
 
 ## Complete pre-provider checklist
 
