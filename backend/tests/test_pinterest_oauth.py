@@ -19,7 +19,9 @@ from fastapi.testclient import TestClient
 
 
 def configure(monkeypatch, **values):
-    defaults = {"DATABASE_URL": "sqlite+pysqlite:///:memory:", "PINTEREST_CLIENT_ID": "client", "PINTEREST_CLIENT_SECRET": "secret", "PINTEREST_REDIRECT_URI": "https://studio.example/callback", "PINTEREST_TOKEN_ENCRYPTION_KEY": oauth.Fernet.generate_key().decode()}
+    for key in ("REPLIT_DEPLOYMENT", "REPLIT_DEV_DOMAIN", "REPLIT_DOMAINS"):
+        monkeypatch.delenv(key, raising=False)
+    defaults = {"DATABASE_URL": "sqlite+pysqlite:///:memory:", "AUTH_ALLOWED_ORIGINS": "http://localhost:5000", "PINTEREST_CLIENT_ID": "client", "PINTEREST_CLIENT_SECRET": "secret", "PINTEREST_REDIRECT_URI": "https://studio.example/callback", "PINTEREST_TOKEN_ENCRYPTION_KEY": oauth.Fernet.generate_key().decode()}
     defaults.update(values)
     for key, value in defaults.items(): monkeypatch.setenv(key, value)
     get_settings.cache_clear()
