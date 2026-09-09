@@ -215,12 +215,12 @@ def test_dispatch_ready_path_claims_and_calls_mock_gateway_once(monkeypatch):
             type(self).calls += 1
             assert payload.link == publication.utm_url
             assert payload.link != publication.destination_url
-            return {"id": "pin-123"}
+            return {"id": "1234567890"}
 
     import asyncio
 
     result = asyncio.run(dispatch_publication(db, publication, decrypt=lambda _: "plain-token", gateway_factory=Gateway))
-    assert result == {"id": "pin-123"}
+    assert result == {"id": "1234567890"}
     db.expire_all()
     assert Gateway.calls == 1
     assert db.get(PinPublication, publication.id).status == PublicationStatus.PUBLISHED
@@ -355,7 +355,7 @@ def test_post_claim_validation_exception_fails_known_without_provider_call(monke
 
         async def create_pin(self, payload):
             type(self).calls += 1
-            return {"id": "pin-123"}
+            return {"id": "1234567890"}
 
     import asyncio
 
@@ -473,7 +473,7 @@ def test_dispatch_second_invocation_never_calls_provider(monkeypatch):
     class Gateway:
         calls = 0
         def __init__(self, *a, **kw): pass
-        async def create_pin(self, payload): type(self).calls += 1; return {"id": "pin"}
+        async def create_pin(self, payload): type(self).calls += 1; return {"id": "1234567890"}
     import asyncio
     asyncio.run(dispatch_publication(db, publication, decrypt=lambda _: "token", gateway_factory=Gateway))
     assert Gateway.calls == 1 and db.query(PublicationAttempt).filter_by(publication_id=publication.id).count() == 1

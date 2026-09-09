@@ -155,9 +155,9 @@ def test_create_pin_http_5xx_is_ambiguous_failure_without_leaks(monkeypatch):
     with pytest.raises(PinterestAmbiguousFailure) as raised:
         asyncio.run(gateway.create_pin(payload))
 
-    assert raised.value.code == "PROVIDER_AMBIGUOUS"
+    assert raised.value.code == "PROVIDER_SERVER_ERROR"
     assert raised.value.status_code == 503
-    assert str(raised.value) == "PROVIDER_AMBIGUOUS"
+    assert str(raised.value) == "PROVIDER_SERVER_ERROR"
     assert len(http_client_constructions) == 1
     assert len(post_calls) == 1
     request = post_calls[0]
@@ -224,9 +224,9 @@ def test_create_pin_timeout_is_ambiguous_failure_without_retry_or_leaks(monkeypa
     with pytest.raises(PinterestAmbiguousFailure) as raised:
         asyncio.run(gateway.create_pin(payload))
 
-    assert raised.value.code == "PROVIDER_AMBIGUOUS"
+    assert raised.value.code == "PROVIDER_TIMEOUT"
     assert raised.value.status_code is None
-    assert str(raised.value) == "PROVIDER_AMBIGUOUS"
+    assert str(raised.value) == "PROVIDER_TIMEOUT"
     assert len(http_client_constructions) == 1
     assert len(post_calls) == 1
     request = post_calls[0]
@@ -298,9 +298,9 @@ def test_create_pin_transport_error_is_ambiguous_without_retry_or_leaks(monkeypa
     with pytest.raises(PinterestAmbiguousFailure) as raised:
         asyncio.run(gateway.create_pin(payload))
 
-    assert raised.value.code == "PROVIDER_AMBIGUOUS"
+    assert raised.value.code == "PROVIDER_TRANSPORT_ERROR"
     assert raised.value.status_code is None
-    assert str(raised.value) == "PROVIDER_AMBIGUOUS"
+    assert str(raised.value) == "PROVIDER_TRANSPORT_ERROR"
     assert len(http_client_constructions) == 1
     assert len(post_calls) == 1
     request = post_calls[0]
@@ -373,9 +373,9 @@ def test_create_pin_success_with_malformed_json_is_ambiguous_without_retry_or_le
     with pytest.raises(PinterestAmbiguousFailure) as raised:
         asyncio.run(gateway.create_pin(payload))
 
-    assert raised.value.code == "PROVIDER_AMBIGUOUS"
-    assert raised.value.status_code is None
-    assert str(raised.value) == "PROVIDER_AMBIGUOUS"
+    assert raised.value.code == "PROVIDER_INVALID_RESPONSE"
+    assert raised.value.status_code == 201
+    assert str(raised.value) == "PROVIDER_INVALID_RESPONSE"
     assert len(http_client_constructions) == 1
     assert len(post_calls) == 1
     assert json_call_count == 1
@@ -402,6 +402,48 @@ def test_create_pin_success_with_malformed_json_is_ambiguous_without_retry_or_le
     assert "MALFORMED_PROVIDER_RAW_RESPONSE" not in exception_text
     assert "Authorization" not in exception_text
     assert "Bearer" not in exception_text
+
+
+def test_create_pin_success_with_non_object_json_is_ambiguous_without_retry(monkeypatch):
+    post_calls = []
+
+    class FakeResponse:
+        status_code = 201
+
+        def json(self):
+            return ["RAW_NON_OBJECT_PROVIDER_BODY_DO_NOT_LEAK"]
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def post(self, url, *, headers, json):
+            post_calls.append((url, headers, json))
+            return FakeResponse()
+
+    monkeypatch.setattr(gateway_module.httpx, "AsyncClient", lambda *args, **kwargs: FakeAsyncClient())
+    gateway = PinterestV5Gateway(access_token="test-secret-token", publishing_enabled=True)
+    payload = PinterestPinPayload(
+        board_id="board123",
+        title="Test Pin",
+        description="Test description",
+        link="https://diamondshelf.us/products/example",
+        image_url="https://cdn.example.test/example.jpg",
+        alt_text="Example product image",
+    )
+
+    with pytest.raises(PinterestAmbiguousFailure) as raised:
+        asyncio.run(gateway.create_pin(payload))
+
+    assert raised.value.code == "PROVIDER_INVALID_RESPONSE"
+    assert raised.value.status_code == 201
+    assert str(raised.value) == "PROVIDER_INVALID_RESPONSE"
+    assert len(post_calls) == 1
+    assert "RAW_NON_OBJECT_PROVIDER_BODY_DO_NOT_LEAK" not in str(raised.value)
+    assert "test-secret-token" not in str(raised.value)
 
 
 def test_create_pin_valid_success_returns_provider_result_unchanged(monkeypatch):

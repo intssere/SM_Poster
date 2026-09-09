@@ -1,4 +1,5 @@
 """Provider dispatch boundary; never invoked automatically."""
+import re
 from app.core.config import get_settings
 from datetime import datetime, timezone
 from app.models.domain import PublicationStatus, PinterestConnection, PinterestBoard, PublicationAttempt
@@ -15,11 +16,34 @@ def normalize_persisted_utc(value):
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
 
-SAFE_METADATA_KEYS = {"validated_pin_id", "http_status", "provider_error_code", "request_id", "correlation_id"}
+SAFE_METADATA_KEYS = {"validated_pin_id", "http_status", "provider_error_code"}
+SAFE_PROVIDER_ERROR_CODES = {
+    "PROVIDER_REJECTED",
+    "PROVIDER_SERVER_ERROR",
+    "PROVIDER_TIMEOUT",
+    "PROVIDER_TRANSPORT_ERROR",
+    "PROVIDER_INVALID_RESPONSE",
+    "PROVIDER_INCOMPLETE_SUCCESS",
+    "PROVIDER_AMBIGUOUS",
+}
+
 def sanitize_metadata(value):
     if not isinstance(value, dict):
         return {}
-    return {k: v for k, v in (value or {}).items() if k in SAFE_METADATA_KEYS and isinstance(k, str)}
+    sanitized = {}
+    for key, item in value.items():
+        if key not in SAFE_METADATA_KEYS or not isinstance(key, str):
+            continue
+        if key == "http_status":
+            if isinstance(item, int) and not isinstance(item, bool) and 100 <= item <= 599:
+                sanitized[key] = item
+        elif key == "provider_error_code":
+            if isinstance(item, str) and item in SAFE_PROVIDER_ERROR_CODES:
+                sanitized[key] = item
+        elif key == "validated_pin_id":
+            if isinstance(item, str) and re.fullmatch(r"[0-9]{1,80}", item):
+                sanitized[key] = item
+    return sanitized
 from urllib.parse import urlsplit
 import ipaddress
 
@@ -106,13 +130,15 @@ def finalize_post_claim_unknown(db, publication, attempt, code="POST_CLAIM_REVAL
         raise PublicationReconciliationError("Publication reconciliation could not be persisted") from None
     return publication
 
-def _reconcile(db, publication, attempt, *, status, error_code, pin_id=None):
+def _reconcile(db, publication, attempt, *, status, error_code, pin_id=None, safe_metadata=None):
     """Persist an attempt outcome, converting DB failures to a typed error."""
     attempt.status = status
     attempt.error_code = error_code
     if pin_id:
         attempt.provider_pin_id = pin_id
         attempt.safe_response_metadata = sanitize_metadata({"validated_pin_id": pin_id})
+    elif safe_metadata is not None:
+        attempt.safe_response_metadata = sanitize_metadata(safe_metadata)
     attempt.completed_at = datetime.now(timezone.utc)
     publication.status = PublicationStatus.PUBLISH_UNKNOWN if status == "UNKNOWN" else PublicationStatus.PUBLISH_FAILED
     publication.error_code = error_code
@@ -145,8 +171,8 @@ async def publish_once(db, publication, gateway, attempt=None):
     try:
         result = await gateway.create_pin(payload)
         pin_id = result.get("id") if isinstance(result, dict) else None
-        if not isinstance(pin_id, str) or not pin_id.strip():
-            raise RuntimeError("AMBIGUOUS_PROVIDER_RESULT")
+        if not isinstance(pin_id, str) or not re.fullmatch(r"[0-9]{1,80}", pin_id):
+            raise PinterestAmbiguousFailure("PROVIDER_INCOMPLETE_SUCCESS")
         attempt.status = "SUCCEEDED"; attempt.provider_pin_id = pin_id; attempt.safe_response_metadata = sanitize_metadata({"validated_pin_id": pin_id}); attempt.completed_at = datetime.now(timezone.utc)
         publication.status = PublicationStatus.PUBLISHED; publication.pinterest_pin_id = pin_id; publication.published_at = datetime.now(timezone.utc)
         try:
@@ -177,5 +203,18 @@ async def publish_once(db, publication, gateway, attempt=None):
         db.rollback(); attempt = db.get(PublicationAttempt, attempt.id)
         status = "FAILED" if isinstance(exc, PinterestDefinitiveRejection) else "UNKNOWN"
         code = "PUBLISH_UNKNOWN" if status == "UNKNOWN" else "PROVIDER_REJECTED"
-        _reconcile(db, publication, attempt, status=status, error_code=code)
+        safe_metadata = {}
+        if isinstance(exc, (PinterestDefinitiveRejection, PinterestAmbiguousFailure)):
+            safe_metadata = {
+                "http_status": exc.status_code,
+                "provider_error_code": exc.code,
+            }
+        _reconcile(
+            db,
+            publication,
+            attempt,
+            status=status,
+            error_code=code,
+            safe_metadata=safe_metadata,
+        )
         raise RuntimeError(code) from None

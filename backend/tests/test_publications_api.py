@@ -3328,9 +3328,9 @@ def test_publication_detail_returns_ordered_sanitized_attempt_history(monkeypatc
     started_2 = datetime(2026, 1, 2, 4, 4, 5, tzinfo=timezone.utc)
     completed_2 = datetime(2026, 1, 2, 4, 5, 5, tzinfo=timezone.utc)
     attempt_2_metadata = {
-        "validated_pin_id": "provider-pin-002",
+        "validated_pin_id": "1234567890",
         "http_status": 503,
-        "provider_error_code": "UPSTREAM_503",
+        "provider_error_code": "PROVIDER_SERVER_ERROR",
         "request_id": "request-safe-002",
         "correlation_id": "correlation-safe-002",
         "access_token": "ATTEMPT_HISTORY_ACCESS_TOKEN_DO_NOT_SERIALIZE",
@@ -3345,7 +3345,7 @@ def test_publication_detail_returns_ordered_sanitized_attempt_history(monkeypatc
     }
     attempt_1_metadata = {
         "http_status": 400,
-        "provider_error_code": "INVALID_REQUEST",
+        "provider_error_code": "PROVIDER_REJECTED",
         "request_id": "request-safe-001",
         "access_token": "SECOND_ACCESS_TOKEN_DO_NOT_SERIALIZE",
         "raw_body": "SECOND_RAW_BODY_DO_NOT_SERIALIZE",
@@ -3381,7 +3381,7 @@ def test_publication_detail_returns_ordered_sanitized_attempt_history(monkeypatc
                 request_fingerprint="2" * 64,
                 started_at=started_2,
                 completed_at=completed_2,
-                provider_pin_id="provider-pin-002",
+                provider_pin_id="1234567890",
                 error_code="PUBLISH_UNKNOWN",
                 safe_response_metadata=attempt_2_metadata,
             )
@@ -3401,11 +3401,9 @@ def test_publication_detail_returns_ordered_sanitized_attempt_history(monkeypatc
             db.commit()
             assert db.query(PublicationAttempt).count() == 2
             assert sanitize_metadata(attempt_2.safe_response_metadata) == {
-                "validated_pin_id": "provider-pin-002",
+                "validated_pin_id": "1234567890",
                 "http_status": 503,
-                "provider_error_code": "UPSTREAM_503",
-                "request_id": "request-safe-002",
-                "correlation_id": "correlation-safe-002",
+                "provider_error_code": "PROVIDER_SERVER_ERROR",
             }
             initial_publication_status = publication.status
             initial_publication_pin_id = publication.pinterest_pin_id
@@ -3442,18 +3440,15 @@ def test_publication_detail_returns_ordered_sanitized_attempt_history(monkeypatc
         assert attempts[0]["error_code"] == "PROVIDER_REJECTED"
         assert attempts[0]["safe_response_metadata"] == {
             "http_status": 400,
-            "provider_error_code": "INVALID_REQUEST",
-            "request_id": "request-safe-001",
+            "provider_error_code": "PROVIDER_REJECTED",
         }
         assert attempts[1]["status"] == "UNKNOWN"
-        assert attempts[1]["provider_pin_id"] == "provider-pin-002"
+        assert attempts[1]["provider_pin_id"] == "1234567890"
         assert attempts[1]["error_code"] == "PUBLISH_UNKNOWN"
         assert attempts[1]["safe_response_metadata"] == {
-            "validated_pin_id": "provider-pin-002",
+            "validated_pin_id": "1234567890",
             "http_status": 503,
-            "provider_error_code": "UPSTREAM_503",
-            "request_id": "request-safe-002",
-            "correlation_id": "correlation-safe-002",
+            "provider_error_code": "PROVIDER_SERVER_ERROR",
         }
         assert body["pinterest_pin_id"] == "provider-pin-known-999"
 
