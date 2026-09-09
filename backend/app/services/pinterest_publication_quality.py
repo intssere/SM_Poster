@@ -222,9 +222,9 @@ def _creative_checks(db: Any, publication: PinPublication, *, dispatch_provider=
             _check("SOURCE_IMAGE_MATCH", "FAIL", creative.source_image_id == publication.source_image_id, "creative source image must match immutable snapshot"),
             _check("CREATIVE_FINGERPRINT_MATCH", "FAIL", creative.creative_fingerprint == publication.creative_fingerprint, "creative fingerprint must match immutable snapshot"),
             _check("CREATIVE_MEDIA_URL_PRESENT", "FAIL", bool((creative.rendered_url or "").strip()), "creative must have a rendered media URL"),
-            _check("CREATIVE_MEDIA_URL_MATCH", "FAIL", creative.rendered_url == publication.media_url_snapshot or (dispatch_provider == "buffer" and public_creative_url_matches(creative, publication.media_url_snapshot, settings=settings)), "creative rendered URL must match immutable publication media snapshot"),
+            _check("CREATIVE_MEDIA_URL_MATCH", "FAIL", creative.rendered_url == publication.media_url_snapshot or public_creative_url_matches(creative, publication.media_url_snapshot, settings=settings), "creative rendered URL must match immutable publication media snapshot"),
             _check("CREATIVE_TEMPLATE_ID_MATCH", "FAIL", creative.template_id == publication.template_id, "creative template id must match immutable snapshot"),
-            _check("CREATIVE_RENDER_COMPLETE", "FAIL", creative.render_status == ("RENDERED" if dispatch_provider == "buffer" else "COMPLETE"), "creative render must be complete before quality pass"),
+            _check("CREATIVE_RENDER_COMPLETE", "FAIL", creative.render_status == "RENDERED", "creative render must be complete before quality pass"),
             _check("CREATIVE_DIMENSIONS_VALID", "FAIL", bool((creative.width or 0) > 0 and (creative.height or 0) > 0), "creative dimensions must be known and positive", width=creative.width, height=creative.height),
         ])
     if creative is not None and (creative.width or 0) > 0 and (creative.height or 0) > 0:

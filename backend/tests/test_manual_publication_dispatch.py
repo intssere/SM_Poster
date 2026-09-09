@@ -46,7 +46,7 @@ def _ready_publication(db, *, scopes=None, scheduled_for=None, fingerprint="p", 
         creative_fingerprint=fingerprint * 64,
         width=1000,
         height=1500,
-        render_status="COMPLETE",
+        render_status="RENDERED",
     )
     approval = PinApproval(
         id=f"approval-{fingerprint}",

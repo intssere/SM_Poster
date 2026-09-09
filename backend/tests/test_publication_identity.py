@@ -270,7 +270,7 @@ def test_generic_board_snapshot_derives_public_digest_url(monkeypatch):
         get_settings.cache_clear(); db.close()
 
 
-def test_direct_pinterest_snapshot_preserves_rendered_url_with_public_media_config(monkeypatch):
+def test_direct_pinterest_snapshot_derives_public_digest_url(monkeypatch):
     db, proposals, draft, creative = _prepared("direct-media")
     creative.render_status = "RENDERED"; creative.sha256 = "a" * 64; creative.rendered_url = f"/api/pins/creatives/{creative.id}/image"
     db.commit(); proposals.decide(draft.id, "APPROVED", reviewed_creative_id=creative.id)
@@ -280,7 +280,7 @@ def test_direct_pinterest_snapshot_preserves_rendered_url_with_public_media_conf
     monkeypatch.setenv("PUBLIC_MEDIA_BASE_URL", "https://media.example.com"); get_settings.cache_clear()
     try:
         publication = PublicationIdentityService(proposals.session_factory).create_snapshot(approval_id=approval.id, board_id=board.id, pinterest_connection_id=connection.id, pinterest_board_record_id=pinterest_board.id)
-        assert publication.media_url_snapshot == creative.rendered_url
+        assert publication.media_url_snapshot == f"https://media.example.com/api/pins/public-creatives/{creative.id}/{creative.sha256}.png"
     finally:
         get_settings.cache_clear(); db.close()
 

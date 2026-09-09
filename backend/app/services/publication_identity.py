@@ -187,7 +187,7 @@ class PublicationIdentityService:
                 title_snapshot=revision.title if revision else draft.title,
                 description_snapshot=revision.description if revision else draft.description,
                 alt_text_snapshot=revision.alt_text if revision else draft.alt_text,
-                media_url_snapshot=(creative.rendered_url if connection and pinterest_board else snapshot_media_url(creative, settings=get_settings())),
+                media_url_snapshot=snapshot_media_url(creative, settings=get_settings()),
                 integration_account_id=account.id if account else None,
                 destination_url=destination,
                 utm_url=utm_url,
