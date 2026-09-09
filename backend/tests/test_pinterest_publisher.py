@@ -9,7 +9,7 @@ def test_media_url_rejects_private_and_accepts_public():
     assert media_publishable("https://cdn.example.test/a")
 
 import pytest
-from app.integrations.pinterest.gateway import PinterestAmbiguousFailure, PinterestDefinitiveRejection
+from app.integrations.pinterest.gateway import PinterestAmbiguousFailure, PinterestDefinitiveRejection, PinterestV5Gateway
 from app.services.pinterest_publisher import PublicationReconciliationError, sanitize_metadata
 from app.models.domain import PinPublication, PublicationAttempt, PublicationStatus
 from app.services.publication_scheduler import claim, due_publications, request_fingerprint_for, schedule
@@ -384,6 +384,50 @@ def test_db_backed_publish_classifies_definitive_provider_rejection(monkeypatch)
         "http_status": 400,
         "provider_error_code": "PROVIDER_REJECTED",
     }
+    db.close()
+
+def test_db_backed_publish_classifies_http_429_as_definitive_without_retry(monkeypatch):
+    db, proposals, draft, creative = _prepared("provider-rate-limit-rejection")
+    revision = _revision(db, draft, creative, 2); _activate(db, draft, revision)
+    creative.rendered_url = "https://cdn.example.test/source.png"; db.commit()
+    proposals.decide(draft.id, "APPROVED", reviewed_creative_id=creative.id)
+    approval = db.query(PinApproval).filter_by(draft_id=draft.id).one()
+    connection = PinterestConnection(external_user_id="user-1", access_token_ciphertext="enc-a", refresh_token_ciphertext="enc-r", granted_scopes=["pins:write"], status="CONNECTED")
+    db.add(connection); db.flush()
+    board = PinterestBoard(connection_id=connection.id, external_board_id="ext-board", name="Board", is_active=True, is_eligible=True)
+    db.add(board); db.commit(); db.refresh(board)
+    publication = PublicationIdentityService(proposals.session_factory).create_snapshot(approval_id=approval.id, board_id="", pinterest_connection_id=connection.id, pinterest_board_record_id=board.id, scheduled_for=None)
+    db = proposals.session_factory(); publication = db.get(PinPublication, publication.id); publication.status = PublicationStatus.PUBLISHING; db.commit(); db.refresh(publication)
+    attempt = PublicationAttempt(publication_id=publication.id, attempt_number=1, status="STARTED", request_fingerprint=request_fingerprint_for(publication), safe_response_metadata={})
+    db.add(attempt); db.commit(); db.refresh(attempt)
+    post_calls = []
+    class FakeResponse:
+        status_code = 429
+        text = "RAW_RATE_LIMIT_BODY_DO_NOT_PERSIST"
+        def json(self):
+            raise AssertionError("429 response body must not be parsed")
+    class FakeAsyncClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, exc_type, exc, traceback): return False
+        async def post(self, url, *, headers, json):
+            post_calls.append((url, headers, json))
+            return FakeResponse()
+    monkeypatch.setattr("app.integrations.pinterest.gateway.httpx.AsyncClient", lambda *args, **kwargs: FakeAsyncClient())
+    monkeypatch.setattr("app.services.pinterest_publisher.get_settings", lambda: type("S", (), {"publishing_enabled": True})())
+    gateway = PinterestV5Gateway(access_token="mock-token", publishing_enabled=True)
+    with pytest.raises(RuntimeError, match="^PROVIDER_REJECTED$"):
+        asyncio.run(__import__("app.services.pinterest_publisher", fromlist=["publish_once"]).publish_once(db, publication, gateway, attempt))
+    db.expire_all(); persisted = db.get(PinPublication, publication.id); persisted_attempt = db.get(PublicationAttempt, attempt.id)
+    assert len(post_calls) == 1
+    assert persisted.status == PublicationStatus.PUBLISH_FAILED and persisted_attempt.status == "FAILED"
+    assert persisted.error_code == persisted_attempt.error_code == "PROVIDER_REJECTED"
+    assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None
+    assert persisted_attempt.safe_response_metadata == {
+        "http_status": 429,
+        "provider_error_code": "PROVIDER_REJECTED",
+    }
+    assert "RAW_RATE_LIMIT_BODY_DO_NOT_PERSIST" not in str(persisted_attempt.safe_response_metadata)
+    assert "mock-token" not in str(persisted_attempt.safe_response_metadata)
     db.close()
 
 def test_db_backed_publish_classifies_ambiguous_provider_failure(monkeypatch):
