@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from app.core.config import get_settings
+from app.services.media_storage import PNGMediaStorage, StorageCorrupt, StorageMissing, StorageUnavailable
 
 PUBLIC_CREATIVE_PATH = re.compile(r"/api/pins/public-creatives/([A-Za-z0-9_-]{1,36})/([a-f0-9]{64})\.png\Z")
 
@@ -57,11 +58,18 @@ def snapshot_media_url(creative, *, settings=None):
     return creative.rendered_url
 
 
-def verified_png(creative, digest, *, root=None):
+def verified_png(creative, digest, *, root=None, storage=None):
     if (creative is None or creative.render_status != "RENDERED"
             or not re.fullmatch(r"[a-f0-9]{64}", digest) or creative.sha256 != digest
             or not re.fullmatch(r"[A-Za-z0-9_-]{1,36}", creative.id or "")):
         return None
+    if storage is not None:
+        try:
+            return storage.media.read(creative.id, digest)
+        except StorageUnavailable:
+            raise
+        except (StorageCorrupt, StorageMissing, ValueError):
+            return None
     root = (root or Path(__file__).resolve().parents[2] / "generated-creatives").resolve()
     path = (root / f"{creative.id}.png").resolve()
     if path.parent != root:

@@ -68,7 +68,7 @@ def test_public_creative_route_is_exact_anonymous_get_head_boundary(auth_client,
 
     from app.main import app
     app.dependency_overrides[get_db] = lambda: FakeDB()
-    monkeypatch.setattr(proposals_routes, "verified_png", lambda row, requested_digest: verified_png(row, requested_digest, root=tmp_path))
+    monkeypatch.setattr(proposals_routes, "verified_png", lambda row, requested_digest, storage=None: verified_png(row, requested_digest, root=tmp_path))
     try:
         client = auth_client
         url = f"/api/pins/public-creatives/{creative.id}/{digest}.png"

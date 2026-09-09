@@ -5,6 +5,7 @@ from app.db.session import get_db
 from app.models.domain import PinCreative
 from app.services.public_creative_media import verified_png
 from fastapi.responses import FileResponse, Response
+from app.services.media_storage import StorageMissing, StorageUnavailable
 
 from app.schemas.pins import (
     CreativeRenderBatchRequest,
@@ -29,8 +30,13 @@ router = APIRouter(prefix="/pins", tags=["pin-proposals"])
 @router.get("/public-creatives/{creative_id}/{digest}.png", operation_id="public_creative_image_get")
 @router.head("/public-creatives/{creative_id}/{digest}.png", include_in_schema=False)
 def public_creative_image(creative_id: str, digest: str, request: Request, db=Depends(get_db)):
-    with db.no_autoflush:
-        contents = verified_png(db.get(PinCreative, creative_id), digest)
+    try:
+        with db.no_autoflush:
+            row = db.get(PinCreative, creative_id)
+            storage = CreativeStorage()
+            contents = verified_png(row, digest, storage=storage)
+    except StorageUnavailable:
+        raise HTTPException(status_code=503, detail="Media storage unavailable.")
     if contents is None:
         raise HTTPException(status_code=404, detail="Not found")
     return Response(content=contents if request.method == "GET" else b"", media_type="image/png",
@@ -171,11 +177,19 @@ def reject_image_background_revision(draft_id: str, revision_id: str):
 
 
 @router.get("/creatives/{creative_id}/image")
-def creative_image(creative_id: str):
-    storage = CreativeStorage()
+def creative_image(creative_id: str, db=Depends(get_db)):
     try:
+        storage = CreativeStorage()
+        row = db.get(PinCreative, creative_id) if hasattr(db, "get") else None
+        if row is not None and row.sha256:
+            contents = storage.read_png(creative_id, row.sha256)
+            return Response(content=contents, media_type="image/png", headers={"Cache-Control": "private, no-store"})
         path = storage.path_for(creative_id)
+    except StorageUnavailable:
+        raise HTTPException(status_code=503, detail="Media storage unavailable.")
     except CreativeRenderError as exc:
+        if isinstance(exc.__cause__, StorageUnavailable):
+            raise HTTPException(status_code=503, detail="Media storage unavailable.") from exc
         raise HTTPException(status_code=404, detail="Creative image was not found.") from exc
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Creative image was not found.")
@@ -183,11 +197,20 @@ def creative_image(creative_id: str):
 
 
 @router.get("/ai-assets/{asset_id}/image")
-def generated_asset_image(asset_id: str):
-    storage = AIGeneratedAssetStorage()
+def generated_asset_image(asset_id: str, db=Depends(get_db)):
     try:
+        storage = AIGeneratedAssetStorage()
+        from app.models.domain import AIGeneratedAsset
+        row = db.get(AIGeneratedAsset, asset_id) if hasattr(db, "get") else None
+        if row is not None and row.sha256:
+            contents = storage.read_png(asset_id, row.sha256)
+            return Response(content=contents, media_type="image/png", headers={"Cache-Control": "private, no-store"})
         path = storage.path_for(asset_id)
+    except StorageUnavailable:
+        raise HTTPException(status_code=503, detail="Media storage unavailable.")
     except AICreativeGenerationError as exc:
+        if isinstance(exc.__cause__, StorageUnavailable):
+            raise HTTPException(status_code=503, detail="Media storage unavailable.") from exc
         raise HTTPException(status_code=404, detail="Generated asset was not found.") from exc
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Generated asset was not found.")

@@ -30,6 +30,9 @@ from app.models.domain import (
     ProductImage,
 )
 from app.services.fingerprints import creative_fingerprint
+from app.services.media_storage import (
+    PNGMediaStorage, StorageCorrupt, StorageMissing, StorageUnavailable, media_key,
+)
 
 CANVAS = (1000, 1500)
 DESIGN_TOKEN_VERSION = 2
@@ -59,24 +62,35 @@ class CreativeRenderError(ValueError):
 
 
 class CreativeStorage:
-    def __init__(self, root: Path | None = None):
-        self.root = (root or Path(__file__).resolve().parents[2] / "generated-creatives").resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
+    def __init__(self, root: Path | None = None, backend=None):
+        self.media = PNGMediaStorage("creative", root=root, backend=backend)
+        self.root = self.media.root
 
     def write_png(self, creative_id: str, contents: bytes) -> str:
         if not creative_id or any(c not in "0123456789abcdef-" for c in creative_id.lower()):
             raise CreativeRenderError("Invalid creative storage key.")
-        path = (self.root / f"{creative_id}.png").resolve()
-        if path.parent != self.root:
-            raise CreativeRenderError("Invalid creative storage path.")
-        path.write_bytes(contents)
+        try:
+            self.media.write(creative_id, contents)
+            # Keep the private development path compatible with older tools.
+            if self.root is not None:
+                (self.root / f"{creative_id}.png").write_bytes(contents)
+        except (StorageCorrupt, StorageMissing, StorageUnavailable, ValueError) as exc:
+            raise CreativeRenderError("Creative storage is unavailable.") from exc
         return f"/api/pins/creatives/{creative_id}/image"
 
     def path_for(self, creative_id: str) -> Path:
+        if self.root is None:
+            raise CreativeRenderError("Creative storage is unavailable.")
         path = (self.root / f"{creative_id}.png").resolve()
         if path.parent != self.root:
             raise CreativeRenderError("Invalid creative storage key.")
         return path
+
+    def read_png(self, creative_id: str, digest: str) -> bytes:
+        try:
+            return self.media.read(creative_id, digest)
+        except (StorageCorrupt, StorageMissing, StorageUnavailable, ValueError) as exc:
+            raise CreativeRenderError("Creative storage is unavailable.") from exc
 
 
 def _font(bold: bool, size: int) -> ImageFont.FreeTypeFont:
@@ -765,7 +779,21 @@ class CreativeRenderService:
             fingerprint = creative_fingerprint(source_image_sha256=source_sha, template_key=template_key, template_version=template.version, text_hash=text_hash, layout_parameters=spec)
             existing = db.scalar(select(PinCreative).where(PinCreative.creative_fingerprint == fingerprint))
             if existing and existing.render_status == "RENDERED":
-                return {"draft_id": draft.id, "creative_id": existing.id, "status": "EXISTING", "image_url": existing.rendered_url}
+                reusable = False
+                if existing.sha256:
+                    if self.storage is None:
+                        self.storage = CreativeStorage()
+                    try:
+                        self.storage.read_png(existing.id, existing.sha256)
+                    except CreativeRenderError as exc:
+                        if isinstance(exc.__cause__, StorageUnavailable):
+                            return self._failure(db, draft, template, image, "Creative storage is unavailable.")
+                        # A missing/corrupt durable object must not be reported
+                        # as reusable; the normal render path repairs it.
+                    else:
+                        reusable = True
+                if reusable:
+                    return {"draft_id": draft.id, "creative_id": existing.id, "status": "EXISTING", "image_url": existing.rendered_url}
             creative = existing or PinCreative(draft_id=draft.id, template_id=template.id, source_image_id=image.id, creative_fingerprint=fingerprint, width=1000, height=1500)
             if not existing: db.add(creative); db.flush()
             started = time.monotonic()

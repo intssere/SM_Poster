@@ -9,3 +9,4 @@ httpx>=0.28,<1
 cryptography>=46,<47
 pillow>=12,<13
 pytest>=9,<10
+replit-object-storage>=1.0.2,<2
