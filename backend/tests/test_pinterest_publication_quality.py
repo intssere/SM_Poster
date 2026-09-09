@@ -43,7 +43,7 @@ def _publication(db, **overrides):
         creative_fingerprint="c" * 64,
         width=1000,
         height=1500,
-        render_status="COMPLETE",
+        render_status="RENDERED",
     )
     board = PinterestBoard(
         id="board-record-1",
@@ -152,6 +152,28 @@ def test_buffer_mode_accepts_digest_public_media_only_for_same_rendered_creative
     assert validate_publication_quality(db, publication, dispatch_provider="buffer", settings=settings)["status"] != "PASS"
     publication.media_url_snapshot = "https://cdn.shopify.com/arbitrary.jpg"
     assert validate_publication_quality(db, publication, dispatch_provider="buffer", settings=settings)["status"] != "PASS"
+
+
+def test_direct_mode_accepts_only_exact_digest_public_media_for_rendered_creative():
+    db = _db()
+    publication = _publication(db)
+    creative = db.get(PinCreative, publication.creative_id)
+    creative.render_status = "RENDERED"
+    creative.sha256 = "a" * 64
+    from app.services.public_creative_media import public_creative_url
+    from app.core.config import Settings
+    settings = Settings(_env_file=None, DATABASE_URL="sqlite+pysqlite:///:memory:", public_media_base_url="https://media.example.com")
+    publication.media_url_snapshot = public_creative_url(creative, settings=settings)
+    db.commit()
+
+    assert validate_publication_quality(db, publication, settings=settings)["status"] == "PASS"
+    publication.media_url_snapshot = publication.media_url_snapshot.replace("/" + "a" * 64 + ".png", "/" + "b" * 64 + ".png")
+    assert validate_publication_quality(db, publication, settings=settings)["status"] != "PASS"
+    publication.media_url_snapshot = publication.media_url_snapshot.replace("/" + "b" * 64 + ".png", f"/{creative.sha256}.png")
+    publication.media_url_snapshot = publication.media_url_snapshot.replace(creative.id, "other-creative")
+    assert validate_publication_quality(db, publication, settings=settings)["status"] != "PASS"
+    publication.media_url_snapshot = "https://media.example.com/arbitrary.png"
+    assert validate_publication_quality(db, publication, settings=settings)["status"] != "PASS"
 
 
 def _codes(result, *, failed=True):

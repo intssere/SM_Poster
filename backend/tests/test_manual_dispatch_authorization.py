@@ -84,7 +84,7 @@ def _ready_publication(db, *, scheduled_for=None, connection_scopes=None, status
         creative_fingerprint="c" * 64,
         width=1000,
         height=1500,
-        render_status="COMPLETE",
+        render_status="RENDERED",
     )
     approval = PinApproval(
         id="approval-ready",

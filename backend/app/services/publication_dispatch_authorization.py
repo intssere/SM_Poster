@@ -217,7 +217,7 @@ def manual_structural_readiness(
         or creative.source_image_id != publication.source_image_id
         or creative.creative_fingerprint != publication.creative_fingerprint
         or (creative.rendered_url != publication.media_url_snapshot and not
-            (dispatch_provider == "buffer" and public_creative_url_matches(creative, publication.media_url_snapshot)))
+            public_creative_url_matches(creative, publication.media_url_snapshot))
     ):
         return {"status": "CREATIVE_INVALID", "ready": False}
     if not media_publishable(publication.media_url_snapshot):
