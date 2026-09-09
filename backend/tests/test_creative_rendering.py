@@ -284,6 +284,20 @@ def test_provenance_failures_and_idempotence_do_not_mutate_proposal_state(tmp_pa
     assert failure["unsupported_claims_introduced"] == []
     db.close()
 
+
+def test_rendered_row_without_digest_is_repaired_not_reused(tmp_path):
+    db, factory, product, draft, service = prepared(tmp_path)
+    assert service.render_review_batch(1)["rendered"] == 1
+    creative = db.scalar(select(PinCreative).where(PinCreative.draft_id == draft.id))
+    creative.sha256 = None
+    db.commit()
+    result = service.render_review_batch(1)
+    db.refresh(creative)
+    assert result["rendered"] == 1
+    assert result["existing"] == 0
+    assert creative.sha256 and len(creative.sha256) == 64
+    db.close()
+
 def test_first_render_checksum_becomes_immutable_provenance_baseline(tmp_path):
     db, factory, product, draft, service = prepared(tmp_path)
     assert service.render_review_batch(1)["rendered"] == 1

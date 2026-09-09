@@ -39,6 +39,7 @@ from app.services.ai_regeneration import (
 )
 from app.services.creative_rendering import CreativeRenderError, CreativeRenderService, _decode_source
 from app.services.fingerprints import text_fingerprint
+from app.services.media_storage import PNGMediaStorage, StorageCorrupt, StorageMissing, StorageUnavailable
 
 
 CHANNELS = {"pinterest", "instagram", "facebook", "tiktok", "youtube_shorts"}
@@ -134,24 +135,34 @@ class AICreativeGenerationError(ValueError):
 
 
 class AIGeneratedAssetStorage:
-    def __init__(self, root: Path | None = None):
-        self.root = (root or Path(__file__).resolve().parents[2] / "generated-ai-assets").resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
+    def __init__(self, root: Path | None = None, backend=None):
+        self.media = PNGMediaStorage("ai-asset", root=root, backend=backend)
+        self.root = self.media.root
 
     def write_png(self, asset_id: str, contents: bytes) -> tuple[str, str]:
         if not asset_id or any(c not in "0123456789abcdef-" for c in asset_id.lower()):
             raise AICreativeGenerationError("Invalid generated asset storage key.")
-        path = (self.root / f"{asset_id}.png").resolve()
-        if path.parent != self.root:
-            raise AICreativeGenerationError("Invalid generated asset storage path.")
-        path.write_bytes(contents)
-        return str(path), f"/api/pins/ai-assets/{asset_id}/image"
+        try:
+            key = self.media.write(asset_id, contents)
+            if self.root is not None:
+                (self.root / f"{asset_id}.png").write_bytes(contents)
+        except (StorageCorrupt, StorageMissing, StorageUnavailable, ValueError) as exc:
+            raise AICreativeGenerationError("Generated asset storage is unavailable.") from exc
+        return key, f"/api/pins/ai-assets/{asset_id}/image"
 
     def path_for(self, asset_id: str) -> Path:
+        if self.root is None:
+            raise AICreativeGenerationError("Generated asset storage is unavailable.")
         path = (self.root / f"{asset_id}.png").resolve()
         if path.parent != self.root:
             raise AICreativeGenerationError("Invalid generated asset key.")
         return path
+
+    def read_png(self, asset_id: str, digest: str) -> bytes:
+        try:
+            return self.media.read(asset_id, digest)
+        except (StorageCorrupt, StorageMissing, StorageUnavailable, ValueError) as exc:
+            raise AICreativeGenerationError("Generated asset storage is unavailable.") from exc
 
 
 def _normalize_png(data: bytes) -> tuple[bytes, int, int]:
