@@ -76,10 +76,17 @@ class PinterestV5Gateway(PinterestGateway):
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(f"{self.api_base}/pins", headers=self.headers, json=body)
-        except (httpx.TimeoutException, httpx.TransportError):
-            raise PinterestAmbiguousFailure() from None
+        except httpx.TimeoutException:
+            raise PinterestAmbiguousFailure("PROVIDER_TIMEOUT") from None
+        except httpx.TransportError:
+            raise PinterestAmbiguousFailure("PROVIDER_TRANSPORT_ERROR") from None
         if response.status_code >= 400:
             if response.status_code < 500: raise PinterestDefinitiveRejection(status_code=response.status_code)
-            raise PinterestAmbiguousFailure(status_code=response.status_code)
-        try: return response.json()
-        except Exception: raise PinterestAmbiguousFailure() from None
+            raise PinterestAmbiguousFailure("PROVIDER_SERVER_ERROR", status_code=response.status_code)
+        try:
+            result = response.json()
+        except Exception:
+            raise PinterestAmbiguousFailure("PROVIDER_INVALID_RESPONSE", status_code=response.status_code) from None
+        if not isinstance(result, dict):
+            raise PinterestAmbiguousFailure("PROVIDER_INVALID_RESPONSE", status_code=response.status_code)
+        return result

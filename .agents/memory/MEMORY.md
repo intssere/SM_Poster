@@ -1,1 +1,2 @@
 - [Historical migration baseline](historical-migration-baseline.md) — freeze the remaining Phase 0 schema before future model migrations to prevent clean-install drift.
+- [Backend test environment isolation](backend-test-environment-isolation.md) — unset Replit deployment/auth variables before full pytest runs to avoid false auth/CORS failures.

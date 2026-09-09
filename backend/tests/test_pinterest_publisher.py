@@ -28,8 +28,18 @@ def test_media_publishability_accepts_public_https(value):
     assert media_publishable(value)
 
 def test_metadata_allowlist_removes_credentials_and_raw_payloads():
-    data = {"access_token":"secret", "refresh_token":"secret2", "Authorization":"Bearer x", "raw_body":"x", "validated_pin_id":"pin123", "http_status":201, "request_id":"r"}
-    assert sanitize_metadata(data) == {"validated_pin_id":"pin123", "http_status":201, "request_id":"r"}
+    data = {"access_token":"secret", "refresh_token":"secret2", "Authorization":"Bearer x", "raw_body":"x", "validated_pin_id":"1234567890", "http_status":201, "request_id":"token-like-value"}
+    assert sanitize_metadata(data) == {"validated_pin_id":"1234567890", "http_status":201}
+
+def test_metadata_allowlist_rejects_unbounded_provider_diagnostics():
+    data = {
+        "http_status": "400",
+        "provider_error_code": ["RAW_PROVIDER_PROSE", "secret-token"],
+        "request_id": "x" * 256,
+        "correlation_id": ["not", "scalar"],
+        "raw_body": {"token": "secret-token"},
+    }
+    assert sanitize_metadata(data) == {}
 
 @pytest.mark.parametrize("value", [None, [], ["secret"], "secret", 123])
 def test_metadata_allowlist_handles_none_and_non_mapping(value):
@@ -46,12 +56,12 @@ def test_db_backed_publish_success_records_attempt_and_provider_pin(monkeypatch)
         calls = 0
         async def create_pin(self, payload):
             self.calls += 1
-            return {"id": "pin123"}
+            return {"id": "1234567890"}
     gateway = Gateway()
     result = asyncio.run(__import__("app.services.pinterest_publisher", fromlist=["publish_once"]).publish_once(db, publication, gateway, attempt))
-    assert result["id"] == "pin123" and gateway.calls == 1
+    assert result["id"] == "1234567890" and gateway.calls == 1
     assert publication.status == PublicationStatus.PUBLISHED
-    assert attempt.status == "SUCCEEDED" and attempt.provider_pin_id == "pin123"
+    assert attempt.status == "SUCCEEDED" and attempt.provider_pin_id == "1234567890"
     db.close()
 
 def test_publish_payload_uses_utm_url_as_provider_link(monkeypatch):
@@ -79,9 +89,9 @@ def test_publish_payload_uses_utm_url_as_provider_link(monkeypatch):
         async def create_pin(self, payload):
             assert payload.link == publication.utm_url
             assert payload.link != publication.destination_url
-            return {"id": "pin-utm"}
+            return {"id": "2345678901"}
     result = asyncio.run(__import__("app.services.pinterest_publisher", fromlist=["publish_once"]).publish_once(db, publication, Gateway(), attempt))
-    assert result["id"] == "pin-utm"
+    assert result["id"] == "2345678901"
     db.close()
 
 def test_db_backed_publish_blocks_external_board_id_mismatch(monkeypatch):
@@ -324,13 +334,13 @@ def test_db_backed_publish_success_uses_real_execution_readiness(monkeypatch):
     monkeypatch.setattr("app.services.pinterest_publisher.get_settings", lambda: type("S", (), {"publishing_enabled": True})())
     class FakeGateway:
         calls = 0
-        async def create_pin(self, payload): self.calls += 1; return {"id": "pin123"}
+        async def create_pin(self, payload): self.calls += 1; return {"id": "1234567890"}
     gateway = FakeGateway()
     asyncio.run(__import__("app.services.pinterest_publisher", fromlist=["publish_once"]).publish_once(db, publication, gateway, attempt))
     db.expire_all(); persisted = db.get(PinPublication, publication.id); persisted_attempt = db.get(PublicationAttempt, attempt.id)
     assert gateway.calls == 1
-    assert persisted.status == PublicationStatus.PUBLISHED and persisted.pinterest_pin_id == "pin123"
-    assert persisted_attempt.status == "SUCCEEDED" and persisted_attempt.provider_pin_id == "pin123"
+    assert persisted.status == PublicationStatus.PUBLISHED and persisted.pinterest_pin_id == "1234567890"
+    assert persisted_attempt.status == "SUCCEEDED" and persisted_attempt.provider_pin_id == "1234567890"
     db.close()
 
 def test_db_backed_publish_classifies_definitive_provider_rejection(monkeypatch):
@@ -369,7 +379,11 @@ def test_db_backed_publish_classifies_definitive_provider_rejection(monkeypatch)
     assert gateway.calls == 1
     assert persisted.status == PublicationStatus.PUBLISH_FAILED and persisted_attempt.status == "FAILED"
     assert persisted.error_code == persisted_attempt.error_code == "PROVIDER_REJECTED"
-    assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None and persisted_attempt.safe_response_metadata == {}
+    assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None
+    assert persisted_attempt.safe_response_metadata == {
+        "http_status": 400,
+        "provider_error_code": "PROVIDER_REJECTED",
+    }
     db.close()
 
 def test_db_backed_publish_classifies_ambiguous_provider_failure(monkeypatch):
@@ -401,7 +415,7 @@ def test_db_backed_publish_classifies_ambiguous_provider_failure(monkeypatch):
         calls = 0
         async def create_pin(self, payload):
             self.calls += 1
-            raise PinterestAmbiguousFailure(code="PROVIDER_AMBIGUOUS", status_code=503)
+            raise PinterestAmbiguousFailure(code="PROVIDER_SERVER_ERROR", status_code=503)
     gateway = FakeGateway()
     with pytest.raises(RuntimeError, match="^PUBLISH_UNKNOWN$"):
         asyncio.run(__import__("app.services.pinterest_publisher", fromlist=["publish_once"]).publish_once(db, publication, gateway, attempt))
@@ -409,7 +423,11 @@ def test_db_backed_publish_classifies_ambiguous_provider_failure(monkeypatch):
     assert gateway.calls == 1
     assert persisted.status == PublicationStatus.PUBLISH_UNKNOWN and persisted_attempt.status == "UNKNOWN"
     assert persisted.error_code == persisted_attempt.error_code == "PUBLISH_UNKNOWN"
-    assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None and persisted_attempt.safe_response_metadata == {}
+    assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None
+    assert persisted_attempt.safe_response_metadata == {
+        "http_status": 503,
+        "provider_error_code": "PROVIDER_SERVER_ERROR",
+    }
     db.close()
 
 def test_db_backed_publish_classifies_timeout_as_unknown(monkeypatch):
@@ -441,7 +459,7 @@ def test_db_backed_publish_classifies_timeout_as_unknown(monkeypatch):
         calls = 0
         async def create_pin(self, payload):
             self.calls += 1
-            raise TimeoutError("simulated post-dispatch timeout")
+            raise PinterestAmbiguousFailure(code="PROVIDER_TIMEOUT")
     gateway = FakeGateway()
     with pytest.raises(RuntimeError, match="^PUBLISH_UNKNOWN$"):
         asyncio.run(__import__("app.services.pinterest_publisher", fromlist=["publish_once"]).publish_once(db, publication, gateway, attempt))
@@ -449,7 +467,10 @@ def test_db_backed_publish_classifies_timeout_as_unknown(monkeypatch):
     assert gateway.calls == 1
     assert persisted.status == PublicationStatus.PUBLISH_UNKNOWN and persisted_attempt.status == "UNKNOWN"
     assert persisted.error_code == persisted_attempt.error_code == "PUBLISH_UNKNOWN"
-    assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None and persisted_attempt.safe_response_metadata == {}
+    assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None
+    assert persisted_attempt.safe_response_metadata == {
+        "provider_error_code": "PROVIDER_TIMEOUT",
+    }
     db.close()
 
 def test_db_backed_publish_classifies_connection_reset_as_unknown(monkeypatch):
@@ -481,7 +502,7 @@ def test_db_backed_publish_classifies_connection_reset_as_unknown(monkeypatch):
         calls = 0
         async def create_pin(self, payload):
             self.calls += 1
-            raise ConnectionResetError("simulated post-dispatch connection reset")
+            raise PinterestAmbiguousFailure(code="PROVIDER_TRANSPORT_ERROR")
     gateway = FakeGateway()
     with pytest.raises(RuntimeError, match="^PUBLISH_UNKNOWN$"):
         asyncio.run(__import__("app.services.pinterest_publisher", fromlist=["publish_once"]).publish_once(db, publication, gateway, attempt))
@@ -489,7 +510,10 @@ def test_db_backed_publish_classifies_connection_reset_as_unknown(monkeypatch):
     assert gateway.calls == 1
     assert persisted.status == PublicationStatus.PUBLISH_UNKNOWN and persisted_attempt.status == "UNKNOWN"
     assert persisted.error_code == persisted_attempt.error_code == "PUBLISH_UNKNOWN"
-    assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None and persisted_attempt.safe_response_metadata == {}
+    assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None
+    assert persisted_attempt.safe_response_metadata == {
+        "provider_error_code": "PROVIDER_TRANSPORT_ERROR",
+    }
     db.close()
 
 def test_db_backed_publish_classifies_empty_success_body_as_unknown(monkeypatch):
@@ -530,10 +554,13 @@ def test_db_backed_publish_classifies_empty_success_body_as_unknown(monkeypatch)
     assert persisted.status == PublicationStatus.PUBLISH_UNKNOWN and persisted_attempt.status == "UNKNOWN"
     assert persisted.error_code == persisted_attempt.error_code == "PUBLISH_UNKNOWN"
     assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None
-    assert persisted.published_at is None and persisted_attempt.safe_response_metadata == {}
+    assert persisted.published_at is None
+    assert persisted_attempt.safe_response_metadata == {
+        "provider_error_code": "PROVIDER_INCOMPLETE_SUCCESS",
+    }
     db.close()
 
-def test_db_backed_publish_classifies_blank_pin_id_as_unknown(monkeypatch):
+def test_db_backed_publish_classifies_oversized_non_pin_id_as_unknown(monkeypatch):
     db, proposals, draft, creative = _prepared("blank-provider-pin-id")
     revision = _revision(db, draft, creative, 2); _activate(db, draft, revision)
     creative.rendered_url = "https://cdn.example.test/source.png"; db.commit()
@@ -562,7 +589,7 @@ def test_db_backed_publish_classifies_blank_pin_id_as_unknown(monkeypatch):
         calls = 0
         async def create_pin(self, payload):
             self.calls += 1
-            return {"id": ""}
+            return {"id": "sensitive-token-material-" * 20}
     gateway = FakeGateway()
     with pytest.raises(RuntimeError, match="^PUBLISH_UNKNOWN$"):
         asyncio.run(__import__("app.services.pinterest_publisher", fromlist=["publish_once"]).publish_once(db, publication, gateway, attempt))
@@ -572,7 +599,11 @@ def test_db_backed_publish_classifies_blank_pin_id_as_unknown(monkeypatch):
     assert persisted_attempt.status == "UNKNOWN" and persisted_attempt.status != "SUCCEEDED"
     assert persisted.error_code == persisted_attempt.error_code == "PUBLISH_UNKNOWN"
     assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None
-    assert persisted.published_at is None and persisted_attempt.safe_response_metadata == {}
+    assert persisted.published_at is None
+    assert persisted_attempt.safe_response_metadata == {
+        "provider_error_code": "PROVIDER_INCOMPLETE_SUCCESS",
+    }
+    assert "sensitive-token-material" not in str(persisted_attempt.safe_response_metadata)
     db.close()
 
 def test_db_backed_publish_success_commit_failure_reconciles_unknown(monkeypatch):
@@ -604,7 +635,7 @@ def test_db_backed_publish_success_commit_failure_reconciles_unknown(monkeypatch
         calls = 0
         async def create_pin(self, payload):
             self.calls += 1
-            return {"id": "pin123"}
+            return {"id": "1234567890"}
     gateway = FakeGateway()
     real_commit = db.commit
     commit_calls = 0
@@ -625,8 +656,8 @@ def test_db_backed_publish_success_commit_failure_reconciles_unknown(monkeypatch
     assert persisted.status == PublicationStatus.PUBLISH_UNKNOWN and persisted.status != PublicationStatus.PUBLISHED
     assert persisted_attempt.status == "UNKNOWN" and persisted_attempt.status != "SUCCEEDED"
     assert persisted.error_code == persisted_attempt.error_code == "PUBLISHED_STATE_PERSISTENCE_UNKNOWN"
-    assert persisted.pinterest_pin_id == "pin123" and persisted_attempt.provider_pin_id == "pin123"
-    assert persisted_attempt.safe_response_metadata == {"validated_pin_id": "pin123"}
+    assert persisted.pinterest_pin_id == "1234567890" and persisted_attempt.provider_pin_id == "1234567890"
+    assert persisted_attempt.safe_response_metadata == {"validated_pin_id": "1234567890"}
     assert persisted.published_at is None
     db.close()
 
@@ -659,7 +690,7 @@ def test_db_backed_publish_success_and_reconciliation_commit_failure_raises_reco
         calls = 0
         async def create_pin(self, payload):
             self.calls += 1
-            return {"id": "pin123"}
+            return {"id": "1234567890"}
     gateway = FakeGateway()
     real_commit = db.commit
     commit_calls = 0
@@ -795,7 +826,10 @@ def test_db_backed_publish_unknown_cannot_be_automatically_retried(monkeypatch):
     assert final_publication.status == PublicationStatus.PUBLISH_UNKNOWN and final_publication.error_code == "PUBLISH_UNKNOWN"
     assert [(item.attempt_number, item.status, item.error_code) for item in final_attempts] == [(1, "UNKNOWN", "PUBLISH_UNKNOWN")]
     assert final_publication.pinterest_pin_id is None and final_attempts[0].provider_pin_id is None
-    assert final_attempts[0].safe_response_metadata == {}
+    assert final_attempts[0].safe_response_metadata == {
+        "http_status": 503,
+        "provider_error_code": "PROVIDER_AMBIGUOUS",
+    }
     db.close()
 
 def test_db_backed_publish_blocks_request_fingerprint_mismatch(monkeypatch):
