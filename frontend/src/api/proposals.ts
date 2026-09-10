@@ -275,6 +275,14 @@ export async function generateProposals(filters: ProposalFilters = {}): Promise<
   }))
 }
 
+export async function generateExactProduct(productId: string): Promise<ProposalReport & { rendered_creatives: Array<Record<string, unknown>> }> {
+  return json(await fetch('/api/pins/generate/exact-product', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ product_id: productId, max_proposals_per_product: 1 }),
+  }))
+}
+
 export async function decideProposal(id: string, decision: 'approve' | 'reject', creativeId?: string, note?: string) {
   return json<{ id: string; approval_status: string; publishing_enabled: boolean }>(
     await fetch(`/api/pins/proposals/${id}/${decision}`, {

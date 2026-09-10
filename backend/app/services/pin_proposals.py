@@ -1083,9 +1083,13 @@ class PinProposalService:
         max_proposals_per_product: int = MAX_PROPOSALS_PER_PRODUCT,
         filters: dict[str, Any] | None = None,
         dry_run: bool = False,
+        exact_product_id: str | None = None,
+        renderer: Any | None = None,
     ) -> dict[str, Any]:
         product_limit = min(max(product_limit, 1), MAX_CONTROLLED_PRODUCTS)
         max_proposals_per_product = min(max(max_proposals_per_product, 1), MAX_PROPOSALS_PER_PRODUCT)
+        if exact_product_id is not None and dry_run:
+            raise ValueError("Exact-product generation does not support dry-run mode.")
         db = self.session_factory()
         duplicate_attempts = 0
         skipped_products: list[dict[str, str]] = []
@@ -1095,10 +1099,18 @@ class PinProposalService:
             existing_product_ids = set(db.scalars(select(PinConcept.product_id)))
             unused = [item for item in all_products if item.product.id not in existing_product_ids]
             used = [item for item in all_products if item.product.id in existing_product_ids]
-            selected = _select_products(unused, product_limit)
-            if len(selected) < product_limit:
-                selected.extend(_select_products(used, product_limit - len(selected)))
             candidates = [*unused, *used]
+            if exact_product_id is not None:
+                selected = [item for item in candidates if item.product.id == exact_product_id]
+                if not selected:
+                    raise ValueError(
+                        "Exact product is unavailable or lacks eligible persisted Shopify media and provenance."
+                    )
+                product_limit = 1
+            else:
+                selected = _select_products(unused, product_limit)
+                if len(selected) < product_limit:
+                    selected.extend(_select_products(used, product_limit - len(selected)))
             selected_ids = {item.product.id for item in selected}
             not_selected_due_to_batch_limit = max(len(candidates) - len(selected_ids), 0)
             if dry_run:
@@ -1230,8 +1242,20 @@ class PinProposalService:
                     draft.status = DraftStatus.READY_FOR_REVIEW
                     db.flush()
                     created.append(_serialize_proposal(item.product, item.intelligence, rationale, draft))
+            if exact_product_id is not None and not created:
+                raise ValueError("The exact product already has this deterministic proposal.")
+            rendered_creatives = []
+            if renderer is not None:
+                for proposal in created:
+                    rendered_creatives.append(
+                        renderer.render_variant(
+                            proposal["id"],
+                            proposal["creative_template_key"],
+                            db=db,
+                        )
+                    )
             db.commit()
-            return self._report(
+            report = self._report(
                 created,
                 products_selected=len(selected),
                 duplicate_attempts=duplicate_attempts,
@@ -1241,6 +1265,9 @@ class PinProposalService:
                 diversity_diagnostics=ranking_diagnostics,
                 sample_source="new_ranked_generation",
             )
+            if renderer is not None:
+                report["rendered_creatives"] = rendered_creatives
+            return report
         except Exception:
             db.rollback()
             raise
