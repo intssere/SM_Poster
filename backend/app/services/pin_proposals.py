@@ -1088,6 +1088,8 @@ class PinProposalService:
     ) -> dict[str, Any]:
         product_limit = min(max(product_limit, 1), MAX_CONTROLLED_PRODUCTS)
         max_proposals_per_product = min(max(max_proposals_per_product, 1), MAX_PROPOSALS_PER_PRODUCT)
+        if exact_product_id is not None and dry_run:
+            raise ValueError("Exact-product generation does not support dry-run mode.")
         db = self.session_factory()
         duplicate_attempts = 0
         skipped_products: list[dict[str, str]] = []

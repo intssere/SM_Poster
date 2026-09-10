@@ -27,7 +27,7 @@ from app.models.domain import (
     AuditLog,
 )
 from app.services.pin_proposals import PinProposalService
-from app.services.creative_rendering import CreativeRenderService, CreativeStorage
+from app.services.creative_rendering import CreativeRenderError, CreativeRenderService, CreativeStorage
 
 
 PROPOSAL_STATE_MODELS = (
@@ -286,6 +286,61 @@ def test_exact_product_generation_creates_review_creative_without_publication_or
     assert db.get(PinDraft, draft_id).status == DraftStatus.READY_FOR_REVIEW
     assert report["rendered_creatives"][0]["status"] == "RENDERED"
     assert db.scalar(select(func.count(PinCreative.id))) == 1
+    assert db.scalar(select(func.count(PinPublication.id))) == 0
+    assert db.scalar(select(func.count(PublicationAttempt.id))) == 0
+    db.close()
+
+
+def test_exact_product_render_failure_rolls_back_all_proposal_records():
+    db, store, service = setup_service()
+    product = add_product(db, store, suffix="rollback", vendor="Lattafa")
+
+    class FailingRenderer:
+        def render_variant(self, draft_id, template_key, *, db):
+            assert draft_id
+            assert template_key
+            assert db.scalar(select(func.count(PinConcept.id))) == 1
+            assert db.scalar(select(func.count(PinDraft.id))) == 1
+            raise CreativeRenderError("Mocked source download failed.")
+
+    try:
+        service.generate_controlled_batch(
+            product_limit=1,
+            max_proposals_per_product=1,
+            exact_product_id=product.id,
+            renderer=FailingRenderer(),
+        )
+        assert False, "render failure should fail exact-product generation"
+    except CreativeRenderError as exc:
+        assert "Mocked source download failed" in str(exc)
+
+    db.expire_all()
+    assert db.scalar(select(func.count(PinConcept.id))) == 0
+    assert db.scalar(select(func.count(PinDraft.id))) == 0
+    assert db.scalar(select(func.count(PinCreative.id))) == 0
+    assert db.scalar(select(func.count(PinPublication.id))) == 0
+    assert db.scalar(select(func.count(PublicationAttempt.id))) == 0
+    db.close()
+
+
+def test_exact_product_dry_run_fails_closed_without_persistence():
+    db, store, service = setup_service()
+    product = add_product(db, store, suffix="dry-run", vendor="Lattafa")
+
+    try:
+        service.generate_controlled_batch(
+            product_limit=1,
+            max_proposals_per_product=1,
+            exact_product_id=product.id,
+            dry_run=True,
+        )
+        assert False, "exact-product dry run should fail closed"
+    except ValueError as exc:
+        assert "does not support dry-run" in str(exc)
+
+    assert db.scalar(select(func.count(PinConcept.id))) == 0
+    assert db.scalar(select(func.count(PinDraft.id))) == 0
+    assert db.scalar(select(func.count(PinCreative.id))) == 0
     assert db.scalar(select(func.count(PinPublication.id))) == 0
     assert db.scalar(select(func.count(PublicationAttempt.id))) == 0
     db.close()
