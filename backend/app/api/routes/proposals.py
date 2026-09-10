@@ -9,6 +9,7 @@ from app.services.media_storage import StorageMissing, StorageUnavailable
 
 from app.schemas.pins import (
     CreativeRenderBatchRequest,
+    ExactProductProposalRequest,
     ProposalDecision,
     ProposalGenerateRequest,
     RegenerationRequest,
@@ -62,6 +63,22 @@ def generate_proposals(body: ProposalGenerateRequest):
         filters=filters,
         dry_run=body.dry_run,
     )
+
+
+@router.post("/generate/exact-product")
+def generate_exact_product(body: ExactProductProposalRequest):
+    try:
+        return {
+            **PinProposalService().generate_controlled_batch(
+            product_limit=1,
+            max_proposals_per_product=body.max_proposals_per_product,
+            exact_product_id=body.product_id,
+            renderer=CreativeRenderService(),
+            ),
+            "publishing_enabled": False,
+        }
+    except (ValueError, CreativeRenderError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/proposals")

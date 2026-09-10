@@ -43,6 +43,11 @@ class ProposalGenerateRequest(BaseModel):
     dry_run: bool = False
 
 
+class ExactProductProposalRequest(BaseModel):
+    product_id: str = Field(min_length=36, max_length=36)
+    max_proposals_per_product: int = Field(default=1, ge=1, le=2)
+
+
 class ProposalDecision(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
     creative_id: str | None = Field(default=None, min_length=1, max_length=36)

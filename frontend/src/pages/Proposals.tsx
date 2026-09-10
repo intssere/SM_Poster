@@ -6,6 +6,7 @@ import {
   AIProviderStatus,
   AIUsage,
   decideProposal,
+  generateExactProduct,
   generateProposals,
   getAISettings,
   getAIStatus,
@@ -18,6 +19,7 @@ import {
   renderCreatives,
   updateAISettings,
 } from '../api/proposals'
+import { CatalogProduct, getProducts } from '../api/catalog'
 import { RevisionControls } from './RevisionControls'
 
 function formatDate(value?: string | null) {
@@ -101,6 +103,8 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
   const [rendering, setRendering] = useState(false)
   const [workingId, setWorkingId] = useState<string | null>(null)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [catalogProducts, setCatalogProducts] = useState<CatalogProduct[]>([])
+  const [exactProductId, setExactProductId] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -121,6 +125,29 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
   }, [status])
 
   useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    const controller = new AbortController()
+    const filters = {
+      search: '', vendor: '', productType: '', stockStatus: 'in_stock',
+      eligibility: 'eligible', normalizationStatus: '', minPrice: '', maxPrice: '',
+    }
+    void (async () => {
+      const items: CatalogProduct[] = []
+      let offset = 0
+      while (true) {
+        const page = await getProducts(filters, offset, controller.signal)
+        items.push(...page.items)
+        offset += page.items.length
+        if (!page.items.length || offset >= page.total) break
+      }
+      return items
+    })()
+      .then(setCatalogProducts)
+      .catch((error) => {
+        if (!controller.signal.aborted) setMessage({ type: 'error', text: `Catalog products could not be loaded: ${(error as Error).message}` })
+      })
+    return () => controller.abort()
+  }, [])
 
   async function generate() {
     setGenerating(true); setMessage(null)
@@ -128,6 +155,17 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
       const report = await generateProposals({ dry_run: true })
       setQa(report)
       setMessage({ type: 'success', text: `${report.proposals_generated} proposals evaluated for ${report.products_selected} products. Dry run made ${report.mutations_performed} database changes.` })
+    } catch (error) { setMessage({ type: 'error', text: (error as Error).message }) }
+    finally { setGenerating(false) }
+  }
+
+  async function generateExact() {
+    if (!exactProductId) return
+    setGenerating(true); setMessage(null)
+    try {
+      const report = await generateExactProduct(exactProductId)
+      await load()
+      setMessage({ type: 'success', text: `Created ${report.proposals_generated} persistent review proposal and its local creative for the selected product. Nothing was published.` })
     } catch (error) { setMessage({ type: 'error', text: (error as Error).message }) }
     finally { setGenerating(false) }
   }
@@ -206,6 +244,13 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
     <header className="page-heading">
       <div><p className="eyebrow">PIN PROPOSALS / REVIEW</p><h2>Approval Queue</h2><p>Compare authentic catalog sources with rendered Pinterest output before making an explicit decision.</p></div>
       <div className="queue-actions">
+        <select aria-label="Exact catalog product" value={exactProductId} onChange={(event) => setExactProductId(event.target.value)}>
+          <option value="">Choose one catalog product</option>
+          {catalogProducts.map((product) => <option key={product.id} value={product.id}>{product.title} · {product.vendor || 'Unknown vendor'} · {product.handle}</option>)}
+        </select>
+        <button className="primary-action" onClick={generateExact} disabled={generating || !exactProductId}>
+          <Sparkles size={16} />Create exact product review
+        </button>
         {onOpenGallery && <button className="secondary-action" onClick={onOpenGallery}><Images size={16} />View Content Library</button>}
         <button className="secondary-action" onClick={render} disabled={rendering}><RefreshCw size={16} className={rendering ? 'spin' : ''} />{rendering ? 'Rendering 12 previews' : 'Render 12 previews'}</button>
         <button className="primary-action" onClick={generate} disabled={generating}><RefreshCw size={16} className={generating ? 'spin' : ''} />{generating ? 'Evaluating ranked sample' : 'Run ranking dry run'}</button>
