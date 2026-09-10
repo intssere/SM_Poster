@@ -128,6 +128,26 @@ def test_catalog_general_search_and_pagination_unchanged(catalog_filter_client):
     assert page["total"] == 2 and len(page["items"]) == 1 and page["offset"] == 1
 
 
+def test_catalog_search_matches_exact_product_id_with_existing_eligibility_filters(catalog_filter_client):
+    client, _ = catalog_filter_client
+
+    response = client.get(
+        "/api/catalog/products",
+        params={
+            "search": "filter-0",
+            "stock_status": "in_stock",
+            "eligibility": "eligible",
+            "offset": 0,
+            "limit": 20,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert [item["id"] for item in response.json()["items"]] == ["filter-0"]
+    assert response.json()["limit"] == 20
+
+
 def test_catalog_filter_options_clean_sorted_bounded_read_only(catalog_filter_client, monkeypatch):
     from app.api.routes import catalog
     client, factory = catalog_filter_client

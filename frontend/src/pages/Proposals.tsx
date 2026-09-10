@@ -21,6 +21,15 @@ import {
 } from '../api/proposals'
 import { CatalogProduct, getProducts } from '../api/catalog'
 import { RevisionControls } from './RevisionControls'
+import {
+  EXACT_PRODUCT_SEARCH_LIMIT,
+  exactProductSearchFailed,
+  exactProductSearchOptions,
+  exactProductSearchQueryChanged,
+  exactProductSearchStarted,
+  exactProductSearchSucceeded,
+  initialExactProductSearchState,
+} from './exactProductSearchState'
 
 function formatDate(value?: string | null) {
   if (!value) return 'Just now'
@@ -103,7 +112,7 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
   const [rendering, setRendering] = useState(false)
   const [workingId, setWorkingId] = useState<string | null>(null)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
-  const [catalogProducts, setCatalogProducts] = useState<CatalogProduct[]>([])
+  const [exactProductSearch, setExactProductSearch] = useState(initialExactProductSearchState)
   const [exactProductId, setExactProductId] = useState('')
 
   const load = useCallback(async () => {
@@ -126,28 +135,33 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
 
   useEffect(() => { void load() }, [load])
   useEffect(() => {
+    const requestId = exactProductSearch.requestId
+    const query = exactProductSearch.query.trim()
+    if (!query) return
     const controller = new AbortController()
-    const filters = {
-      search: '', vendor: '', productType: '', stockStatus: 'in_stock',
-      eligibility: 'eligible', normalizationStatus: '', minPrice: '', maxPrice: '',
-    }
-    void (async () => {
-      const items: CatalogProduct[] = []
-      let offset = 0
-      while (true) {
-        const page = await getProducts(filters, offset, controller.signal)
-        items.push(...page.items)
-        offset += page.items.length
-        if (!page.items.length || offset >= page.total) break
+    const timer = window.setTimeout(() => {
+      setExactProductSearch((current) => exactProductSearchStarted(current, requestId))
+      const filters = {
+        search: query, vendor: '', productType: '', stockStatus: 'in_stock',
+        eligibility: 'eligible', normalizationStatus: '', minPrice: '', maxPrice: '',
       }
-      return items
-    })()
-      .then(setCatalogProducts)
-      .catch((error) => {
-        if (!controller.signal.aborted) setMessage({ type: 'error', text: `Catalog products could not be loaded: ${(error as Error).message}` })
-      })
-    return () => controller.abort()
-  }, [])
+      void getProducts(filters, 0, controller.signal, EXACT_PRODUCT_SEARCH_LIMIT)
+        .then(({ items }) => {
+          if (!controller.signal.aborted) {
+            setExactProductSearch((current) => exactProductSearchSucceeded(current, items, requestId))
+          }
+        })
+        .catch((error) => {
+          if (!controller.signal.aborted) {
+            setExactProductSearch((current) => exactProductSearchFailed(current, (error as Error).message, requestId))
+          }
+        })
+    }, 300)
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [exactProductSearch.query, exactProductSearch.requestId])
 
   async function generate() {
     setGenerating(true); setMessage(null)
@@ -244,10 +258,25 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
     <header className="page-heading">
       <div><p className="eyebrow">PIN PROPOSALS / REVIEW</p><h2>Approval Queue</h2><p>Compare authentic catalog sources with rendered Pinterest output before making an explicit decision.</p></div>
       <div className="queue-actions">
-        <select aria-label="Exact catalog product" value={exactProductId} onChange={(event) => setExactProductId(event.target.value)}>
-          <option value="">Choose one catalog product</option>
-          {catalogProducts.map((product) => <option key={product.id} value={product.id}>{product.title} · {product.vendor || 'Unknown vendor'} · {product.handle}</option>)}
+        <input
+          aria-label="Search exact catalog product"
+          value={exactProductSearch.query}
+          onChange={(event) => setExactProductSearch((current) => exactProductSearchQueryChanged(current, event.target.value))}
+          placeholder="Search title, handle, or product ID"
+        />
+        <select
+          aria-label="Exact catalog product"
+          value={exactProductId}
+          onChange={(event) => {
+            const selected = exactProductSearchOptions(exactProductSearch).find((product) => product.id === event.target.value) || null
+            setExactProductId(event.target.value)
+            setExactProductSearch((current) => ({ ...current, selected }))
+          }}
+        >
+          <option value="">{exactProductSearch.loading ? 'Searching catalog…' : 'Choose one matching product'}</option>
+          {exactProductSearchOptions(exactProductSearch).map((product) => <option key={product.id} value={product.id}>{product.title} · {product.vendor || 'Unknown vendor'} · {product.handle}</option>)}
         </select>
+        {exactProductSearch.error && <span className="proposal-warning" role="alert">Catalog search failed: {exactProductSearch.error}</span>}
         <button className="primary-action" onClick={generateExact} disabled={generating || !exactProductId}>
           <Sparkles size={16} />Create exact product review
         </button>

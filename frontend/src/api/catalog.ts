@@ -111,6 +111,7 @@ export async function getProducts(
   filters: ProductFilters,
   offset: number,
   signal?: AbortSignal,
+  limit = 50,
 ): Promise<{ items: CatalogProduct[]; total: number; offset: number; limit: number }> {
   const params = new URLSearchParams()
   if (filters.search) params.set('search', filters.search)
@@ -122,7 +123,7 @@ export async function getProducts(
   if (filters.minPrice) params.set('min_price', filters.minPrice)
   if (filters.maxPrice) params.set('max_price', filters.maxPrice)
   params.set('offset', String(offset))
-  params.set('limit', '50')
+  params.set('limit', String(Math.min(Math.max(limit, 1), 50)))
   return json(await fetch(`/api/catalog/products?${params}`, { signal }))
 }
 

@@ -234,8 +234,10 @@ def list_products(
         )
         filters = []
         if search:
-            term = f"%{search.strip()}%"
+            search_value = search.strip()
+            term = f"%{search_value}%"
             filters.append(or_(
+                Product.id == search_value,
                 Product.title.ilike(term),
                 Product.handle.ilike(term),
                 Product.vendor.ilike(term),
