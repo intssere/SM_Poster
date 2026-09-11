@@ -21,6 +21,8 @@ import {
 } from '../api/proposals'
 import { CatalogProduct, getProducts } from '../api/catalog'
 import { RevisionControls } from './RevisionControls'
+import { createPublication, getEligibleDestinations, type EligibleDestination } from '../api/publications'
+import { canCreatePublication } from './publicationControl'
 import {
   EXACT_PRODUCT_SEARCH_LIMIT,
   exactProductSearchFailed,
@@ -114,6 +116,9 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [exactProductSearch, setExactProductSearch] = useState(initialExactProductSearchState)
   const [exactProductId, setExactProductId] = useState('')
+  const [destinations, setDestinations] = useState<Record<string, EligibleDestination[]>>({})
+  const [destinationChoice, setDestinationChoice] = useState<Record<string, string>>({})
+  const [destinationBusy, setDestinationBusy] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -254,6 +259,28 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
     } finally { setSavingAI(false) }
   }
 
+  async function loadDestinations(id: string) {
+    setDestinationBusy(id); setMessage(null)
+    try {
+      const choices = await getEligibleDestinations(id)
+      setDestinations((current) => ({ ...current, [id]: choices }))
+      const recommended = choices.find((choice) => choice.recommended) || choices[0]
+      if (recommended) setDestinationChoice((current) => ({ ...current, [id]: recommended.board_record_id }))
+    } catch (error) { setMessage({ type: 'error', text: (error as Error).message }) }
+    finally { setDestinationBusy(null) }
+  }
+
+  async function createApprovedPublication(proposal: PinProposal) {
+    const boardRecordId = destinationChoice[proposal.id]
+    if (!canCreatePublication(proposal.approval_id, boardRecordId)) return
+    setDestinationBusy(proposal.id); setMessage(null)
+    try {
+      await createPublication(proposal.approval_id as string, boardRecordId)
+      setMessage({ type: 'success', text: 'Immutable publication created from the approved proposal. Provider routing remains server-side.' })
+    } catch (error) { setMessage({ type: 'error', text: (error as Error).message }) }
+    finally { setDestinationBusy(null) }
+  }
+
   return <div className="proposals-page">
     <header className="page-heading">
       <div><p className="eyebrow">PIN PROPOSALS / REVIEW</p><h2>Approval Queue</h2><p>Compare authentic catalog sources with rendered Pinterest output before making an explicit decision.</p></div>
@@ -333,7 +360,8 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
         {(proposal.warnings.length > 0 || proposal.missing_facts.length > 0 || proposal.unsupported_claims.length > 0) && <div className="proposal-warning"><ShieldAlert size={15} /><span>{proposal.warnings.join(' ')}{proposal.missing_facts.length > 0 && ` Missing/unknown: ${proposal.missing_facts.join(', ')}.`}{proposal.unsupported_claims.length > 0 && ` Unsupported claims detected: ${proposal.unsupported_claims.join(', ')}.`}</span></div>}
         <div className="proposal-fingerprint"><Clipboard size={14} /><span>Text SHA-256 {proposal.text_fingerprint}</span></div>
         {['REVIEW', 'REJECTED'].includes(proposal.approval_status) && <RevisionControls proposal={proposal} settings={aiSettings} compact onChanged={load} />}
-        {proposal.approval_status === 'REVIEW' && <div className="proposal-actions"><button className="approve-action" onClick={() => decide(proposal.id, 'approve', proposal.creative?.id)} disabled={workingId === proposal.id || !proposal.creative?.id}><Check size={15} /> Approve</button><button className="reject-action" onClick={() => decide(proposal.id, 'reject')} disabled={workingId === proposal.id}><X size={15} /> Reject</button></div>}
+         {proposal.approval_status === 'REVIEW' && <div className="proposal-actions"><button className="approve-action" onClick={() => decide(proposal.id, 'approve', proposal.creative?.id)} disabled={workingId === proposal.id || !proposal.creative?.id}><Check size={15} /> Approve</button><button className="reject-action" onClick={() => decide(proposal.id, 'reject')} disabled={workingId === proposal.id}><X size={15} /> Reject</button></div>}
+         {proposal.approval_status === 'APPROVED' && proposal.approval_id && <div className="publication-create-box"><div><p className="eyebrow">PUBLISHING RECORD</p><strong>Choose a server-filtered destination</strong><small>Only local board records are accepted. External identifiers and provider credentials never enter this form.</small></div>{!destinations[proposal.approval_id] ? <button onClick={() => void loadDestinations(proposal.approval_id as string)} disabled={destinationBusy === proposal.approval_id}>Inspect eligible destinations</button> : destinations[proposal.approval_id].length === 0 ? <span className="proposal-warning">No eligible destinations returned; publication creation is blocked.</span> : <><select aria-label={`Destination for ${proposal.product_title}`} value={destinationChoice[proposal.approval_id] || ''} onChange={(event) => setDestinationChoice((current) => ({ ...current, [proposal.approval_id as string]: event.target.value }))}><option value="">Choose an eligible board</option>{destinations[proposal.approval_id].map((destination) => <option key={destination.board_record_id} value={destination.board_record_id}>{destination.display_name} · {destination.routing_label}{destination.recommended ? ' · recommended' : ''}</option>)}</select><button className="primary-action" onClick={() => void createApprovedPublication(proposal)} disabled={destinationBusy === proposal.approval_id || !destinationChoice[proposal.approval_id]}>Create immutable publication</button></>}</div>}
       </div>
     </article>)}</section>}
   </div>

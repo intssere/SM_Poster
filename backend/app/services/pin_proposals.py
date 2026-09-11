@@ -1310,7 +1310,7 @@ class PinProposalService:
                 versions, active, active_id = _version_context(
                     db, product, intelligence, concept.rationale or {}, draft, original_creative
                 )
-                results.append(_serialize_proposal(
+                serialized = _serialize_proposal(
                     product,
                     intelligence,
                     concept.rationale or {},
@@ -1319,7 +1319,14 @@ class PinProposalService:
                     versions,
                     active,
                     active_id,
-                ))
+                )
+                if api_status == "APPROVED":
+                    approval = db.scalar(select(PinApproval).where(
+                        PinApproval.draft_id == draft.id,
+                        PinApproval.decision == "APPROVED",
+                    ).order_by(PinApproval.created_at.desc()))
+                    serialized["approval_id"] = approval.id if approval else None
+                results.append(serialized)
             return results
         finally:
             db.close()

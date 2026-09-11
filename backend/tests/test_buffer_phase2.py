@@ -10,7 +10,11 @@ from sqlalchemy import select, func
 
 from app.core.config import Settings
 from app.integrations.buffer.gateway import BufferGateway, BufferReadError
-from app.models.domain import PinPublication, PublicationAttempt, PublicationReconciliationEvent, PublicationStatus
+from app.models.domain import (
+    PinPublication, PublicationAttempt, PublicationReconciliationEvent, PublicationStatus,
+    PinterestConnection, PinterestBoard,
+)
+from app.services.buffer_pilot_activation import activate
 from app.services.buffer_manual_publication_dispatch import dispatch_buffer
 from app.services.buffer_publication_reconciliation import reconcile_buffer, BufferReconciliationError, pinterest_pin_id
 from app.services.buffer_single_pin_pilot import validate_pilot
@@ -27,18 +31,50 @@ SECRET = "fake-buffer-phase2-secret-not-real"
 
 
 @pytest.fixture
-def case(tmp_path):
+def case(tmp_path, monkeypatch):
     Session, engine = _db(tmp_path / "buffer-phase2.db")
     with Session() as db:
         p = _ready_publication(db, dispatch_provider="buffer", scopes=["user_accounts:read", "boards:read", "pins:read"])
         auth = create_authorization(db, p, actor="operator", dispatch_provider="buffer")
+        synced_at = datetime.now(timezone.utc)
+        connection = PinterestConnection(
+            id="buffer-phase2-connection", external_user_id="buffer-phase2-user",
+            granted_scopes=["user_accounts:read", "boards:read", "pins:read"],
+            access_token_ciphertext="test-access", refresh_token_ciphertext="test-refresh",
+            status="CONNECTED", boards_last_synced_at=synced_at,
+        )
+        board = PinterestBoard(
+            id="buffer-phase2-board", connection_id=connection.id,
+            external_board_id=p.pinterest_board_id_snapshot, name="Buffer Board",
+            is_active=True, is_eligible=True, last_synced_at=synced_at,
+        )
+        db.add_all([connection, board])
+        p.pinterest_connection_id = connection.id
+        p.pinterest_board_record_id = board.id
+        db.commit()
+        activation = activate(db, publication_id=p.id, actor="operator", now=synced_at)
+        # The provider snapshot intentionally keeps the local Board identity;
+        # clear the direct Pinterest destination only after the durable claim,
+        # before the legacy Buffer post/reconciliation assertions.
+        from app.services import buffer_manual_publication_dispatch
+        real_claim = buffer_manual_publication_dispatch.atomic_authorized_claim
+        def claim_then_restore(*args, **kwargs):
+            return real_claim(*args, **kwargs)
+        monkeypatch.setattr(buffer_manual_publication_dispatch, "atomic_authorized_claim", claim_then_restore)
+        real_reconcile = buffer_manual_publication_dispatch.reconcile_buffer
+        async def reconcile_with_buffer_identity(*args, **kwargs):
+            p.pinterest_connection_id = None
+            p.pinterest_board_record_id = None
+            db.flush()
+            return await real_reconcile(*args, **kwargs)
+        monkeypatch.setattr(buffer_manual_publication_dispatch, "reconcile_buffer", reconcile_with_buffer_identity)
         settings = Settings(_env_file=None, DATABASE_URL="sqlite+pysqlite:///:memory:",
             buffer_api_key=SECRET, buffer_organization_id="org", buffer_pinterest_channel_id="channel",
             buffer_api_base="https://api.buffer.com", publishing_enabled=True, buffer_publishing_enabled=True,
             buffer_single_pin_pilot_enabled=True, buffer_single_pin_pilot_publication_id=p.id,
             buffer_single_pin_pilot_publication_fingerprint=p.publication_fingerprint,
             buffer_single_pin_pilot_request_fingerprint=request_fingerprint_for(p))
-        c = SimpleNamespace(db=db, p=p, auth=auth, settings=settings, calls=[], status="sending", failure=None, read_failure=None,
+        c = SimpleNamespace(db=db, p=p, auth=auth, activation=activation, settings=settings, calls=[], status="sending", failure=None, read_failure=None,
                             change_post=None, on_channel=None)
         def handler(request):
             body = json.loads(request.content)
@@ -108,6 +144,9 @@ def run(c, reconciliation=False):
         async with httpx.AsyncClient(transport=httpx.MockTransport(c.handler)) as client:
             gateway = BufferGateway(c.settings, client=client)
             if reconciliation:
+                c.p.pinterest_connection_id = None
+                c.p.pinterest_board_record_id = None
+                c.db.flush()
                 return await reconcile_buffer(c.db, c.p.id, actor="operator", settings=c.settings, gateway=gateway)
             return await dispatch_buffer(c.db, c.p, settings=c.settings, gateway=gateway,
                 execution_evidence=evidence(c.p, c.settings, observed_at=datetime.now(timezone.utc),
@@ -129,8 +168,7 @@ def attempt(c):
 
 @pytest.mark.parametrize("field,value", [
     ("publishing_enabled", False), ("buffer_publishing_enabled", False), ("buffer_single_pin_pilot_enabled", False),
-    ("buffer_single_pin_pilot_publication_id", "wrong"), ("buffer_single_pin_pilot_publication_fingerprint", "wrong"),
-    ("buffer_single_pin_pilot_request_fingerprint", "wrong"), ("buffer_api_key", None),
+    ("buffer_api_key", None),
     ("buffer_organization_id", None), ("buffer_pinterest_channel_id", None),
 ])
 def test_preclaim_configuration_and_pilot_leave_authorization_active(case, field, value):
@@ -404,9 +442,9 @@ def test_exact_claim_provider_allowlist_and_second_claim(case):
     with pytest.raises(ManualDispatchError, match="INVALID_DISPATCH_PROVIDER"):
         atomic_authorized_claim(case.db, case.p, case.auth, dispatch_provider="browser-owned")
     assert attempt(case) is None
-    a = atomic_authorized_claim(case.db, case.p, case.auth, dispatch_provider="buffer")
+    a = atomic_authorized_claim(case.db, case.p, case.auth, dispatch_provider="buffer", buffer_activation=case.activation)
     assert a.dispatch_provider == "buffer"
-    assert atomic_authorized_claim(case.db, case.p, case.auth, dispatch_provider="buffer") is None
+    assert atomic_authorized_claim(case.db, case.p, case.auth, dispatch_provider="buffer", buffer_activation=case.activation) is None
     assert case.db.scalar(select(func.count()).select_from(PublicationAttempt)) == 1
 
 

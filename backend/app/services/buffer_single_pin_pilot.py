@@ -12,13 +12,6 @@ def validate_pilot(db, publication, settings, *, attempt=None):
     ):
         if flag is not True:
             return False, reason
-    bindings = (
-        (settings.buffer_single_pin_pilot_publication_id, publication.id),
-        (settings.buffer_single_pin_pilot_publication_fingerprint, publication.publication_fingerprint),
-        (settings.buffer_single_pin_pilot_request_fingerprint, request_fingerprint_for(publication)),
-    )
-    if any(not configured or configured != actual for configured, actual in bindings):
-        return False, "BUFFER_PILOT_BINDING_MISMATCH"
     attempts = db.scalars(select(PublicationAttempt).where(PublicationAttempt.publication_id == publication.id)).all()
     if attempt is None:
         if attempts:

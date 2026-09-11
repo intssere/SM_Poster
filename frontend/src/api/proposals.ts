@@ -1,5 +1,6 @@
 export type PinProposal = {
   id: string
+  approval_id?: string | null
   concept_id: string
   product_id: string
   product_title: string

@@ -3,6 +3,14 @@ from datetime import datetime, timezone
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _localhost_auth_environment(monkeypatch):
+    monkeypatch.delenv("REPLIT_DEPLOYMENT", raising=False)
+    monkeypatch.delenv("REPLIT_DEV_DOMAIN", raising=False)
+    from app.core.config import get_settings
+    get_settings.cache_clear()
+
+
 def test_publications_router_is_registered():
     import os
     os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
@@ -1150,8 +1158,7 @@ def test_publication_create_origin_guard_blocks_missing_and_wrong_origin(monkeyp
 
     payload = {
         "approval_id": "origin-test-approval",
-        "pinterest_connection_id": "origin-test-connection",
-        "pinterest_board_id": "origin-test-board",
+        "pinterest_board_record_id": "origin-test-board",
     }
 
     app.dependency_overrides[get_db] = override_get_db
@@ -1407,6 +1414,10 @@ def test_publication_create_derives_exact_approved_snapshot_server_side(monkeypa
                 is_active=True,
                 is_eligible=True,
             )
+            from datetime import datetime, timezone
+            synced_at = datetime.now(timezone.utc)
+            connection.boards_last_synced_at = synced_at
+            board.last_synced_at = synced_at
             db.add_all(
                 [
                     store,
@@ -1440,8 +1451,7 @@ def test_publication_create_derives_exact_approved_snapshot_server_side(monkeypa
                 headers={"Origin": "http://localhost:5000"},
                 json={
                     "approval_id": "approval-create-test",
-                    "pinterest_connection_id": "connection-create-test",
-                    "pinterest_board_id": "board-create-test",
+                    "pinterest_board_record_id": "board-create-test",
                 },
             )
 
