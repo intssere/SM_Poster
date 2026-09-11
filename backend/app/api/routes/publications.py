@@ -18,14 +18,14 @@ from app.services.publication_preview import build_preview
 from app.services.publication_dispatch_authorization import create_authorization, revoke_authorization, CONFIRMATION_TEXT_VERSION, DispatchAuthorizationError
 from app.services.publication_reconciliation import reconcile, ReconciliationError
 from app.core.auth import current_user
+from app.services.buffer_pilot_activation import activate as activate_buffer_pilot, revoke as revoke_buffer_pilot, active_activation, BufferPilotActivationError
 
 router = APIRouter(prefix="/publications", tags=["publications"])
 
 class PublicationCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     approval_id: str
-    pinterest_connection_id: str
-    pinterest_board_id: str
+    pinterest_board_record_id: str
     scheduled_for: datetime | None = None
 
 class ScheduleRequest(BaseModel):
@@ -57,9 +57,19 @@ def _dto(db, row):
 
 @router.post("")
 def create(payload: PublicationCreate, db: Session = Depends(get_db)):
-    board = db.get(PinterestBoard, payload.pinterest_board_id)
-    connection = db.get(PinterestConnection, payload.pinterest_connection_id)
-    if not board or not connection or board.connection_id != connection.id:
+    board = db.get(PinterestBoard, payload.pinterest_board_record_id)
+    connection = db.get(PinterestConnection, board.connection_id) if board else None
+    destination_is_current = bool(
+        board
+        and connection
+        and connection.status == "CONNECTED"
+        and board.is_active
+        and board.is_eligible
+        and board.last_synced_at
+        and connection.boards_last_synced_at
+        and board.last_synced_at == connection.boards_last_synced_at
+    )
+    if not destination_is_current:
         raise HTTPException(422, "Invalid Pinterest destination")
     approval = db.get(PinApproval, payload.approval_id)
     if not approval:
@@ -69,6 +79,87 @@ def create(payload: PublicationCreate, db: Session = Depends(get_db)):
     except PublicationIdentityError as exc:
         raise HTTPException(422, str(exc))
     return _dto(db, row)
+
+
+@router.get("/eligible-destinations")
+def eligible_destinations(approval_id: str, db: Session = Depends(get_db)):
+    approval = db.get(PinApproval, approval_id)
+    if not approval or approval.decision != "APPROVED":
+        return []
+    from app.models.domain import PinDraft, PinConcept
+    draft = db.get(PinDraft, approval.draft_id)
+    concept = db.get(PinConcept, draft.concept_id) if draft else None
+    if not concept:
+        return []
+    rows = db.scalars(select(PinterestBoard).join(PinterestConnection).where(
+        PinterestConnection.status == "CONNECTED", PinterestBoard.is_active.is_(True),
+        PinterestBoard.is_eligible.is_(True), PinterestBoard.last_synced_at.is_not(None),
+    )).all()
+    result = []
+    for row in rows:
+        connection = db.get(PinterestConnection, row.connection_id)
+        # A board is usable only when its sync belongs to the current connection
+        # and is not older than the connection's recorded board sync.
+        if (not connection or not connection.boards_last_synced_at
+                or row.last_synced_at != connection.boards_last_synced_at):
+            continue
+        result.append({"board_record_id": row.id, "display_name": row.name,
+                       "routing_label": row.routing_label, "eligibility": "ELIGIBLE",
+                       "sync_status": "SYNCED", "recommended": bool(row.routing_label)})
+    return result
+
+
+class BufferActivationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmed: bool
+    confirmation_text_version: str
+
+
+class BufferRevokeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=255)
+
+
+@router.get("/{publication_id}/buffer-pilot-activation")
+def buffer_activation_status(publication_id: str, db: Session = Depends(get_db)):
+    from app.models.domain import BufferPilotActivation
+    activation = db.scalar(select(BufferPilotActivation).where(
+        BufferPilotActivation.publication_id == publication_id
+    ).order_by(BufferPilotActivation.activated_at.desc()).limit(1))
+    if not activation:
+        return {"status": "DISARMED"}
+    status = "ARMED" if activation.status == "ACTIVE" else ("REVOKED" if activation.status == "REVOKED" else "DISARMED")
+    return {"status": status, "activated_at": activation.activated_at,
+            "expires_at": activation.expires_at}
+
+
+@router.post("/{publication_id}/buffer-pilot-activation")
+def activate_buffer(publication_id: str, request: Request, payload: BufferActivationRequest, db: Session = Depends(get_db)):
+    actor = current_user(request)
+    if not actor:
+        raise HTTPException(401, "Authentication required")
+    if not payload.confirmed or payload.confirmation_text_version != "BUFFER_PILOT_ACTIVATION_V1":
+        raise HTTPException(422, "INVALID_ACTIVATION_CONFIRMATION")
+    try:
+        row = activate_buffer_pilot(db, publication_id=publication_id, actor=actor)
+    except BufferPilotActivationError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"status": "ARMED", "activated_at": row.activated_at, "expires_at": row.expires_at}
+
+
+@router.post("/{publication_id}/buffer-pilot-activation/revoke")
+def revoke_buffer(publication_id: str, request: Request, db: Session = Depends(get_db)):
+    actor = current_user(request)
+    if not actor:
+        raise HTTPException(401, "Authentication required")
+    row = active_activation(db, publication_id=publication_id)
+    if not row:
+        raise HTTPException(404, "Activation not found")
+    try:
+        revoke_buffer_pilot(db, row, actor=actor, reason="operator revoke")
+    except BufferPilotActivationError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"status": row.status, "revoked_at": row.revoked_at}
 
 @router.get("")
 def list_publications(db: Session = Depends(get_db)):

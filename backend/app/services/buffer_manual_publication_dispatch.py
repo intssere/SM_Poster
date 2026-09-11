@@ -19,6 +19,7 @@ from app.services.buffer_pilot_execution_gate import (
     BufferPilotExecutionEvidence, FINAL_EXECUTION_READY,
     evaluate_buffer_pilot_execution_readiness,
 )
+from app.services.buffer_pilot_activation import active_activation, validate_activation
 
 
 def _configuration(settings):
@@ -71,6 +72,8 @@ async def dispatch_buffer(db, publication, *, now=None, settings=None, gateway=N
     now = normalize_persisted_utc(now or datetime.now(timezone.utc))
     with db.no_autoflush:
         authorization = active_authorization(db, publication.id)
+        activation = active_activation(db)
+        activation_ok, activation_reason = validate_activation(db, publication, activation, now=now)
         validated = validate_authorization(db, publication, authorization, now=now, dispatch_provider="buffer")
         ok, reason = validate_pilot(db, publication, settings)
         readiness = evaluate_buffer_pilot_execution_readiness(
@@ -78,6 +81,8 @@ async def dispatch_buffer(db, publication, *, now=None, settings=None, gateway=N
         )
     if readiness["execution_status"] != FINAL_EXECUTION_READY:
         raise ManualDispatchError("BUFFER_EXECUTION_GATE_LOCKED")
+    if not activation_ok:
+        raise ManualDispatchError(activation_reason)
     if not validated["valid"]:
         raise ManualDispatchError(validated["status"])
     if not ok:
@@ -90,7 +95,8 @@ async def dispatch_buffer(db, publication, *, now=None, settings=None, gateway=N
     except (BufferConfigurationError, BufferReadError):
         raise ManualDispatchError("BUFFER_PRECLAIM_VALIDATION_FAILED") from None
     record_settings = settings.model_copy(deep=True)
-    attempt = atomic_authorized_claim(db, publication, authorization, now=now, dispatch_provider="buffer")
+    attempt = atomic_authorized_claim(db, publication, authorization, now=now, dispatch_provider="buffer",
+                                      buffer_activation=activation)
     if attempt is None:
         raise ManualDispatchError("AUTHORIZED_CLAIM_FAILED")
     publication_id, attempt_id, actor = publication.id, attempt.id, authorization.authorized_by

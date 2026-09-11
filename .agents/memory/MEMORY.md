@@ -1,1 +1,2 @@
 - [Historical migration baseline](historical-migration-baseline.md) — freeze the remaining Phase 0 schema before future model migrations to prevent clean-install drift.
+- [Alembic table adoption](alembic-table-adoption.md) — model metadata may pre-create a pending table; migrations must verify full schema equivalence before adoption.

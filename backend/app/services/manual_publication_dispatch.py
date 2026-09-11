@@ -116,6 +116,7 @@ def atomic_authorized_claim(
     *,
     now: datetime | None = None,
     dispatch_provider: str = "pinterest_direct",
+    buffer_activation=None,
 ) -> PublicationAttempt | None:
     """Consume authorization, claim publication, and create STARTED attempt once."""
     if dispatch_provider not in {"pinterest_direct", "buffer"}:
@@ -154,6 +155,14 @@ def atomic_authorized_claim(
         if auth_result.rowcount != 1:
             db.rollback()
             return None
+        if dispatch_provider == "buffer":
+            if buffer_activation is None:
+                db.rollback()
+                return None
+            from app.services.buffer_pilot_activation import consume
+            if not consume(db, buffer_activation, publication, now=now):
+                db.rollback()
+                return None
         attempt_no = (
             db.scalar(
                 select(PublicationAttempt.attempt_number)
@@ -169,6 +178,7 @@ def atomic_authorized_claim(
             attempt_number=attempt_no,
             status="STARTED",
             dispatch_provider=dispatch_provider,
+            buffer_pilot_activation_id=buffer_activation.id if dispatch_provider == "buffer" else None,
             request_fingerprint=request_fingerprint_for(claimed_publication or publication),
             safe_response_metadata={},
         )
@@ -200,6 +210,16 @@ def validate_post_claim(
         return {"valid": False, "status": "ATTEMPT_MISMATCH"}
     if attempt.request_fingerprint != request_fingerprint_for(publication):
         return {"valid": False, "status": "ATTEMPT_MISMATCH"}
+    if dispatch_provider == "buffer":
+        from app.models.domain import BufferPilotActivation
+        activation = db.get(BufferPilotActivation, attempt.buffer_pilot_activation_id)
+        if (not activation or activation.status != "CONSUMED"
+                or activation.publication_id != publication.id
+                or activation.approval_id != publication.approval_id
+                or activation.pinterest_board_record_id != publication.pinterest_board_record_id
+                or activation.publication_fingerprint != publication.publication_fingerprint
+                or activation.request_fingerprint != attempt.request_fingerprint):
+            return {"valid": False, "status": "ACTIVATION_MISMATCH"}
 
     if publication.status != PublicationStatus.PUBLISHING:
         return {"valid": False, "status": "INVALID_PUBLICATION_STATE"}

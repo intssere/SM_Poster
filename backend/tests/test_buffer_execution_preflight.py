@@ -62,6 +62,9 @@ def test_preflight_derives_server_owned_evidence(monkeypatch):
         "buffer_pinterest_channel_id": "channel",
     })()
     monkeypatch.setattr("app.services.buffer_execution_preflight.active_authorization", lambda db, pid: object())
+    monkeypatch.setattr("app.services.buffer_execution_preflight.active_activation", lambda db, pid=None: object())
+    monkeypatch.setattr("app.services.buffer_execution_preflight.validate_activation",
+                        lambda *args, **kwargs: (True, "ACTIVE"))
     monkeypatch.setattr("app.services.buffer_execution_preflight.validate_authorization",
                         lambda *args, **kwargs: {"valid": True})
     monkeypatch.setattr("app.services.buffer_execution_preflight.validate_pilot",

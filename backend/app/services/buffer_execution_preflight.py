@@ -13,6 +13,7 @@ from app.core.config import Settings, get_settings
 from app.integrations.buffer.gateway import BufferGateway, public_url, required
 from app.models.domain import PinPublication
 from app.services.buffer_pilot_execution_gate import BufferPilotExecutionEvidence
+from app.services.buffer_pilot_activation import active_activation, validate_activation
 from app.services.buffer_pinterest_adapter import verify_destination
 from app.services.buffer_single_pin_pilot import validate_pilot
 from app.services.publication_dispatch_authorization import active_authorization, validate_authorization
@@ -109,11 +110,12 @@ async def build_buffer_execution_evidence(
     if not isinstance(settings.buffer_api_key, str) or not settings.buffer_api_key.strip():
         raise BufferPreflightError("BUFFER_CONFIGURATION_REQUIRED")
     authorization = active_authorization(db, publication.id)
+    activation_ok, _ = validate_activation(db, publication, active_activation(db), now=now)
     authorized = validate_authorization(
         db, publication, authorization, now=now, dispatch_provider="buffer",
     )
     pilot_ok, _ = validate_pilot(db, publication, settings)
-    if not authorized["valid"] or not pilot_ok:
+    if not authorized["valid"] or not pilot_ok or not activation_ok:
         raise BufferPreflightError("BUFFER_PREFLIGHT_NOT_AUTHORIZED")
     gateway = gateway or BufferGateway(settings)
     try:

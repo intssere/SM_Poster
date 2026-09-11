@@ -11,6 +11,7 @@ from app.core.config import Settings
 from app.models.domain import (
     PinPublication,
     PinterestBoard,
+    PinterestConnection,
     ProductImage,
     PublicationAttempt,
     PublicationDispatchAuthorization,
@@ -126,7 +127,28 @@ def _fresh_persisted_case(tmp_path, *, fingerprint="fresh"):
             scheduled_for=NOW - timedelta(minutes=1),
             fingerprint=fingerprint,
         )
+        synced_at = NOW
+        connection = PinterestConnection(
+            id=f"buffer-phase3b-connection-{fingerprint}", external_user_id=f"user-{fingerprint}",
+            granted_scopes=["user_accounts:read", "boards:read", "pins:read"],
+            access_token_ciphertext="test-access", refresh_token_ciphertext="test-refresh",
+            status="CONNECTED", boards_last_synced_at=synced_at,
+        )
+        board = __import__("app.models.domain", fromlist=["PinterestBoard"]).PinterestBoard(
+            id=f"buffer-phase3b-board-{fingerprint}", connection_id=connection.id,
+            external_board_id=publication.pinterest_board_id_snapshot, name="Buffer Board",
+            is_active=True, is_eligible=True, last_synced_at=synced_at,
+        )
+        publication.pinterest_connection_id = connection.id
+        publication.pinterest_board_record_id = board.id
+        setup.add_all([connection, board])
+        setup.commit()
         authorization = create_authorization(setup, publication, dispatch_provider="buffer", actor="operator", now=NOW)
+        board = setup.get(PinterestBoard, publication.pinterest_board_record_id)
+        connection = setup.get(PinterestConnection, board.connection_id)
+        board.last_synced_at = connection.boards_last_synced_at = NOW
+        from app.services.buffer_pilot_activation import activate
+        activation = activate(setup, publication_id=publication.id, actor="operator", now=NOW)
         live = live_settings(publication)
         ev = evidence(
             publication,
@@ -135,7 +157,15 @@ def _fresh_persisted_case(tmp_path, *, fingerprint="fresh"):
             provider_destination_live_verified=True,
             media_live_fetch_verified=True,
         )
-        return SessionLocal, engine, publication.id, authorization.id, publication.board_id, live, ev
+        return (
+            SessionLocal,
+            engine,
+            publication.id,
+            authorization.id,
+            publication.pinterest_board_record_id,
+            live,
+            ev,
+        )
     finally:
         setup.close()
 
@@ -291,12 +321,23 @@ def test_each_protected_gate_false_blocks(case, flag, reason):
     assert_locked(result, reason)
 
 
-def test_buffer_pilot_binding_mismatch_blocks(case):
+def test_legacy_environment_binding_mismatch_is_ignored(case):
     db, publication = case
     create_authorization(db, publication, dispatch_provider="buffer", actor="operator", now=NOW)
     live = live_settings(publication, buffer_single_pin_pilot_request_fingerprint="wrong")
-    result = evaluate(db, publication, evidence(publication, live), live)
-    assert_locked(result, "BUFFER_PILOT_BINDING_MISMATCH")
+    result = evaluate(
+        db,
+        publication,
+        evidence(
+            publication,
+            live,
+            write_credential_authorized=True,
+            provider_destination_live_verified=True,
+            media_live_fetch_verified=True,
+        ),
+        live,
+    )
+    assert result["execution_status"] == FINAL_EXECUTION_READY
 
 
 def test_future_scheduled_candidate_is_not_due(case):
@@ -600,8 +641,8 @@ def test_evaluation_fresh_reads_destination_eligibility_drift(tmp_path):
     session_a = SessionLocal()
     session_b = SessionLocal()
     try:
-        cached_board = session_a.get(Board, board_id)
-        assert cached_board.active is True
+        cached_board = session_a.get(PinterestBoard, board_id)
+        assert cached_board.is_active is True
         ready = evaluate_buffer_pilot_execution_readiness(
             session_a,
             publication_id,
@@ -611,7 +652,7 @@ def test_evaluation_fresh_reads_destination_eligibility_drift(tmp_path):
         )
         assert ready["execution_status"] == FINAL_EXECUTION_READY
 
-        session_b.get(Board, board_id).active = False
+        session_b.get(PinterestBoard, board_id).is_active = False
         session_b.commit()
 
         result = evaluate_buffer_pilot_execution_readiness(

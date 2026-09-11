@@ -461,6 +461,9 @@ class PublicationAttempt(Base):
     __tablename__ = "publication_attempts"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     publication_id: Mapped[str] = mapped_column(ForeignKey("pin_publications.id", ondelete="CASCADE"), index=True)
+    buffer_pilot_activation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("buffer_pilot_activations.id", ondelete="RESTRICT"), index=True
+    )
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(30), nullable=False)
     request_fingerprint: Mapped[str | None] = mapped_column(String(64))
@@ -480,6 +483,33 @@ class PublicationAttempt(Base):
         UniqueConstraint("publication_id", "attempt_number", name="uq_publication_attempt_number"),
         Index("uq_publication_attempt_provider_operation", "dispatch_provider", "provider_operation_id", unique=True,
               sqlite_where=text("provider_operation_id IS NOT NULL"), postgresql_where=text("provider_operation_id IS NOT NULL")),
+    )
+
+
+class BufferPilotActivation(Base):
+    """Auditable, single-use authorization for the Buffer single-pin pilot."""
+    __tablename__ = "buffer_pilot_activations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    approval_id: Mapped[str] = mapped_column(ForeignKey("pin_approvals.id", ondelete="RESTRICT"), index=True)
+    publication_id: Mapped[str] = mapped_column(ForeignKey("pin_publications.id", ondelete="RESTRICT"), index=True)
+    pinterest_board_record_id: Mapped[str] = mapped_column(
+        ForeignKey("pinterest_boards.id", ondelete="RESTRICT"), index=True
+    )
+    publication_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor: Mapped[str] = mapped_column(String(255), nullable=False)
+    activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="ACTIVE")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_by: Mapped[str | None] = mapped_column(String(255))
+    revoke_reason: Mapped[str | None] = mapped_column(String(255))
+    __table_args__ = (
+        CheckConstraint("status IN ('ACTIVE', 'CONSUMED', 'REVOKED')", name="ck_buffer_pilot_activation_status"),
+        Index("uq_buffer_pilot_activation_active", "status", unique=True,
+              sqlite_where=text("status = 'ACTIVE'"),
+              postgresql_where=text("status = 'ACTIVE'")),
     )
 
 

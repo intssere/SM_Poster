@@ -7,7 +7,12 @@ from unittest.mock import Mock
 import pytest
 from sqlalchemy import select, func, inspect
 
-from app.models.domain import PinPublication, Board, PublicationAttempt, PublicationDispatchAuthorization
+from app.models.domain import (
+    PinPublication,
+    PinterestBoard,
+    PublicationAttempt,
+    PublicationDispatchAuthorization,
+)
 from app.services import buffer_manual_publication_dispatch as dispatch
 from test_buffer_phase3b_execution_gate import _fresh_persisted_case, NOW, SECRET
 
@@ -41,14 +46,14 @@ def test_locked_gate_prevents_all_provider_and_claim_work(candidate, monkeypatch
                         ("destination", "provider_destination_live_verified"), ("media", "media_live_fetch_verified")]:
         if failure == name: evidence = replace(evidence, **{field: False})
     # Caller caches valid rows before a second session commits drift.
-    board = db.get(Board, bid)
-    assert board.active and auth.status == "ACTIVE"
+    board = db.get(PinterestBoard, bid)
+    assert board.is_active and auth.status == "ACTIVE"
     if failure in {"revoked", "expired", "publication-drift", "board-drift"}:
         with factory() as other:
             if failure == "revoked": other.get(PublicationDispatchAuthorization, auth.id).status = "REVOKED"
             if failure == "expired": other.get(PublicationDispatchAuthorization, auth.id).expires_at = NOW - timedelta(seconds=1)
             if failure == "publication-drift": other.get(PinPublication, publication.id).title_snapshot = None
-            if failure == "board-drift": other.get(Board, bid).active = False
+            if failure == "board-drift": other.get(PinterestBoard, bid).is_active = False
             other.commit()
     if failure == "connection-bound":
         connection = db.connection()

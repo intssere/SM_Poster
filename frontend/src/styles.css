@@ -121,6 +121,11 @@
 .schedule-bar input, .confirmation-box input:not([type="checkbox"]), .reconcile-box input { flex:1; min-width:180px; }
 .operator-alert { display:flex; gap:12px; align-items:baseline; margin-top:24px; padding:14px 16px; border:1px solid #89554a; background:#281918; color:#efb3a9; }
 .operator-alert span { color:#d8aaa1; overflow-wrap:anywhere; }
+.publication-create-box, .activation-box { display:grid; gap:10px; margin-top:18px; padding:14px; border:1px solid #66532e; background:#1d1911; }
+.publication-create-box small, .activation-box small { color:#aaa195; letter-spacing:normal; text-transform:none; }
+.publication-create-box select { min-width:220px; }
+.activation-box { border-color:#80683b; }
+.activation-box .status-chip { width:max-content; }
 .empty-state { text-align:center; padding:44px 24px; }
 button, input { font:inherit; }
 button { border:1px solid #554936; border-radius:6px; padding:9px 12px; background:#201d17; color:#dfd3bd; cursor:pointer; }

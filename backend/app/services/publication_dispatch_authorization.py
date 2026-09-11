@@ -135,12 +135,18 @@ def revoke_authorization(
 
 
 def _base_snapshot_complete(publication: PinPublication, dispatch_provider="pinterest_direct") -> bool:
+    destination_identity_complete = (
+        bool(publication.board_id)
+        if dispatch_provider == "buffer"
+        and not publication.pinterest_connection_id
+        and not publication.pinterest_board_record_id
+        else bool(publication.pinterest_connection_id and publication.pinterest_board_record_id)
+    )
     return all(
         (
             publication.publication_fingerprint,
             publication.text_fingerprint,
-            publication.board_id if dispatch_provider == "buffer" else publication.pinterest_connection_id,
-            publication.board_id if dispatch_provider == "buffer" else publication.pinterest_board_record_id,
+            destination_identity_complete,
             publication.pinterest_board_id_snapshot,
             publication.title_snapshot,
             publication.description_snapshot,
@@ -182,14 +188,26 @@ def manual_structural_readiness(
         return {"status": "INCOMPLETE_SNAPSHOT", "ready": False}
 
     if dispatch_provider == "buffer":
-        board = db.get(Board, publication.board_id)
-        draft = db.get(PinDraft, publication.draft_id)
-        concept = db.get(PinConcept, draft.concept_id) if draft else None
-        if (publication.pinterest_connection_id or publication.pinterest_board_record_id
-                or not board or not board.active or not board.pinterest_board_id
-                or board.pinterest_board_id != publication.pinterest_board_id_snapshot
-                or not concept or concept.board_id != publication.board_id or concept.store_id != board.store_id):
-            return {"status": "DESTINATION_INVALID", "ready": False}
+        if publication.pinterest_connection_id or publication.pinterest_board_record_id:
+            connection = db.get(PinterestConnection, publication.pinterest_connection_id)
+            board = db.get(PinterestBoard, publication.pinterest_board_record_id)
+            if (not connection or connection.status != "CONNECTED" or not board
+                    or board.connection_id != connection.id or not board.is_active
+                    or not board.is_eligible
+                    or not board.last_synced_at
+                    or not connection.boards_last_synced_at
+                    or board.last_synced_at != connection.boards_last_synced_at
+                    or board.external_board_id != publication.pinterest_board_id_snapshot):
+                return {"status": "DESTINATION_INVALID", "ready": False}
+        else:
+            board = db.get(Board, publication.board_id)
+            draft = db.get(PinDraft, publication.draft_id)
+            concept = db.get(PinConcept, draft.concept_id) if draft else None
+            if (not board or not board.active or not board.pinterest_board_id
+                    or board.pinterest_board_id != publication.pinterest_board_id_snapshot
+                    or not concept or concept.board_id != publication.board_id
+                    or concept.store_id != board.store_id):
+                return {"status": "DESTINATION_INVALID", "ready": False}
     else:
         connection = db.get(PinterestConnection, publication.pinterest_connection_id)
         if not connection or connection.status != "CONNECTED":
