@@ -11,6 +11,8 @@ from app.services.pinterest_publisher import publication_readiness, sanitize_met
 from app.services.pinterest_publisher import preflight_publish_readiness, execution_publish_readiness, finalize_post_claim_unknown
 from app.services.manual_publication_dispatch import ManualDispatchError
 from app.services import manual_publication_dispatch
+from app.services import buffer_manual_publication_dispatch
+from app.services.buffer_execution_preflight import build_buffer_execution_evidence, BufferPreflightError
 from app.services.publication_preview import build_preview
 from app.services.publication_dispatch_authorization import create_authorization, revoke_authorization, CONFIRMATION_TEXT_VERSION, DispatchAuthorizationError
 from app.services.publication_reconciliation import reconcile, ReconciliationError
@@ -137,6 +139,32 @@ def authorize(publication_id: str, request: Request, payload: DispatchAuthorizat
     except DispatchAuthorizationError as exc: raise HTTPException(409, str(exc)) from None
     except Exception: raise HTTPException(500, "Authorization could not be created") from None
     return {"id": auth.id, "status": auth.status, "authorized_by": auth.authorized_by, "authorized_at": auth.authorized_at, "expires_at": auth.expires_at, "confirmation_text_version": auth.confirmation_text_version}
+
+@router.post("/{publication_id}/buffer-dispatch-authorization")
+def authorize_buffer(publication_id: str, request: Request, payload: DispatchAuthorizationRequest, db: Session = Depends(get_db)):
+    if not payload.confirmed: raise HTTPException(422, "CONFIRMATION_REQUIRED")
+    if payload.confirmation_text_version != CONFIRMATION_TEXT_VERSION: raise HTTPException(422, "INVALID_CONFIRMATION_TEXT_VERSION")
+    actor = current_user(request)
+    if not actor: raise HTTPException(401, "Authentication required")
+    try: auth = create_authorization(db, _get(publication_id, db), actor=actor, dispatch_provider="buffer")
+    except DispatchAuthorizationError as exc: raise HTTPException(409, str(exc)) from None
+    except Exception: raise HTTPException(500, "Authorization could not be created") from None
+    return {"id": auth.id, "status": auth.status, "authorized_by": auth.authorized_by, "authorized_at": auth.authorized_at, "expires_at": auth.expires_at, "confirmation_text_version": auth.confirmation_text_version}
+
+@router.post("/{publication_id}/publish-buffer")
+async def publish_buffer(publication_id: str, request: Request, db: Session = Depends(get_db)):
+    if not current_user(request): raise HTTPException(401, "Authentication required")
+    row = _get(publication_id, db)
+    try:
+        evidence = await build_buffer_execution_evidence(db, row)
+        await buffer_manual_publication_dispatch.dispatch_buffer(db, row, execution_evidence=evidence)
+    except (BufferPreflightError, ManualDispatchError) as exc:
+        raise HTTPException(409, str(exc)) from None
+    except PublicationReconciliationError:
+        raise
+    except Exception:
+        raise HTTPException(502, "Buffer publication failed") from None
+    return _dto(db, row)
 
 @router.post("/{publication_id}/dispatch-authorization/revoke")
 def revoke(publication_id: str, request: Request, payload: RevokeRequest, db: Session = Depends(get_db)):
