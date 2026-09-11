@@ -237,11 +237,21 @@ def provider_readiness(db: Session, publication: PinPublication) -> dict[str, An
     return {"status": "READY", "ready": True, "live_provider_write_enabled": True}
 
 
-def readiness_result(db: Session, publication: PinPublication, *, now: datetime | None = None) -> dict[str, Any]:
+def readiness_result(
+    db: Session,
+    publication: PinPublication,
+    *,
+    now: datetime | None = None,
+    dispatch_provider: str = "pinterest_direct",
+) -> dict[str, Any]:
+    if dispatch_provider not in {"pinterest_direct", "buffer"}:
+        raise DispatchAuthorizationError("INVALID_DISPATCH_PROVIDER")
     now = normalize_persisted_utc(now or _now())
-    quality = validate_publication_quality(db, publication)
+    quality = validate_publication_quality(db, publication, dispatch_provider=dispatch_provider)
     duplicate = evaluate_publication_duplicates(db, publication)
-    manual = manual_structural_readiness(db, publication, now=now)
+    manual = manual_structural_readiness(
+        db, publication, now=now, dispatch_provider=dispatch_provider
+    )
     if manual["ready"] and quality["status"] != "PASS":
         manual = {"status": "QUALITY_WARNING" if quality["status"] == "WARNING" else "QUALITY_FAILED", "ready": False}
     if manual["ready"] and duplicate["status"] != SAFE_TO_CONTINUE:
@@ -252,6 +262,11 @@ def readiness_result(db: Session, publication: PinPublication, *, now: datetime 
     auth = latest_authorization(db, publication.id)
     authorization = {"status": "AUTHORIZATION_REQUIRED", "authorization_id": None}
     if auth:
+        authorization_provider = (
+            "buffer"
+            if (auth.readiness_snapshot or {}).get("dispatch_provider") == "buffer"
+            else "pinterest_direct"
+        )
         expires_at = normalize_persisted_utc(auth.expires_at)
         if auth.status == "REVOKED":
             authorization = {"status": "AUTHORIZATION_REVOKED", "authorization_id": auth.id}
@@ -262,9 +277,18 @@ def readiness_result(db: Session, publication: PinPublication, *, now: datetime 
         elif auth.status == "ACTIVE" and expires_at and expires_at <= now:
             authorization = {"status": "AUTHORIZATION_EXPIRED", "authorization_id": auth.id}
         elif auth.status == "ACTIVE":
-            authorization = {"status": "ACTIVE", "authorization_id": auth.id, "expires_at": auth.expires_at}
-    provider = provider_readiness(db, publication)
+            authorization = {"status": "ACTIVE", "authorization_id": auth.id, "expires_at": auth.expires_at, "dispatch_provider": authorization_provider}
+    provider = (
+        provider_readiness(db, publication)
+        if dispatch_provider == "pinterest_direct"
+        else {
+            "status": "BUFFER_PREFLIGHT_REQUIRED_AT_DISPATCH",
+            "ready": False,
+            "live_provider_write_enabled": False,
+        }
+    )
     return {
+        "dispatch_provider": dispatch_provider,
         "manual_status": manual["status"],
         "manual_ready": manual["ready"],
         "provider_status": provider["status"],

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -124,10 +125,14 @@ def preview(publication_id: str, db: Session = Depends(get_db)):
     return build_preview(db, _get(publication_id, db))
 
 @router.get("/{publication_id}/dispatch-readiness")
-def dispatch_readiness(publication_id: str, db: Session = Depends(get_db)):
+def dispatch_readiness(
+    publication_id: str,
+    dispatch_provider: Literal["pinterest_direct", "buffer"] = "pinterest_direct",
+    db: Session = Depends(get_db),
+):
     row = _get(publication_id, db)
     from app.services.publication_dispatch_authorization import readiness_result
-    return readiness_result(db, row)
+    return readiness_result(db, row, dispatch_provider=dispatch_provider)
 
 @router.post("/{publication_id}/dispatch-authorization")
 def authorize(publication_id: str, request: Request, payload: DispatchAuthorizationRequest, db: Session = Depends(get_db)):

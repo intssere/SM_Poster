@@ -78,3 +78,14 @@ def test_direct_publish_remains_isolated_from_buffer(monkeypatch):
     assert asyncio.run(routes.publish(row.id, FakeDb(row))) == {"id": row.id}
     direct.assert_awaited_once()
     buffer.assert_not_called()
+
+
+def test_authorization_request_forbids_client_owned_execution_fields():
+    with pytest.raises(ValueError):
+        routes.DispatchAuthorizationRequest(
+            confirmed=True,
+            confirmation_text_version=routes.CONFIRMATION_TEXT_VERSION,
+            authorization_id="client-owned",
+            buffer_organization_id="client-owned",
+            execution_evidence={"ready": True},
+        )
