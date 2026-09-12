@@ -19,12 +19,39 @@ class BufferReadError(RuntimeError):
     pass
 
 
-class BufferDefinitiveRejection(RuntimeError):
-    pass
+class _BufferMutationFailure(RuntimeError):
+    outcome_class = "unknown"
+
+    def __init__(self, code: str, *, failure_code: str, phase: str,
+                 http_status: int | None = None, response_received: bool | None = None,
+                 request_send_state: str = "unknown"):
+        super().__init__(code)
+        self.code = code
+        self.failure_code = failure_code
+        self.phase = phase
+        self.http_status = http_status
+        self.response_received = response_received
+        self.request_send_state = request_send_state
+
+    def safe_diagnostic(self) -> dict:
+        """Strict allowlist only. Never include payloads, headers, bodies, or exception text."""
+        return {
+            "outcome_class": self.outcome_class,
+            "failure_code": self.failure_code,
+            "phase": self.phase,
+            "response_received": self.response_received,
+            "http_status": self.http_status,
+            "request_send_state": self.request_send_state,
+        }
 
 
-class BufferAmbiguousFailure(RuntimeError):
+class BufferDefinitiveRejection(_BufferMutationFailure):
+    outcome_class = "definitive_rejection"
+
+
+class BufferAmbiguousFailure(_BufferMutationFailure):
     """Outcome cannot be proven; never automatically retry."""
+    outcome_class = "ambiguous"
 
 
 def required(value: str) -> str:
@@ -130,6 +157,11 @@ POST_STATUSES = frozenset({"draft", "error", "needs_approval", "scheduled", "sen
 TIMEOUT = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
 
 
+def _ambiguous(failure_code: str, phase: str, *, http_status=None, response_received=None):
+    return BufferAmbiguousFailure("BUFFER_RESPONSE_UNCERTAIN", failure_code=failure_code, phase=phase,
+                                  http_status=http_status, response_received=response_received)
+
+
 class BufferGateway:
     def __init__(self, settings: Settings, *, client: httpx.AsyncClient | None = None):
         self._key = settings.buffer_api_key
@@ -148,34 +180,84 @@ class BufferGateway:
             raise BufferConfigurationError("BUFFER_CONFIGURATION_REQUIRED")
         if self._key in json.dumps({"query": query, "variables": variables}):
             raise BufferConfigurationError("BUFFER_SECRET_IN_PAYLOAD")
-        failure = BufferAmbiguousFailure if write else BufferReadError
+
+        async def send(client):
+            return await client.post(self._base, json={"query": query, "variables": variables},
+                headers={"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"},
+                timeout=TIMEOUT, follow_redirects=False)
+
         try:
-            async def send(client):
-                return await client.post(self._base, json={"query": query, "variables": variables},
-                    headers={"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"},
-                    timeout=TIMEOUT, follow_redirects=False)
             if self._client is None:
                 async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False, trust_env=False) as client:
                     response = await send(client)
             else:
                 response = await send(self._client)
-            if response.status_code != 200:
-                # Authentication rejection with no data cannot represent a success.
-                if write and response.status_code in {400, 401, 403}:
+        except httpx.ConnectTimeout:
+            if write:
+                raise _ambiguous("connect_timeout", "connecting", response_received=False) from None
+            raise BufferReadError("BUFFER_READ_FAILED") from None
+        except httpx.ConnectError:
+            if write:
+                raise _ambiguous("connect_error", "connecting", response_received=False) from None
+            raise BufferReadError("BUFFER_READ_FAILED") from None
+        except httpx.WriteTimeout:
+            if write:
+                raise _ambiguous("write_timeout", "sending_request", response_received=False) from None
+            raise BufferReadError("BUFFER_READ_FAILED") from None
+        except httpx.WriteError:
+            if write:
+                raise _ambiguous("write_error", "sending_request", response_received=False) from None
+            raise BufferReadError("BUFFER_READ_FAILED") from None
+        except httpx.ReadTimeout:
+            if write:
+                raise _ambiguous("read_timeout", "waiting_for_response", response_received=False) from None
+            raise BufferReadError("BUFFER_READ_FAILED") from None
+        except httpx.ReadError:
+            if write:
+                raise _ambiguous("read_error", "waiting_for_response", response_received=False) from None
+            raise BufferReadError("BUFFER_READ_FAILED") from None
+        except httpx.PoolTimeout:
+            if write:
+                raise _ambiguous("pool_timeout", "acquiring_connection", response_received=False) from None
+            raise BufferReadError("BUFFER_READ_FAILED") from None
+        except httpx.TransportError:
+            if write:
+                raise _ambiguous("transport_error", "transport", response_received=False) from None
+            raise BufferReadError("BUFFER_READ_FAILED") from None
+
+        if response.status_code != 200:
+            if not write:
+                raise BufferReadError("BUFFER_READ_FAILED")
+            if response.status_code in {400, 401, 403}:
+                try:
                     body = response.json()
-                    if (isinstance(body, dict) and not body.get("data") and body.get("errors")
-                            and isinstance(body["errors"], list)
-                            and all(isinstance(e, dict) and e.get("extensions", {}).get("code") in {
-                                "GRAPHQL_PARSE_FAILED", "GRAPHQL_VALIDATION_FAILED", "UNAUTHORIZED", "FORBIDDEN"
-                            } for e in body["errors"])):
-                        raise BufferDefinitiveRejection("BUFFER_REQUEST_REJECTED")
-                raise failure("BUFFER_RESPONSE_UNCERTAIN" if write else "BUFFER_READ_FAILED")
+                except (ValueError, TypeError):
+                    raise _ambiguous("http_error_invalid_json", "http_response",
+                                     http_status=response.status_code, response_received=True) from None
+                if (isinstance(body, dict) and not body.get("data") and body.get("errors")
+                        and isinstance(body["errors"], list)
+                        and all(isinstance(e, dict) and e.get("extensions", {}).get("code") in {
+                            "GRAPHQL_PARSE_FAILED", "GRAPHQL_VALIDATION_FAILED", "UNAUTHORIZED", "FORBIDDEN"
+                        } for e in body["errors"])):
+                    raise BufferDefinitiveRejection(
+                        "BUFFER_REQUEST_REJECTED", failure_code="definitive_http_rejection",
+                        phase="http_response", http_status=response.status_code, response_received=True)
+            raise _ambiguous("http_non_200", "http_response",
+                             http_status=response.status_code, response_received=True)
+
+        try:
             body = response.json()
-            if not isinstance(body, dict) or body.get("errors") or not isinstance(body.get("data"), dict):
-                raise failure("BUFFER_RESPONSE_UNCERTAIN" if write else "BUFFER_READ_FAILED")
-            return body["data"]
-        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
-            raise failure("BUFFER_RESPONSE_UNCERTAIN" if write else "BUFFER_READ_FAILED") from None
+        except (ValueError, TypeError):
+            if write:
+                raise _ambiguous("response_decode_error", "decoding_response",
+                                 http_status=200, response_received=True) from None
+            raise BufferReadError("BUFFER_READ_FAILED") from None
+        if not isinstance(body, dict) or body.get("errors") or not isinstance(body.get("data"), dict):
+            if write:
+                raise _ambiguous("graphql_envelope_invalid", "validating_graphql_response",
+                                 http_status=200, response_received=True)
+            raise BufferReadError("BUFFER_READ_FAILED")
+        return body["data"]
 
     def _text(self, value, *, identifier=False, content=False):
         if (not isinstance(value, str) or not value.strip() or len(value) > 2048
@@ -277,12 +359,18 @@ class BufferGateway:
             result = data["createPost"]
             if (result.get("__typename") != "PostActionSuccess" and "post" not in result
                     and isinstance(result.get("errorMessage"), str)):
-                raise BufferDefinitiveRejection("BUFFER_MUTATION_REJECTED")
+                raise BufferDefinitiveRejection(
+                    "BUFFER_MUTATION_REJECTED", failure_code="explicit_mutation_rejection",
+                    phase="normalizing_mutation_result", http_status=200, response_received=True)
             if result.get("__typename") != "PostActionSuccess" or "errorMessage" in result:
                 raise ValueError
             return self._post_result(result["post"], payload.channel_id)
+        except BufferDefinitiveRejection:
+            raise
         except (KeyError, TypeError, ValueError, AttributeError, BufferConfigurationError):
-            raise BufferAmbiguousFailure("BUFFER_RESPONSE_UNCERTAIN") from None
+            raise BufferAmbiguousFailure(
+                "BUFFER_RESPONSE_UNCERTAIN", failure_code="mutation_result_invalid",
+                phase="normalizing_mutation_result", http_status=200, response_received=True) from None
 
     async def post(self, post_id: str) -> BufferPostSnapshot:
         """One exact read. Never scan history, retry, or return raw provider data."""
