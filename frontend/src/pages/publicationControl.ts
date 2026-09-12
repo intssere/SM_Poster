@@ -32,6 +32,17 @@ export function canCreatePublication(approvalId?: string | null, boardRecordId?:
   return Boolean(approvalId && boardRecordId)
 }
 
+export async function submitSelectedPublication(
+  approvalId: string | null | undefined,
+  destinationChoice: Record<string, string>,
+  submit: (approvalId: string, boardRecordId: string) => Promise<unknown>,
+): Promise<boolean> {
+  const boardRecordId = approvalId ? destinationChoice[approvalId] : undefined
+  if (!canCreatePublication(approvalId, boardRecordId)) return false
+  await submit(approvalId as string, boardRecordId as string)
+  return true
+}
+
 export function canArmActivation(status?: string, loading = false): boolean {
   return !loading && (status === 'DISARMED' || status === 'REVOKED')
 }
