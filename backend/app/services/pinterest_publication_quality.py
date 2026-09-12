@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
-from app.models.domain import Board, PinDraft, PinConcept, CreativeTemplate, PinCreative, PinPublication, PinterestBoard, ProductImage
+from app.models.domain import Board, PinDraft, PinConcept, CreativeTemplate, PinCreative, PinPublication, PinterestBoard, PinterestConnection, ProductImage
 from app.services.public_creative_media import public_creative_url_matches
 
 PINTEREST_QUALITY_V1 = "PINTEREST_QUALITY_V1"
@@ -235,6 +235,28 @@ def _creative_checks(db: Any, publication: PinPublication, *, dispatch_provider=
 
 def _board_relevance_checks(db: Any, publication: PinPublication, *, dispatch_provider="pinterest_direct") -> list[QualityCheck]:
     if dispatch_provider == "buffer":
+        # New publications use server-owned Pinterest routing identity. Validate
+        # that identity fail-closed before Buffer authorization/dispatch quality
+        # can pass. Legacy Board routing remains as a compatibility fallback for
+        # historical publications that have neither new routing foreign key.
+        if publication.pinterest_board_record_id or publication.pinterest_connection_id:
+            board = db.get(PinterestBoard, publication.pinterest_board_record_id) if publication.pinterest_board_record_id else None
+            connection = db.get(PinterestConnection, publication.pinterest_connection_id) if publication.pinterest_connection_id else None
+            valid = bool(
+                board
+                and connection
+                and connection.status == "CONNECTED"
+                and board.connection_id == connection.id
+                and board.is_active
+                and board.is_eligible
+                and board.last_synced_at is not None
+                and connection.boards_last_synced_at is not None
+                and board.last_synced_at == connection.boards_last_synced_at
+                and bool(publication.pinterest_board_id_snapshot)
+                and publication.pinterest_board_id_snapshot == board.external_board_id
+            )
+            return [_check("BUFFER_BOARD_SELECTION_MATCH", "FAIL", valid, "board must match the persisted proposal and store")]
+
         board = db.get(Board, publication.board_id) if publication.board_id else None
         draft = db.get(PinDraft, publication.draft_id)
         concept = db.get(PinConcept, draft.concept_id) if draft else None
