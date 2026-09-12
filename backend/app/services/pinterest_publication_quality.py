@@ -255,14 +255,7 @@ def _board_relevance_checks(db: Any, publication: PinPublication, *, dispatch_pr
                 and bool(publication.pinterest_board_id_snapshot)
                 and publication.pinterest_board_id_snapshot == board.external_board_id
             )
-            return [_check(
-                "BUFFER_BOARD_SELECTION_MATCH",
-                "FAIL",
-                valid,
-                "server-owned Pinterest board routing must remain connected, synchronized, eligible, and snapshot-matched",
-                pinterest_board_record_id=publication.pinterest_board_record_id,
-                pinterest_connection_id=publication.pinterest_connection_id,
-            )]
+            return [_check("BUFFER_BOARD_SELECTION_MATCH", "FAIL", valid, "board must match the persisted proposal and store")]
 
         board = db.get(Board, publication.board_id) if publication.board_id else None
         draft = db.get(PinDraft, publication.draft_id)

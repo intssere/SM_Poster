@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db.base import Base
-from app.models.domain import PinPublication, PinterestBoard, PinterestConnection
+from app.models.domain import Board, ContentAngle, PinConcept, PinDraft, PinPublication, PinterestBoard, PinterestConnection
 from app.services.pinterest_publication_quality import _board_relevance_checks
 
 
@@ -67,6 +67,60 @@ def test_buffer_quality_accepts_server_owned_pinterest_board_identity_without_le
 
     assert check.passed is True
     assert publication.board_id is None
+
+
+def test_buffer_board_selection_snapshot_is_stable_across_equivalent_legacy_and_server_owned_routing():
+    db, publication, connection, board = _server_owned_routing()
+    angle = ContentAngle(id="angle-compat", key="angle-compat", name="Compatibility angle")
+    legacy_board = Board(
+        id="legacy-board",
+        store_id="store-1",
+        name="Arabian Perfumes",
+        slug="arabian-perfumes",
+        active=True,
+        pinterest_board_id=board.external_board_id,
+    )
+    concept = PinConcept(
+        id="concept-compat",
+        store_id="store-1",
+        product_id="product-1",
+        content_angle_id=angle.id,
+        board_id=legacy_board.id,
+        fingerprint="b" * 64,
+    )
+    draft = PinDraft(
+        id="draft-compat",
+        concept_id=concept.id,
+        title="Arabian Fragrance: Lattafa",
+        description="A persisted Buffer compatibility fixture.",
+        alt_text="Lattafa fragrance product creative.",
+        destination_url="https://diamondshelf.us/products/aulata34s",
+        utm_url="https://diamondshelf.us/products/aulata34s?utm_source=pinterest",
+        text_fingerprint="t" * 64,
+    )
+    db.add_all([angle, legacy_board, concept, draft])
+    db.commit()
+
+    publication.draft_id = draft.id
+    publication.board_id = legacy_board.id
+    publication.pinterest_connection_id = None
+    publication.pinterest_board_record_id = None
+    publication.pinterest_board_id_snapshot = legacy_board.pinterest_board_id
+    legacy_snapshot = _buffer_board_check(db, publication).as_dict()
+
+    publication.pinterest_connection_id = connection.id
+    publication.pinterest_board_record_id = board.id
+    publication.pinterest_board_id_snapshot = board.external_board_id
+    server_owned_snapshot = _buffer_board_check(db, publication).as_dict()
+
+    assert legacy_snapshot == server_owned_snapshot
+    assert server_owned_snapshot == {
+        "code": "BUFFER_BOARD_SELECTION_MATCH",
+        "severity": "FAIL",
+        "passed": True,
+        "message": "board must match the persisted proposal and store",
+        "safe_details": {},
+    }
 
 
 @pytest.mark.parametrize(
