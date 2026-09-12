@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { activationRequest, canArmActivation, canCreatePublication, canDispatchBuffer, canRevokeActivation, isCurrentResponse, publicationRequest, revokeActivationRequest } from './publicationControl.ts'
+import { activationRequest, canArmActivation, canCreatePublication, canDispatchBuffer, canRevokeActivation, isCurrentResponse, publicationRequest, revokeActivationRequest, submitSelectedPublication } from './publicationControl.ts'
 
 test('publication request contains only sanitized local board record fields', () => {
   const request = publicationRequest('approval-7', 'board-record-3', '2026-04-01T10:00:00.000Z')
@@ -23,6 +23,18 @@ test('stale responses are ignored', () => {
 test('publication creation requires approval_id, never proposal id', () => {
   assert.equal(canCreatePublication(undefined, 'board-1'), false)
   assert.equal(canCreatePublication('approval-1', 'board-1'), true)
+})
+
+test('publication submission uses approval-keyed destination and fails closed when identity is missing', async () => {
+  const calls: Array<[string, string]> = []
+  const submit = async (approvalId: string, boardRecordId: string) => { calls.push([approvalId, boardRecordId]) }
+  const destinationChoice = { 'approval-1': 'board-approved', 'proposal-1': 'board-decoy' }
+
+  assert.equal(await submitSelectedPublication('approval-1', destinationChoice, submit), true)
+  assert.deepEqual(calls, [['approval-1', 'board-approved']])
+  assert.equal(await submitSelectedPublication(undefined, destinationChoice, submit), false)
+  assert.equal(await submitSelectedPublication('approval-missing', destinationChoice, submit), false)
+  assert.equal(calls.length, 1)
 })
 
 test('unknown and loading activation states fail closed', () => {

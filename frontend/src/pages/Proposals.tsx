@@ -22,7 +22,7 @@ import {
 import { CatalogProduct, getProducts } from '../api/catalog'
 import { RevisionControls } from './RevisionControls'
 import { createPublication, getEligibleDestinations, type EligibleDestination } from '../api/publications'
-import { canCreatePublication } from './publicationControl'
+import { submitSelectedPublication } from './publicationControl'
 import {
   EXACT_PRODUCT_SEARCH_LIMIT,
   exactProductSearchFailed,
@@ -271,11 +271,13 @@ export function ProposalsPage({ onOpenGallery }: { onOpenGallery?: () => void })
   }
 
   async function createApprovedPublication(proposal: PinProposal) {
-    const boardRecordId = destinationChoice[proposal.id]
-    if (!canCreatePublication(proposal.approval_id, boardRecordId)) return
-    setDestinationBusy(proposal.id); setMessage(null)
+    const approvalId = proposal.approval_id
+    if (!approvalId) return
+    const boardRecordId = destinationChoice[approvalId]
+    if (!boardRecordId) return
+    setDestinationBusy(approvalId); setMessage(null)
     try {
-      await createPublication(proposal.approval_id as string, boardRecordId)
+      await submitSelectedPublication(approvalId, destinationChoice, createPublication)
       setMessage({ type: 'success', text: 'Immutable publication created from the approved proposal. Provider routing remains server-side.' })
     } catch (error) { setMessage({ type: 'error', text: (error as Error).message }) }
     finally { setDestinationBusy(null) }
