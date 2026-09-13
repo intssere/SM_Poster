@@ -11,6 +11,103 @@ import httpx
 from app.core.config import Settings
 
 
+GRAPHQL_CODE_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+GRAPHQL_PATH_FIELD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+MAX_GRAPHQL_ERRORS = 8
+MAX_GRAPHQL_PATH_DEPTH = 8
+MAX_GRAPHQL_PATH_INDEX = 1_000_000
+
+
+def _normalize_graphql_code(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    code = value.strip().upper()
+    if not GRAPHQL_CODE_RE.fullmatch(code):
+        return None
+    return code
+
+
+def _normalize_graphql_path(value) -> list[str | int] | None:
+    if not isinstance(value, list) or not value or len(value) > MAX_GRAPHQL_PATH_DEPTH:
+        return None
+    normalized = []
+    for segment in value:
+        if isinstance(segment, bool):
+            return None
+        if isinstance(segment, int):
+            if not 0 <= segment <= MAX_GRAPHQL_PATH_INDEX:
+                return None
+            normalized.append(segment)
+            continue
+        if not isinstance(segment, str) or not GRAPHQL_PATH_FIELD_RE.fullmatch(segment):
+            return None
+        normalized.append(segment)
+    return normalized
+
+
+def _extract_graphql_error_metadata(errors) -> dict | None:
+    """Extract only non-sensitive GraphQL structure; never messages or extension payloads."""
+    if not isinstance(errors, list) or not 1 <= len(errors) <= MAX_GRAPHQL_ERRORS:
+        return None
+    codes = []
+    paths = []
+    for error in errors:
+        if not isinstance(error, dict):
+            return None
+        extensions = error.get("extensions")
+        if not isinstance(extensions, dict):
+            return None
+        code = _normalize_graphql_code(extensions.get("code"))
+        if code is None:
+            return None
+        codes.append(code)
+        if "path" in error:
+            path = _normalize_graphql_path(error.get("path"))
+            if path is not None:
+                paths.append(path)
+    metadata = {
+        "graphql_error_count": len(errors),
+        "graphql_error_codes": sorted(set(codes)),
+    }
+    if paths:
+        metadata["graphql_error_paths"] = paths
+    return metadata
+
+
+def _normalize_graphql_diagnostic_metadata(value) -> dict:
+    """Defense-in-depth validation for metadata attached to mutation failures."""
+    if not isinstance(value, dict):
+        return {}
+    count = value.get("graphql_error_count")
+    codes = value.get("graphql_error_codes")
+    if (type(count) is not int or not 1 <= count <= MAX_GRAPHQL_ERRORS
+            or not isinstance(codes, list) or not 1 <= len(codes) <= MAX_GRAPHQL_ERRORS):
+        return {}
+    normalized_codes = []
+    for code in codes:
+        normalized = _normalize_graphql_code(code)
+        if normalized is None or normalized != code:
+            return {}
+        normalized_codes.append(normalized)
+    safe = {
+        "graphql_error_count": count,
+        "graphql_error_codes": sorted(set(normalized_codes)),
+    }
+    paths = value.get("graphql_error_paths")
+    if paths is not None:
+        if not isinstance(paths, list) or len(paths) > MAX_GRAPHQL_ERRORS:
+            return safe
+        normalized_paths = []
+        for path in paths:
+            normalized = _normalize_graphql_path(path)
+            if normalized is None:
+                return safe
+            normalized_paths.append(normalized)
+        if normalized_paths:
+            safe["graphql_error_paths"] = normalized_paths
+    return safe
+
+
 class BufferConfigurationError(RuntimeError):
     pass
 
@@ -24,7 +121,7 @@ class _BufferMutationFailure(RuntimeError):
 
     def __init__(self, code: str, *, failure_code: str, phase: str,
                  http_status: int | None = None, response_received: bool | None = None,
-                 request_send_state: str = "unknown"):
+                 request_send_state: str = "unknown", graphql_error_metadata: dict | None = None):
         super().__init__(code)
         self.code = code
         self.failure_code = failure_code
@@ -32,10 +129,11 @@ class _BufferMutationFailure(RuntimeError):
         self.http_status = http_status
         self.response_received = response_received
         self.request_send_state = request_send_state
+        self.graphql_error_metadata = _normalize_graphql_diagnostic_metadata(graphql_error_metadata)
 
     def safe_diagnostic(self) -> dict:
-        """Strict allowlist only. Never include payloads, headers, bodies, or exception text."""
-        return {
+        """Strict allowlist only. Never include payloads, headers, bodies, messages, or exception text."""
+        diagnostic = {
             "outcome_class": self.outcome_class,
             "failure_code": self.failure_code,
             "phase": self.phase,
@@ -43,6 +141,8 @@ class _BufferMutationFailure(RuntimeError):
             "http_status": self.http_status,
             "request_send_state": self.request_send_state,
         }
+        diagnostic.update(self.graphql_error_metadata)
+        return diagnostic
 
 
 class BufferDefinitiveRejection(_BufferMutationFailure):
@@ -163,9 +263,13 @@ PROVEN_HTTP_200_PRE_EXECUTION_GRAPHQL_CODES = frozenset({
 })
 
 
-def _ambiguous(failure_code: str, phase: str, *, http_status=None, response_received=None):
-    return BufferAmbiguousFailure("BUFFER_RESPONSE_UNCERTAIN", failure_code=failure_code, phase=phase,
-                                  http_status=http_status, response_received=response_received)
+def _ambiguous(failure_code: str, phase: str, *, http_status=None, response_received=None,
+               graphql_error_metadata=None):
+    return BufferAmbiguousFailure(
+        "BUFFER_RESPONSE_UNCERTAIN", failure_code=failure_code, phase=phase,
+        http_status=http_status, response_received=response_received,
+        graphql_error_metadata=graphql_error_metadata,
+    )
 
 
 def _proven_pre_execution_graphql_rejection(body, allowed_codes) -> bool:
@@ -185,15 +289,7 @@ def _proven_pre_execution_graphql_rejection(body, allowed_codes) -> bool:
 
 
 def _structured_graphql_errors(errors) -> bool:
-    if not isinstance(errors, list) or not errors:
-        return False
-    return all(
-        isinstance(error, dict)
-        and isinstance(error.get("extensions"), dict)
-        and isinstance(error["extensions"].get("code"), str)
-        and bool(error["extensions"]["code"])
-        for error in errors
-    )
+    return _extract_graphql_error_metadata(errors) is not None
 
 
 class BufferGateway:
@@ -268,10 +364,15 @@ class BufferGateway:
                 except (ValueError, TypeError):
                     raise _ambiguous("http_error_invalid_json", "http_response",
                                      http_status=response.status_code, response_received=True) from None
+                graphql_error_metadata = _extract_graphql_error_metadata(body.get("errors")) if isinstance(body, dict) else None
                 if _proven_pre_execution_graphql_rejection(body, PROVEN_HTTP_REJECTION_GRAPHQL_CODES):
                     raise BufferDefinitiveRejection(
                         "BUFFER_REQUEST_REJECTED", failure_code="definitive_http_rejection",
-                        phase="http_response", http_status=response.status_code, response_received=True)
+                        phase="http_response", http_status=response.status_code, response_received=True,
+                        graphql_error_metadata=graphql_error_metadata)
+                raise _ambiguous(
+                    "http_non_200", "http_response", http_status=response.status_code,
+                    response_received=True, graphql_error_metadata=graphql_error_metadata)
             raise _ambiguous("http_non_200", "http_response",
                              http_status=response.status_code, response_received=True)
 
@@ -289,7 +390,8 @@ class BufferGateway:
             raise BufferReadError("BUFFER_READ_FAILED")
         errors = body.get("errors")
         if errors:
-            if not _structured_graphql_errors(errors):
+            graphql_error_metadata = _extract_graphql_error_metadata(errors)
+            if graphql_error_metadata is None:
                 if write:
                     raise _ambiguous("graphql_envelope_invalid", "validating_graphql_response",
                                      http_status=200, response_received=True)
@@ -298,10 +400,13 @@ class BufferGateway:
                     body, PROVEN_HTTP_200_PRE_EXECUTION_GRAPHQL_CODES):
                 raise BufferDefinitiveRejection(
                     "BUFFER_REQUEST_REJECTED", failure_code="graphql_top_level_rejection",
-                    phase="validating_graphql_response", http_status=200, response_received=True)
+                    phase="validating_graphql_response", http_status=200, response_received=True,
+                    graphql_error_metadata=graphql_error_metadata)
             if write:
-                raise _ambiguous("graphql_top_level_error", "validating_graphql_response",
-                                 http_status=200, response_received=True)
+                raise _ambiguous(
+                    "graphql_top_level_error", "validating_graphql_response",
+                    http_status=200, response_received=True,
+                    graphql_error_metadata=graphql_error_metadata)
             raise BufferReadError("BUFFER_READ_FAILED")
         if not isinstance(body.get("data"), dict):
             if write:

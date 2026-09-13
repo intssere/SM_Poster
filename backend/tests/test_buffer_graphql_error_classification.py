@@ -89,6 +89,8 @@ def test_http_200_proven_request_shape_graphql_rejection_is_definitive(code, cap
         "response_received": True,
         "http_status": 200,
         "request_send_state": "unknown",
+        "graphql_error_count": 1,
+        "graphql_error_codes": [code],
     }
     assert SECRET not in str(error.value) + repr(error.value) + caplog.text
 
@@ -114,9 +116,12 @@ def test_http_200_auth_unknown_or_system_graphql_error_remains_ambiguous(code, c
         run_write(handler)
 
     assert calls == [1]
-    assert error.value.safe_diagnostic()["failure_code"] == "graphql_top_level_error"
-    assert error.value.safe_diagnostic()["outcome_class"] == "ambiguous"
-    assert error.value.safe_diagnostic()["http_status"] == 200
+    diagnostic = error.value.safe_diagnostic()
+    assert diagnostic["failure_code"] == "graphql_top_level_error"
+    assert diagnostic["outcome_class"] == "ambiguous"
+    assert diagnostic["http_status"] == 200
+    assert diagnostic["graphql_error_count"] == 1
+    assert diagnostic["graphql_error_codes"] == [code]
     assert SECRET not in str(error.value) + repr(error.value) + caplog.text
 
 
@@ -137,7 +142,89 @@ def test_http_200_partial_data_plus_known_error_remains_ambiguous():
         run_write(handler)
 
     assert calls == [1]
-    assert error.value.safe_diagnostic()["failure_code"] == "graphql_top_level_error"
+    diagnostic = error.value.safe_diagnostic()
+    assert diagnostic["failure_code"] == "graphql_top_level_error"
+    assert diagnostic["graphql_error_codes"] == ["GRAPHQL_VALIDATION_FAILED"]
+    assert diagnostic["graphql_error_count"] == 1
+
+
+def test_http_200_safe_graphql_code_and_structural_path_are_normalized_and_retained(caplog):
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(
+            200,
+            json={
+                "data": None,
+                "errors": [{
+                    "message": SECRET,
+                    "path": ["createPost", "post", 0, "id"],
+                    "extensions": {"code": "forbidden", "providerDetail": SECRET},
+                }],
+            },
+        )
+
+    with pytest.raises(BufferAmbiguousFailure, match="^BUFFER_RESPONSE_UNCERTAIN$") as error:
+        run_write(handler)
+
+    assert calls == [1]
+    diagnostic = error.value.safe_diagnostic()
+    assert diagnostic["failure_code"] == "graphql_top_level_error"
+    assert diagnostic["graphql_error_count"] == 1
+    assert diagnostic["graphql_error_codes"] == ["FORBIDDEN"]
+    assert diagnostic["graphql_error_paths"] == [["createPost", "post", 0, "id"]]
+    assert SECRET not in str(error.value) + repr(error.value) + caplog.text + repr(diagnostic)
+
+
+def test_normalized_diagnostic_code_does_not_change_definitive_classifier():
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(200, json={
+            "data": None,
+            "errors": [{
+                "message": SECRET,
+                "extensions": {"code": "graphql_validation_failed"},
+            }],
+        })
+
+    with pytest.raises(BufferAmbiguousFailure, match="^BUFFER_RESPONSE_UNCERTAIN$") as error:
+        run_write(handler)
+
+    diagnostic = error.value.safe_diagnostic()
+    assert calls == [1]
+    assert diagnostic["failure_code"] == "graphql_top_level_error"
+    assert diagnostic["outcome_class"] == "ambiguous"
+    assert diagnostic["graphql_error_codes"] == ["GRAPHQL_VALIDATION_FAILED"]
+
+
+def test_invalid_graphql_path_is_not_persisted_but_safe_code_remains(caplog):
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(
+            200,
+            json={
+                "data": None,
+                "errors": [{
+                    "message": SECRET,
+                    "path": ["createPost", SECRET],
+                    "extensions": {"code": "FORBIDDEN"},
+                }],
+            },
+        )
+
+    with pytest.raises(BufferAmbiguousFailure, match="^BUFFER_RESPONSE_UNCERTAIN$") as error:
+        run_write(handler)
+
+    diagnostic = error.value.safe_diagnostic()
+    assert calls == [1]
+    assert diagnostic["graphql_error_codes"] == ["FORBIDDEN"]
+    assert "graphql_error_paths" not in diagnostic
+    assert SECRET not in repr(diagnostic) + caplog.text
 
 
 @pytest.mark.parametrize(
@@ -175,6 +262,26 @@ def test_http_200_graphql_error_without_extensions_remains_envelope_invalid_and_
     assert calls == [1]
     assert error.value.safe_diagnostic()["failure_code"] == "graphql_envelope_invalid"
     assert SECRET not in str(error.value) + repr(error.value) + caplog.text
+
+
+def test_malformed_graphql_code_is_never_persisted(caplog):
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(200, json={
+            "data": None,
+            "errors": [{"message": SECRET, "extensions": {"code": "FORBIDDEN\n" + SECRET}}],
+        })
+
+    with pytest.raises(BufferAmbiguousFailure, match="^BUFFER_RESPONSE_UNCERTAIN$") as error:
+        run_write(handler)
+
+    diagnostic = error.value.safe_diagnostic()
+    assert calls == [1]
+    assert diagnostic["failure_code"] == "graphql_envelope_invalid"
+    assert "graphql_error_codes" not in diagnostic
+    assert SECRET not in repr(diagnostic) + caplog.text
 
 
 def test_http_200_success_still_normalizes_exact_post():

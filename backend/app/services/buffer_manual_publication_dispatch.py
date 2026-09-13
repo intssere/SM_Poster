@@ -75,7 +75,7 @@ def _persist(db, publication_id, attempt_id, status, code, settings, *, result=N
         "buffer_organization_id": settings.buffer_organization_id,
     }
     if mutation_diagnostic is not None:
-        safe_metadata["mutation"] = {
+        mutation_metadata = {
             "outcome_class": mutation_diagnostic.get("outcome_class"),
             "failure_code": mutation_diagnostic.get("failure_code"),
             "phase": mutation_diagnostic.get("phase"),
@@ -84,6 +84,10 @@ def _persist(db, publication_id, attempt_id, status, code, settings, *, result=N
             "request_send_state": mutation_diagnostic.get("request_send_state", "unknown"),
             "observed_at": now.isoformat(),
         }
+        for key in ("graphql_error_count", "graphql_error_codes", "graphql_error_paths"):
+            if key in mutation_diagnostic:
+                mutation_metadata[key] = mutation_diagnostic[key]
+        safe_metadata["mutation"] = mutation_metadata
     attempt_values = dict(status="FAILED" if terminal else "UNKNOWN", error_code=code,
                           completed_at=now if terminal or result is None else None,
                           safe_response_metadata=safe_metadata)
