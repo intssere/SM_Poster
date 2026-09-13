@@ -12,6 +12,7 @@ from app.api.routes.channels import router as channels_router
 from app.api.routes.ai import router as ai_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.publications import router as publications_router
+from app.api.routes.buffer_reconciliation_discovery import router as buffer_reconciliation_discovery_router
 
 cors_origins = get_settings().allowed_origins
 
@@ -33,6 +34,7 @@ app.include_router(channels_router, prefix="/api")
 app.include_router(ai_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
 app.include_router(publications_router, prefix="/api")
+app.include_router(buffer_reconciliation_discovery_router, prefix="/api")
 
 
 @app.get("/")
