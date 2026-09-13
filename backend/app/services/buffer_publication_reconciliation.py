@@ -6,7 +6,17 @@ from urllib.parse import urlsplit
 from sqlalchemy import select, update
 from app.core.config import get_settings
 from app.integrations.buffer.gateway import BufferGateway, public_url, BufferReadError, BufferConfigurationError
-from app.models.domain import Board, PinConcept, PinDraft, PinPublication, PublicationAttempt, PublicationReconciliationEvent, PublicationStatus
+from app.models.domain import (
+    Board,
+    PinConcept,
+    PinDraft,
+    PinPublication,
+    PinterestBoard,
+    PinterestConnection,
+    PublicationAttempt,
+    PublicationReconciliationEvent,
+    PublicationStatus,
+)
 from app.services.publication_scheduler import request_fingerprint_for
 from app.services.pinterest_publisher import PublicationReconciliationError
 
@@ -40,6 +50,57 @@ def snapshot_matches(publication, snapshot, settings):
     ))
 
 
+def _legacy_board_identity_valid(db, publication):
+    """Validate the immutable local Board/concept route used by every Buffer publication."""
+    board = db.get(Board, publication.board_id) if publication.board_id else None
+    draft = db.get(PinDraft, publication.draft_id) if publication.draft_id else None
+    concept = db.get(PinConcept, draft.concept_id) if draft else None
+    return bool(
+        board is not None
+        and board.active
+        and bool(board.pinterest_board_id)
+        and bool(publication.pinterest_board_id_snapshot)
+        and board.pinterest_board_id == publication.pinterest_board_id_snapshot
+        and concept is not None
+        and concept.board_id == publication.board_id
+        and concept.store_id == board.store_id
+    )
+
+
+def _destination_identity_valid(db, publication):
+    """Fail closed unless persisted Pinterest routing exactly matches the immutable destination.
+
+    Legacy Buffer publications have neither server-owned Pinterest identity field populated.
+    Newer publications may have both populated; when they do, the exact connection/board
+    relationship, sync identity, and external board ID must all match the immutable snapshot.
+    """
+    if not _legacy_board_identity_valid(db, publication):
+        return False
+
+    connection_id = publication.pinterest_connection_id
+    board_record_id = publication.pinterest_board_record_id
+    if connection_id is None and board_record_id is None:
+        return True
+    if not connection_id or not board_record_id:
+        return False
+
+    connection = db.get(PinterestConnection, connection_id)
+    board_record = db.get(PinterestBoard, board_record_id)
+    return bool(
+        connection is not None
+        and board_record is not None
+        and connection.provider == "pinterest"
+        and connection.status == "CONNECTED"
+        and board_record.connection_id == connection.id
+        and board_record.is_active
+        and board_record.is_eligible
+        and board_record.last_synced_at is not None
+        and connection.boards_last_synced_at is not None
+        and board_record.last_synced_at == connection.boards_last_synced_at
+        and board_record.external_board_id == publication.pinterest_board_id_snapshot
+    )
+
+
 def _entry(db, publication_id, settings):
     publication = db.get(PinPublication, publication_id, populate_existing=True)
     if not publication or publication.status != PublicationStatus.PUBLISH_UNKNOWN:
@@ -62,20 +123,8 @@ def _entry(db, publication_id, settings):
     if len(known) > 1:
         raise BufferReconciliationError("CONFLICTING_KNOWN_PROVIDER_PIN_IDS")
     metadata = attempt.safe_response_metadata or {}
-    board = db.get(Board, publication.board_id) if publication.board_id else None
-    draft = db.get(PinDraft, publication.draft_id) if publication.draft_id else None
-    concept = db.get(PinConcept, draft.concept_id) if draft else None
-    buffer_identity_valid = (
-        board is not None and board.active and bool(board.pinterest_board_id)
-        and publication.pinterest_connection_id is None
-        and publication.pinterest_board_record_id is None
-        and bool(publication.pinterest_board_id_snapshot)
-        and board.pinterest_board_id == publication.pinterest_board_id_snapshot
-        and concept is not None and concept.board_id == publication.board_id
-        and concept.store_id == board.store_id
-    )
     if (not publication.publication_fingerprint or not publication.creative_id or not publication.revision_id
-            or not buffer_identity_valid
+            or not _destination_identity_valid(db, publication)
             or attempt.request_fingerprint != request_fingerprint_for(publication)
             or not settings.buffer_organization_id or not settings.buffer_pinterest_channel_id
             or metadata.get("buffer_organization_id") != settings.buffer_organization_id
