@@ -63,9 +63,9 @@ def run_write(handler):
 
 @pytest.mark.parametrize(
     "code",
-    ["GRAPHQL_PARSE_FAILED", "GRAPHQL_VALIDATION_FAILED", "UNAUTHORIZED", "FORBIDDEN"],
+    ["GRAPHQL_PARSE_FAILED", "GRAPHQL_VALIDATION_FAILED"],
 )
-def test_http_200_proven_pre_execution_graphql_rejection_is_definitive(code, caplog):
+def test_http_200_proven_request_shape_graphql_rejection_is_definitive(code, caplog):
     calls = []
 
     def handler(request):
@@ -93,8 +93,11 @@ def test_http_200_proven_pre_execution_graphql_rejection_is_definitive(code, cap
     assert SECRET not in str(error.value) + repr(error.value) + caplog.text
 
 
-@pytest.mark.parametrize("code", ["UNEXPECTED", "RATE_LIMITED", "UNAUTHENTICATED", "INTERNAL_SERVER_ERROR"])
-def test_http_200_unknown_or_system_graphql_error_remains_ambiguous(code, caplog):
+@pytest.mark.parametrize(
+    "code",
+    ["UNAUTHORIZED", "FORBIDDEN", "UNEXPECTED", "RATE_LIMITED", "UNAUTHENTICATED", "INTERNAL_SERVER_ERROR"],
+)
+def test_http_200_auth_unknown_or_system_graphql_error_remains_ambiguous(code, caplog):
     calls = []
 
     def handler(request):
@@ -126,7 +129,7 @@ def test_http_200_partial_data_plus_known_error_remains_ambiguous():
             200,
             json={
                 "data": {"createPost": {"__typename": "PostActionSuccess", "post": post()}},
-                "errors": [{"message": SECRET, "extensions": {"code": "UNAUTHORIZED"}}],
+                "errors": [{"message": SECRET, "extensions": {"code": "GRAPHQL_VALIDATION_FAILED"}}],
             },
         )
 
@@ -159,7 +162,7 @@ def test_http_200_malformed_graphql_error_envelope_remains_ambiguous(errors):
     assert error.value.safe_diagnostic()["outcome_class"] == "ambiguous"
 
 
-def test_http_200_graphql_error_without_extensions_remains_ambiguous_and_redacted(caplog):
+def test_http_200_graphql_error_without_extensions_remains_envelope_invalid_and_redacted(caplog):
     calls = []
 
     def handler(request):
@@ -170,7 +173,7 @@ def test_http_200_graphql_error_without_extensions_remains_ambiguous_and_redacte
         run_write(handler)
 
     assert calls == [1]
-    assert error.value.safe_diagnostic()["failure_code"] == "graphql_top_level_error"
+    assert error.value.safe_diagnostic()["failure_code"] == "graphql_envelope_invalid"
     assert SECRET not in str(error.value) + repr(error.value) + caplog.text
 
 
