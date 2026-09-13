@@ -115,6 +115,8 @@ def test_definitive_rejection_has_safe_diagnostic_and_one_http_call():
         "response_received": True,
         "http_status": 401,
         "request_send_state": "unknown",
+        "graphql_error_count": 1,
+        "graphql_error_codes": ["UNAUTHORIZED"],
     }
     assert GATEWAY_SECRET not in repr(caught.value) + json.dumps(caught.value.safe_diagnostic())
 
@@ -170,6 +172,63 @@ def test_dispatch_persists_sanitized_ambiguous_diagnostic_and_structured_log(tmp
     assert records[0].buffer_failure_phase == "waiting_for_response"
     assert records[0].buffer_provider == "buffer"
     assert SECRET not in json.dumps(attempt.safe_response_metadata) + repr(records[0].__dict__)
+
+
+def test_dispatch_persists_only_allowlisted_graphql_code_and_structural_path(tmp_path, monkeypatch, caplog):
+    class Gateway:
+        async def create_pinterest_post(self, value):
+            raise BufferAmbiguousFailure(
+                "BUFFER_RESPONSE_UNCERTAIN",
+                failure_code="graphql_top_level_error",
+                phase="validating_graphql_response",
+                http_status=200,
+                response_received=True,
+                graphql_error_metadata={
+                    "graphql_error_count": 1,
+                    "graphql_error_codes": ["FORBIDDEN"],
+                    "graphql_error_paths": [["createPost", "post", 0, "id"]],
+                    "message": GATEWAY_SECRET,
+                },
+            )
+
+    caplog.set_level("INFO", logger=dispatch.__name__)
+    publication, attempt = _run_dispatch_case(tmp_path, monkeypatch, Gateway(), caplog)
+    assert publication.status.value == "PUBLISH_UNKNOWN"
+    assert attempt.status == "UNKNOWN"
+    diagnostic = attempt.safe_response_metadata["mutation"]
+    assert diagnostic["failure_code"] == "graphql_top_level_error"
+    assert diagnostic["graphql_error_count"] == 1
+    assert diagnostic["graphql_error_codes"] == ["FORBIDDEN"]
+    assert diagnostic["graphql_error_paths"] == [["createPost", "post", 0, "id"]]
+    assert "message" not in diagnostic
+    assert GATEWAY_SECRET not in json.dumps(attempt.safe_response_metadata) + caplog.text
+
+
+def test_invalid_graphql_metadata_is_dropped_before_persistence(tmp_path, monkeypatch, caplog):
+    class Gateway:
+        async def create_pinterest_post(self, value):
+            raise BufferAmbiguousFailure(
+                "BUFFER_RESPONSE_UNCERTAIN",
+                failure_code="graphql_top_level_error",
+                phase="validating_graphql_response",
+                http_status=200,
+                response_received=True,
+                graphql_error_metadata={
+                    "graphql_error_count": 1,
+                    "graphql_error_codes": ["FORBIDDEN\n" + GATEWAY_SECRET],
+                    "graphql_error_paths": [["createPost", GATEWAY_SECRET]],
+                },
+            )
+
+    caplog.set_level("INFO", logger=dispatch.__name__)
+    publication, attempt = _run_dispatch_case(tmp_path, monkeypatch, Gateway(), caplog)
+    assert publication.status.value == "PUBLISH_UNKNOWN"
+    assert attempt.status == "UNKNOWN"
+    diagnostic = attempt.safe_response_metadata["mutation"]
+    assert "graphql_error_count" not in diagnostic
+    assert "graphql_error_codes" not in diagnostic
+    assert "graphql_error_paths" not in diagnostic
+    assert GATEWAY_SECRET not in json.dumps(attempt.safe_response_metadata) + caplog.text
 
 
 def test_unexpected_mutation_exception_stays_unknown_without_exception_text(tmp_path, monkeypatch, caplog):
