@@ -155,8 +155,11 @@ CREATE_POST = """mutation CreatePinterestPost($input: CreatePostInput!) {
 }"""
 POST_STATUSES = frozenset({"draft", "error", "needs_approval", "scheduled", "sending", "sent"})
 TIMEOUT = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
-PROVEN_PRE_EXECUTION_GRAPHQL_CODES = frozenset({
+PROVEN_HTTP_REJECTION_GRAPHQL_CODES = frozenset({
     "GRAPHQL_PARSE_FAILED", "GRAPHQL_VALIDATION_FAILED", "UNAUTHORIZED", "FORBIDDEN",
+})
+PROVEN_HTTP_200_PRE_EXECUTION_GRAPHQL_CODES = frozenset({
+    "GRAPHQL_PARSE_FAILED", "GRAPHQL_VALIDATION_FAILED",
 })
 
 
@@ -165,7 +168,7 @@ def _ambiguous(failure_code: str, phase: str, *, http_status=None, response_rece
                                   http_status=http_status, response_received=response_received)
 
 
-def _proven_pre_execution_graphql_rejection(body) -> bool:
+def _proven_pre_execution_graphql_rejection(body, allowed_codes) -> bool:
     """True only when Buffer proves a request-level rejection before mutation execution."""
     if not isinstance(body, dict) or body.get("data") is not None:
         return False
@@ -176,10 +179,21 @@ def _proven_pre_execution_graphql_rejection(body) -> bool:
         if not isinstance(error, dict):
             return False
         extensions = error.get("extensions")
-        if (not isinstance(extensions, dict)
-                or extensions.get("code") not in PROVEN_PRE_EXECUTION_GRAPHQL_CODES):
+        if not isinstance(extensions, dict) or extensions.get("code") not in allowed_codes:
             return False
     return True
+
+
+def _structured_graphql_errors(errors) -> bool:
+    if not isinstance(errors, list) or not errors:
+        return False
+    return all(
+        isinstance(error, dict)
+        and isinstance(error.get("extensions"), dict)
+        and isinstance(error["extensions"].get("code"), str)
+        and bool(error["extensions"]["code"])
+        for error in errors
+    )
 
 
 class BufferGateway:
@@ -254,7 +268,7 @@ class BufferGateway:
                 except (ValueError, TypeError):
                     raise _ambiguous("http_error_invalid_json", "http_response",
                                      http_status=response.status_code, response_received=True) from None
-                if _proven_pre_execution_graphql_rejection(body):
+                if _proven_pre_execution_graphql_rejection(body, PROVEN_HTTP_REJECTION_GRAPHQL_CODES):
                     raise BufferDefinitiveRejection(
                         "BUFFER_REQUEST_REJECTED", failure_code="definitive_http_rejection",
                         phase="http_response", http_status=response.status_code, response_received=True)
@@ -275,12 +289,13 @@ class BufferGateway:
             raise BufferReadError("BUFFER_READ_FAILED")
         errors = body.get("errors")
         if errors:
-            if not isinstance(errors, list) or any(not isinstance(error, dict) for error in errors):
+            if not _structured_graphql_errors(errors):
                 if write:
                     raise _ambiguous("graphql_envelope_invalid", "validating_graphql_response",
                                      http_status=200, response_received=True)
                 raise BufferReadError("BUFFER_READ_FAILED")
-            if write and _proven_pre_execution_graphql_rejection(body):
+            if write and _proven_pre_execution_graphql_rejection(
+                    body, PROVEN_HTTP_200_PRE_EXECUTION_GRAPHQL_CODES):
                 raise BufferDefinitiveRejection(
                     "BUFFER_REQUEST_REJECTED", failure_code="graphql_top_level_rejection",
                     phase="validating_graphql_response", http_status=200, response_received=True)
