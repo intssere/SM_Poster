@@ -177,6 +177,29 @@ def test_http_200_safe_graphql_code_and_structural_path_are_normalized_and_retai
     assert SECRET not in str(error.value) + repr(error.value) + caplog.text + repr(diagnostic)
 
 
+def test_normalized_diagnostic_code_does_not_change_definitive_classifier():
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(200, json={
+            "data": None,
+            "errors": [{
+                "message": SECRET,
+                "extensions": {"code": "graphql_validation_failed"},
+            }],
+        })
+
+    with pytest.raises(BufferAmbiguousFailure, match="^BUFFER_RESPONSE_UNCERTAIN$") as error:
+        run_write(handler)
+
+    diagnostic = error.value.safe_diagnostic()
+    assert calls == [1]
+    assert diagnostic["failure_code"] == "graphql_top_level_error"
+    assert diagnostic["outcome_class"] == "ambiguous"
+    assert diagnostic["graphql_error_codes"] == ["GRAPHQL_VALIDATION_FAILED"]
+
+
 def test_invalid_graphql_path_is_not_persisted_but_safe_code_remains(caplog):
     calls = []
 
