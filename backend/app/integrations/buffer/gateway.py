@@ -276,8 +276,16 @@ def _proven_pre_execution_graphql_rejection(body, allowed_codes) -> bool:
     """True only when Buffer proves a request-level rejection before mutation execution."""
     if not isinstance(body, dict) or body.get("data") is not None:
         return False
-    metadata = _extract_graphql_error_metadata(body.get("errors"))
-    return metadata is not None and all(code in allowed_codes for code in metadata["graphql_error_codes"])
+    errors = body.get("errors")
+    if not isinstance(errors, list) or not errors:
+        return False
+    for error in errors:
+        if not isinstance(error, dict):
+            return False
+        extensions = error.get("extensions")
+        if not isinstance(extensions, dict) or extensions.get("code") not in allowed_codes:
+            return False
+    return True
 
 
 def _structured_graphql_errors(errors) -> bool:
