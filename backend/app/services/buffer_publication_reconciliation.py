@@ -105,10 +105,8 @@ def _destination_identity_mode(db, publication):
 def _approved_content_identity_valid(db, publication, *, destination_mode):
     """Validate the exact approved content and creative identities behind the snapshot.
 
-    Modern publications must resolve either the approved original draft or a concrete
-    ContentRevision. Legacy pre-versioned records may use the historical nullable
-    approved_version_id representation only when their immutable snapshot still
-    exactly matches the original draft.
+    Publications must resolve either the explicitly approved original draft or the
+    exact concrete ContentRevision referenced by the immutable publication.
     """
     approval = db.get(PinApproval, publication.approval_id) if publication.approval_id else None
     draft = db.get(PinDraft, publication.draft_id) if publication.draft_id else None
@@ -133,7 +131,6 @@ def _approved_content_identity_valid(db, publication, *, destination_mode):
     ):
         return False
 
-    revision = None
     if publication.revision_id is None:
         if approval.revision_id is not None or approval.approved_version_id != "original":
             return False
@@ -141,19 +138,14 @@ def _approved_content_identity_valid(db, publication, *, destination_mode):
     else:
         revision = db.get(ContentRevision, publication.revision_id)
         if revision is None:
-            # Preserve only the explicitly pre-versioned legacy representation.
-            # Modern server-owned publications must always resolve their revision.
-            if destination_mode != "legacy" or approval.approved_version_id is not None:
-                return False
-            source = draft
-        else:
-            if (
-                revision.draft_id != publication.draft_id
-                or approval.approved_version_id != revision.id
-                or (revision.creative_id and revision.creative_id != publication.creative_id)
-            ):
-                return False
-            source = revision
+            return False
+        if (
+            revision.draft_id != publication.draft_id
+            or approval.approved_version_id != revision.id
+            or (revision.creative_id and revision.creative_id != publication.creative_id)
+        ):
+            return False
+        source = revision
 
     return bool(
         publication.title_snapshot == source.title
