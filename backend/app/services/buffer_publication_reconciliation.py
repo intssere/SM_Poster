@@ -8,7 +8,11 @@ from app.core.config import get_settings
 from app.integrations.buffer.gateway import BufferGateway, public_url, BufferReadError, BufferConfigurationError
 from app.models.domain import (
     Board,
+    ContentRevision,
+    CreativeTemplate,
+    PinApproval,
     PinConcept,
+    PinCreative,
     PinDraft,
     PinPublication,
     PinterestBoard,
@@ -51,7 +55,7 @@ def snapshot_matches(publication, snapshot, settings):
 
 
 def _legacy_board_identity_valid(db, publication):
-    """Validate the immutable local Board/concept route used by every Buffer publication."""
+    """Validate the immutable local Board/concept route for legacy publications."""
     board = db.get(Board, publication.board_id) if publication.board_id else None
     draft = db.get(PinDraft, publication.draft_id) if publication.draft_id else None
     concept = db.get(PinConcept, draft.concept_id) if draft else None
@@ -67,25 +71,9 @@ def _legacy_board_identity_valid(db, publication):
     )
 
 
-def _destination_identity_valid(db, publication):
-    """Fail closed unless persisted Pinterest routing exactly matches the immutable destination.
-
-    Legacy Buffer publications have neither server-owned Pinterest identity field populated.
-    Newer publications may have both populated; when they do, the exact connection/board
-    relationship, sync identity, and external board ID must all match the immutable snapshot.
-    """
-    if not _legacy_board_identity_valid(db, publication):
-        return False
-
-    connection_id = publication.pinterest_connection_id
-    board_record_id = publication.pinterest_board_record_id
-    if connection_id is None and board_record_id is None:
-        return True
-    if not connection_id or not board_record_id:
-        return False
-
-    connection = db.get(PinterestConnection, connection_id)
-    board_record = db.get(PinterestBoard, board_record_id)
+def _modern_destination_identity_valid(db, publication):
+    connection = db.get(PinterestConnection, publication.pinterest_connection_id)
+    board_record = db.get(PinterestBoard, publication.pinterest_board_record_id)
     return bool(
         connection is not None
         and board_record is not None
@@ -97,7 +85,82 @@ def _destination_identity_valid(db, publication):
         and board_record.last_synced_at is not None
         and connection.boards_last_synced_at is not None
         and board_record.last_synced_at == connection.boards_last_synced_at
+        and bool(publication.pinterest_board_id_snapshot)
         and board_record.external_board_id == publication.pinterest_board_id_snapshot
+    )
+
+
+def _destination_identity_mode(db, publication):
+    """Choose exactly one persisted destination mode; never fall back across modes."""
+    connection_id = publication.pinterest_connection_id
+    board_record_id = publication.pinterest_board_record_id
+    if bool(connection_id) != bool(board_record_id):
+        return None
+    if connection_id and board_record_id:
+        return "modern" if _modern_destination_identity_valid(db, publication) else None
+    return "legacy" if _legacy_board_identity_valid(db, publication) else None
+
+
+def _approved_content_identity_valid(db, publication, *, destination_mode):
+    """Validate the exact approved content and creative identities behind the snapshot.
+
+    Modern publications must resolve either the approved original draft or a concrete
+    ContentRevision. Legacy pre-versioned records may use the historical nullable
+    approved_version_id representation only when their immutable snapshot still
+    exactly matches the original draft.
+    """
+    approval = db.get(PinApproval, publication.approval_id) if publication.approval_id else None
+    draft = db.get(PinDraft, publication.draft_id) if publication.draft_id else None
+    creative = db.get(PinCreative, publication.creative_id) if publication.creative_id else None
+    template = db.get(CreativeTemplate, publication.template_id) if publication.template_id else None
+    if not all((approval, draft, creative, template)):
+        return False
+    if (
+        approval.decision != "APPROVED"
+        or approval.draft_id != publication.draft_id
+        or approval.creative_id != publication.creative_id
+        or approval.revision_id != publication.revision_id
+        or creative.draft_id != publication.draft_id
+        or not publication.source_image_id
+        or creative.source_image_id != publication.source_image_id
+        or creative.template_id != publication.template_id
+        or not publication.creative_fingerprint
+        or creative.creative_fingerprint != publication.creative_fingerprint
+        or template.key != publication.template_key
+        or template.version != publication.template_version
+        or not publication.media_url_snapshot
+    ):
+        return False
+
+    revision = None
+    if publication.revision_id is None:
+        if approval.revision_id is not None or approval.approved_version_id != "original":
+            return False
+        source = draft
+    else:
+        revision = db.get(ContentRevision, publication.revision_id)
+        if revision is None:
+            # Preserve only the explicitly pre-versioned legacy representation.
+            # Modern server-owned publications must always resolve their revision.
+            if destination_mode != "legacy" or approval.approved_version_id is not None:
+                return False
+            source = draft
+        else:
+            if (
+                revision.draft_id != publication.draft_id
+                or approval.approved_version_id != revision.id
+                or (revision.creative_id and revision.creative_id != publication.creative_id)
+            ):
+                return False
+            source = revision
+
+    return bool(
+        publication.title_snapshot == source.title
+        and publication.description_snapshot == source.description
+        and publication.alt_text_snapshot == source.alt_text
+        and publication.destination_url == source.destination_url
+        and publication.utm_url == source.utm_url
+        and publication.text_fingerprint == source.text_fingerprint
     )
 
 
@@ -123,8 +186,10 @@ def _entry(db, publication_id, settings):
     if len(known) > 1:
         raise BufferReconciliationError("CONFLICTING_KNOWN_PROVIDER_PIN_IDS")
     metadata = attempt.safe_response_metadata or {}
-    if (not publication.publication_fingerprint or not publication.creative_id or not publication.revision_id
-            or not _destination_identity_valid(db, publication)
+    destination_mode = _destination_identity_mode(db, publication)
+    if (not publication.publication_fingerprint or not publication.creative_id
+            or destination_mode is None
+            or not _approved_content_identity_valid(db, publication, destination_mode=destination_mode)
             or attempt.request_fingerprint != request_fingerprint_for(publication)
             or not settings.buffer_organization_id or not settings.buffer_pinterest_channel_id
             or metadata.get("buffer_organization_id") != settings.buffer_organization_id
