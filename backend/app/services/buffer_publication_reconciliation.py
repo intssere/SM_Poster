@@ -75,7 +75,8 @@ def _modern_destination_identity_valid(db, publication):
     connection = db.get(PinterestConnection, publication.pinterest_connection_id)
     board_record = db.get(PinterestBoard, publication.pinterest_board_record_id)
     return bool(
-        connection is not None
+        publication.board_id is None
+        and connection is not None
         and board_record is not None
         and connection.provider == "pinterest"
         and connection.status == "CONNECTED"
