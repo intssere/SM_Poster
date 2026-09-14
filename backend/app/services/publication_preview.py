@@ -2,17 +2,25 @@ from __future__ import annotations
 
 from sqlalchemy import select
 from app.core.config import get_settings
-from app.models.domain import PinPublication, PublicationAttempt, PublicationReconciliationEvent, PinterestBoard
+from app.models.domain import PinPublication, PublicationAttempt, PublicationReconciliationEvent, PinterestBoard, PublicationStatus
 from app.services.pinterest_publisher import sanitize_metadata
 from app.services.publication_dispatch_authorization import readiness_result, CONFIRMATION_TEXT_VERSION
 
 CONFIRMATION_PROMPT = "I confirm that I reviewed this exact approved publication, destination, creative, and validation result for future manual Pinterest dispatch."
+BUFFER_RECONCILIATION_CONFIRMATION_VERSION = "BUFFER_RECONCILIATION_V1"
+
 
 def build_preview(db, publication: PinPublication) -> dict:
     readiness = readiness_result(db, publication)
     board = db.get(PinterestBoard, publication.pinterest_board_record_id) if publication.pinterest_board_record_id else None
     attempts = db.scalars(select(PublicationAttempt).where(PublicationAttempt.publication_id == publication.id).order_by(PublicationAttempt.attempt_number)).all()
     events = db.scalars(select(PublicationReconciliationEvent).where(PublicationReconciliationEvent.publication_id == publication.id).order_by(PublicationReconciliationEvent.created_at)).all()
+    buffer_attempts = [a for a in attempts if a.dispatch_provider == "buffer" and a.provider_operation_id]
+    buffer_reconciliation_available = bool(
+        publication.status == PublicationStatus.PUBLISH_UNKNOWN
+        and len(buffer_attempts) == 1
+        and buffer_attempts[0].status == "UNKNOWN"
+    )
     return {
         "publication_id": publication.id, "status": publication.status.value if hasattr(publication.status, "value") else publication.status,
         "approval_id": publication.approval_id, "revision_id": publication.revision_id, "draft_id": publication.draft_id,
@@ -31,5 +39,7 @@ def build_preview(db, publication: PinPublication) -> dict:
         "reconciliation": [{"id": e.id, "action": e.action, "actor": e.actor, "previous_status": e.previous_status, "new_status": e.new_status, "provider_pin_id": e.provider_pin_id, "reason": e.reason, "created_at": e.created_at, "attempt_id": e.attempt_id} for e in events],
         "checklist": [{"code": "QUALITY_PASS", "passed": readiness["quality"]["status"] == "PASS", "status": readiness["quality"]["status"]}, {"code": "DUPLICATE_SAFE", "passed": readiness["duplicate"]["status"] == "SAFE_TO_CONTINUE", "status": readiness["duplicate"]["status"]}, {"code": "MANUAL_STRUCTURAL_READY", "passed": readiness["manual_ready"], "status": readiness["manual_status"]}, {"code": "DISPATCH_AUTHORIZATION_ACTIVE", "passed": readiness["authorization"]["status"] == "ACTIVE", "status": readiness["authorization"]["status"]}, {"code": "PROVIDER_WRITE_READINESS", "passed": readiness["live_provider_write_enabled"], "status": readiness["provider_status"]}],
         "confirmation_text_version": CONFIRMATION_TEXT_VERSION, "confirmation_prompt": CONFIRMATION_PROMPT,
+        "buffer_reconciliation_available": buffer_reconciliation_available,
+        "buffer_reconciliation_confirmation_version": BUFFER_RECONCILIATION_CONFIRMATION_VERSION if buffer_reconciliation_available else None,
         "live_publishing_enabled": bool(get_settings().publishing_enabled),
     }
