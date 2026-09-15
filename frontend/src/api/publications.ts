@@ -7,6 +7,23 @@ export type EligibleDestination = {
   recommended?: boolean
 }
 
+export type PublicationListItem = {
+  id: string
+  status: string
+  revision_id?: string | null
+  creative_id?: string | null
+  approval_id?: string | null
+  title?: string | null
+  description?: string | null
+  alt_text?: string | null
+  destination_url?: string | null
+  media_url?: string | null
+  scheduled_for?: string | null
+  published_at?: string | null
+  pinterest_pin_id?: string | null
+  live_publishing_enabled?: boolean
+}
+
 export type BufferPilotActivation = {
   status: 'ARMED' | 'DISARMED' | 'REVOKED' | 'UNKNOWN'
   confirmation_text_version?: string
@@ -20,6 +37,10 @@ async function json<T>(response: Response): Promise<T> {
     throw new Error(body?.detail || body?.message || `Request failed (${response.status})`)
   }
   return response.json() as Promise<T>
+}
+
+export async function listPublications(): Promise<PublicationListItem[]> {
+  return json(await fetch('/api/publications', { credentials: 'include' }))
 }
 
 export async function getEligibleDestinations(approvalId: string): Promise<EligibleDestination[]> {
