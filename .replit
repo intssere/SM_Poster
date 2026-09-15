@@ -8,7 +8,7 @@ packages = ["cargo", "freetype", "lcms2", "libiconv", "libimagequant", "libjpeg"
 [userenv.shared]
 AI_PROVIDER = "none"
 APP_ENV = "development"
-PUBLISHING_ENABLED = "false"
+PUBLISHING_ENABLED = "true"
 
 [deployment]
 deploymentTarget = "autoscale"
