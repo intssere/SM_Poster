@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.schemas.pins import RegenerationRequest
+from app.services.ai_creative_generation import CHANNELS as AI_GENERATION_CHANNELS
 from app.services.social_channels import (
     AccountStatus,
     ChannelStatus,
@@ -11,7 +13,7 @@ from app.services.social_channels import (
 )
 
 
-def test_registry_has_one_internal_channel_and_future_channels():
+def test_registry_exposes_six_first_class_content_ready_channels():
     payload = channel_capability_payload()
 
     assert payload["publishing_enabled"] is False
@@ -19,43 +21,62 @@ def test_registry_has_one_internal_channel_and_future_channels():
         "pinterest",
         "instagram",
         "facebook",
+        "linkedin",
         "tiktok",
         "youtube",
-        "linkedin",
     ]
-    pinterest, *future = payload["channels"]
-    assert pinterest["status"] == ChannelStatus.INTERNAL_PREVIEW
+    assert all(channel["future"] is False for channel in payload["channels"])
+    assert all(channel["status"] == ChannelStatus.CONTENT_READY for channel in payload["channels"])
+    assert all(channel["capabilities"]["content_generation"] is True for channel in payload["channels"])
+    assert all(channel["capabilities"]["review"] is True for channel in payload["channels"])
+
+    pinterest, *other_channels = payload["channels"]
     assert pinterest["account"]["status"] == AccountStatus.INTERNAL
     assert pinterest["adapter_key"] == "pinterest-internal-preview"
-    assert pinterest["capabilities"] == {
-        "content_preview": True,
-        "account_connection": True,
-        "publishing": False,
-        "scheduling": False,
-        "analytics": False,
-    }
-    assert all(channel["status"] == ChannelStatus.NOT_CONNECTED for channel in future)
-    assert all(channel["account"]["status"] == AccountStatus.NOT_CONNECTED for channel in future)
-    assert all(not any(channel["capabilities"].values()) for channel in future)
-    assert all(channel["future"] for channel in future)
+    assert pinterest["capabilities"]["account_connection"] is True
+    assert pinterest["capabilities"]["publishing"] is False
+    assert pinterest["capabilities"]["scheduling"] is False
+
+    assert all(channel["account"]["status"] == AccountStatus.NOT_CONNECTED for channel in other_channels)
+    assert all(channel["adapter_key"] is None for channel in other_channels)
+    assert all(channel["capabilities"]["account_connection"] is False for channel in other_channels)
+    assert all(channel["capabilities"]["publishing"] is False for channel in other_channels)
+    assert all(channel["capabilities"]["scheduling"] is False for channel in other_channels)
 
 
-def test_capabilities_endpoint_never_exposes_publishing(monkeypatch):
+def test_capabilities_endpoint_reflects_live_gate_only_for_pinterest(monkeypatch):
     monkeypatch.setenv("PUBLISHING_ENABLED", "true")
     monkeypatch.setenv("AUTH_DISABLED", "true")
     monkeypatch.setenv("APP_ENV", "development")
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     from app.core.config import get_settings
+
     get_settings.cache_clear()
     response = TestClient(app).get("/api/channels/capabilities")
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["publishing_enabled"] is False
-    assert all(channel["capabilities"]["publishing"] is False for channel in payload["channels"])
+    assert payload["publishing_enabled"] is True
+    pinterest, *other_channels = payload["channels"]
+    assert pinterest["capabilities"]["publishing"] is True
+    assert pinterest["capabilities"]["scheduling"] is True
+    assert all(channel["capabilities"]["publishing"] is False for channel in other_channels)
+    assert all(channel["capabilities"]["scheduling"] is False for channel in other_channels)
 
 
-def test_future_channels_have_variant_media_requirements_without_adapters():
+def test_linkedin_is_review_generation_ready_without_connection_or_publishing():
+    request = RegenerationRequest(kind="content_variant", channel="linkedin", count=1)
+    assert request.channel == "linkedin"
+    assert "linkedin" in AI_GENERATION_CHANNELS
+
+    linkedin = next(channel for channel in channel_capability_payload(True)["channels"] if channel["key"] == "linkedin")
+    assert linkedin["capabilities"]["content_generation"] is True
+    assert linkedin["capabilities"]["review"] is True
+    assert linkedin["capabilities"]["account_connection"] is False
+    assert linkedin["capabilities"]["publishing"] is False
+
+
+def test_content_ready_channels_have_variant_media_requirements_without_fake_provider_adapters():
     payload = channel_capability_payload()
 
     for channel in payload["channels"][1:]:
