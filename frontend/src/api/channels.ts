@@ -1,4 +1,4 @@
-export type ChannelStatus = 'INTERNAL_PREVIEW' | 'NOT_CONNECTED'
+export type ChannelStatus = 'INTERNAL_PREVIEW' | 'CONTENT_READY' | 'NOT_CONNECTED'
 export type AccountStatus = 'INTERNAL' | 'NOT_CONNECTED'
 
 export type ChannelMediaRequirement = {
@@ -34,6 +34,8 @@ export type ChannelDescriptor = {
   }
   capabilities: {
     content_preview: boolean
+    content_generation: boolean
+    review: boolean
     account_connection: boolean
     publishing: boolean
     scheduling: boolean
