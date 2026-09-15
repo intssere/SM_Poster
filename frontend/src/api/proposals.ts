@@ -79,7 +79,7 @@ export type ContentVersion = {
   generation_mode: string
   reason: string
   generation_type?: 'original' | 'copy' | 'content_variant' | 'image_background' | 'video_script' | 'storyboard'
-  intended_channel?: 'pinterest' | 'instagram' | 'facebook' | 'tiktok' | 'youtube_shorts'
+  intended_channel?: 'pinterest' | 'instagram' | 'facebook' | 'linkedin' | 'tiktok' | 'youtube_shorts'
   content_payload?: Record<string, unknown> | null
   video_spec?: Record<string, unknown> | null
   background_asset_id?: string | null
@@ -352,7 +352,7 @@ export async function regenerateProposal(
   options: {
     templateKey?: string
     styleKey?: string
-    channel?: 'pinterest' | 'instagram' | 'facebook' | 'tiktok' | 'youtube_shorts'
+    channel?: 'pinterest' | 'instagram' | 'facebook' | 'linkedin' | 'tiktok' | 'youtube_shorts'
     count?: number
   } = {},
 ): Promise<ContentVersion | { variants: ContentVersion[] }> {
@@ -364,7 +364,7 @@ export async function regenerateProposal(
       template_key: options.templateKey,
       style_key: options.styleKey,
       channel: options.channel || 'pinterest',
-       count: options.count || 1,
+      count: options.count || 1,
     }),
   }))
 }
