@@ -1,14 +1,16 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { Activity, CheckCircle2, Clock3, PackageSearch, ShieldCheck } from 'lucide-react'
+import { Activity, ArrowRight, CalendarDays, CheckCircle2, Clock3, PackageSearch, PlugZap, ShieldCheck, Sparkles, TriangleAlert } from 'lucide-react'
 import { ProductsPage } from './Products'
 import { ProposalsPage } from './Proposals'
 import { CreativeGalleryPage } from './CreativeGallery'
 import { getCreativeQa, getProposalSummary, ProposalSummary } from '../api/proposals'
+import { getIntelligenceSummary, getShopifyStatus, IntelligenceSummary, ShopifyStatus } from '../api/catalog'
 import { ChannelsPage } from './Channels'
 import { CreativeStudioPage } from './CreativeStudio'
 import { PublicationsPage } from './Publications'
 import { AppShell, type ProductPage } from '../ui/AppShell'
-import { Alert, MetricCard, PageHeader, StatusBadge, Surface } from '../ui/primitives'
+import { Alert, Button, MetricCard, PageHeader, StatusBadge, Surface } from '../ui/primitives'
+import { buildHomeAttention, connectionStatus, formatOperationalCount, type BackendStatus } from '../ui/phaseBPresentation'
 
 export function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null)
@@ -97,10 +99,12 @@ const PAGE_HASH: Record<ProductPage, string> = {
 
 function AuthenticatedDashboard() {
   const initialRoute = routeFromHash(window.location.hash)
-  const [backendStatus, setBackendStatus] = useState<'checking' | 'connected' | 'unavailable'>('checking')
+  const [backendStatus, setBackendStatus] = useState<BackendStatus>('checking')
   const [publishingEnabled, setPublishingEnabled] = useState<boolean | null>(null)
   const [proposalSummary, setProposalSummary] = useState<ProposalSummary | null>(null)
   const [creativeCount, setCreativeCount] = useState<number | null>(null)
+  const [catalogSummary, setCatalogSummary] = useState<IntelligenceSummary | null>(null)
+  const [shopifyStatus, setShopifyStatus] = useState<ShopifyStatus | null>(null)
   const [activePage, setActivePage] = useState<ProductPage>(initialRoute.page)
   const [contentView, setContentView] = useState<ContentView>(initialRoute.contentView)
 
@@ -137,6 +141,8 @@ function AuthenticatedDashboard() {
 
     getProposalSummary().then(setProposalSummary).catch(() => null)
     getCreativeQa().then((report) => setCreativeCount(typeof report.total === 'number' ? report.total : null)).catch(() => null)
+    getIntelligenceSummary(controller.signal).then(setCatalogSummary).catch(() => null)
+    getShopifyStatus(controller.signal).then(setShopifyStatus).catch(() => null)
 
     const onHashChange = () => {
       const route = routeFromHash(window.location.hash)
@@ -177,7 +183,15 @@ function AuthenticatedDashboard() {
       description="Settings now has a dedicated place in the final product structure. Later phases will move AI configuration, automation policy, connection details and advanced operations here instead of exposing them throughout normal workflows."
       items={['Brand and generation preferences', 'Automation controls', 'Connection settings', 'Advanced operations and audit access']}
     /> : null}
-    {activePage === 'home' ? <HomePage proposalSummary={proposalSummary} publishingEnabled={publishingEnabled} backendStatus={backendStatus} /> : null}
+    {activePage === 'home' ? <HomePage
+      proposalSummary={proposalSummary}
+      publishingEnabled={publishingEnabled}
+      backendStatus={backendStatus}
+      catalogSummary={catalogSummary}
+      shopifyStatus={shopifyStatus}
+      onNavigate={selectPage}
+      onOpenReview={() => selectContent('review')}
+    /> : null}
   </AppShell>
 }
 
@@ -198,20 +212,39 @@ function ContentWorkspace({ view, onSelectView }: { view: ContentView; onSelectV
   </div>
 }
 
-function HomePage({ proposalSummary, publishingEnabled, backendStatus }: {
+function HomePage({ proposalSummary, publishingEnabled, backendStatus, catalogSummary, shopifyStatus, onNavigate, onOpenReview }: {
   proposalSummary: ProposalSummary | null
   publishingEnabled: boolean | null
-  backendStatus: 'checking' | 'connected' | 'unavailable'
+  backendStatus: BackendStatus
+  catalogSummary: IntelligenceSummary | null
+  shopifyStatus: ShopifyStatus | null
+  onNavigate: (page: ProductPage) => void
+  onOpenReview: () => void
 }) {
   const reviewCount = proposalSummary?.review || 0
   const scheduledCount = proposalSummary?.scheduled || 0
+  const qaWarnings = catalogSummary?.qa_warning_products || 0
+  const attention = buildHomeAttention({
+    backendStatus,
+    publishingEnabled,
+    reviewCount,
+    qaWarnings,
+    shopifyConnected: shopifyStatus ? shopifyStatus.connected : null,
+  })
   const healthText = backendStatus === 'connected' ? 'System healthy' : backendStatus === 'unavailable' ? 'System unavailable' : 'Checking system health'
+  const shopifyPresentation = connectionStatus(shopifyStatus?.connected)
+
+  function openAttention(key: string) {
+    if (key === 'review') onOpenReview()
+    else if (key === 'catalog') onNavigate('catalog')
+    else if (key === 'shopify') onNavigate('connections')
+  }
 
   return <>
     <PageHeader
       eyebrow="Home"
       title="Content Operations"
-      description="See what needs attention, what is scheduled, and whether the publishing system is healthy."
+      description="See what needs attention, move work forward, and confirm the systems behind publishing are ready."
       actions={<StatusBadge status={backendStatus === 'connected' ? 'CONNECTED' : backendStatus === 'unavailable' ? 'UNAVAILABLE' : 'CHECKING'} label={healthText} />}
     />
 
@@ -219,30 +252,50 @@ function HomePage({ proposalSummary, publishingEnabled, backendStatus }: {
     {backendStatus === 'connected' && publishingEnabled === false ? <Alert tone="warning" title="Publishing is paused">Content remains available for review and scheduling, but the production publishing gate is currently off.</Alert> : null}
 
     <section className="ds-metrics" aria-label="Operational summary" style={{ marginTop: backendStatus === 'unavailable' || publishingEnabled === false ? 18 : 0 }}>
-      <MetricCard label="Catalog" value="2,997" note="Shopify products available to the content system" icon={<PackageSearch size={19} aria-hidden="true" />} />
-      <MetricCard label="Needs review" value={reviewCount} note="Drafts waiting for a decision" icon={<Activity size={19} aria-hidden="true" />} />
+      <MetricCard label="Catalog" value={formatOperationalCount(catalogSummary?.total)} note="Products currently available to the content system" icon={<PackageSearch size={19} aria-hidden="true" />} />
+      <MetricCard label="Needs review" value={reviewCount} note="Content waiting for a decision" icon={<Activity size={19} aria-hidden="true" />} />
       <MetricCard label="Approved" value={proposalSummary?.approved || 0} note="Content approved for publishing workflows" icon={<CheckCircle2 size={19} aria-hidden="true" />} />
-      <MetricCard label="Scheduled" value={scheduledCount} note={publishingEnabled ? 'Publishing gate is enabled' : 'Publishing status is not currently enabled'} icon={<Clock3 size={19} aria-hidden="true" />} />
+      <MetricCard label="Scheduled" value={scheduledCount} note={publishingEnabled ? 'Publishing gate is enabled' : 'Publishing gate is not currently enabled'} icon={<Clock3 size={19} aria-hidden="true" />} />
     </section>
 
-    <Surface style={{ marginTop: 18 }}>
-      <div className="ds-page-header" style={{ marginBottom: 16 }}>
-        <div className="ds-page-header__copy">
-          <p className="ds-eyebrow">Workflow</p>
-          <h1 style={{ fontSize: 24 }}>A simpler operating model</h1>
-          <p>Catalog → Create → Review → Schedule → Publish. Technical provenance, authorization and reconciliation remain available behind the workflow instead of defining it.</p>
-        </div>
-        <StatusBadge status={publishingEnabled === true ? 'READY' : publishingEnabled === false ? 'BLOCKED' : 'CHECKING'} label={publishingEnabled === true ? 'Publishing on' : publishingEnabled === false ? 'Publishing paused' : 'Checking publishing'} />
-      </div>
-      <div className="status-row" aria-label="Content lifecycle">
-        <span>CATALOG</span><b aria-hidden="true">→</b><span>CREATE</span><b aria-hidden="true">→</b><span>NEEDS REVIEW</span><b aria-hidden="true">→</b><span>APPROVED</span><b aria-hidden="true">→</b><span>SCHEDULED</span><b aria-hidden="true">→</b><span>PUBLISHED</span>
-      </div>
-    </Surface>
+    <div className="ds-home-grid">
+      <Surface>
+        <div className="ds-section-heading"><div><p className="ds-eyebrow">Attention</p><h2>What needs you now</h2><p>Only current operational conditions appear here.</p></div>{attention.length ? <StatusBadge status="BLOCKED" label={`${attention.length} signal${attention.length === 1 ? '' : 's'}`} /> : <StatusBadge status="READY" label="All clear" />}</div>
+        {attention.length ? <div className="ds-attention-list">{attention.map((item) => <div className={`ds-attention-row ds-attention-row--${item.tone}`} key={item.key}>
+          <span className="ds-attention-row__icon" aria-hidden="true"><TriangleAlert size={17} /></span>
+          <div><strong>{item.title}</strong><small>{item.detail}</small></div>
+          {['review', 'catalog', 'shopify'].includes(item.key) ? <Button variant="ghost" onClick={() => openAttention(item.key)}>Open <ArrowRight size={14} /></Button> : null}
+        </div>)}</div> : <div className="ds-all-clear"><CheckCircle2 size={28} aria-hidden="true" /><strong>No operational attention items</strong><span>Review, catalog QA, Shopify connection, system health and publishing gate are clear.</span></div>}
+      </Surface>
 
-    <Surface style={{ marginTop: 18 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><ShieldCheck size={20} color="var(--ds-brand)" aria-hidden="true" /><strong>Publishing safety remains unchanged</strong></div>
-      <p style={{ color: 'var(--ds-text-secondary)', lineHeight: 1.6, marginBottom: 0 }}>Phase A changes product navigation and presentation only. Existing approvals, immutable publication identity, one-shot dispatch protections, no-blind-retry behavior and reconciliation rules are preserved.</p>
-    </Surface>
+      <Surface>
+        <div className="ds-section-heading"><div><p className="ds-eyebrow">Workflow</p><h2>Move work forward</h2><p>Jump directly to the next operating step.</p></div></div>
+        <div className="ds-quick-actions">
+          <button type="button" className="ds-quick-action" onClick={() => onNavigate('catalog')}><span><PackageSearch size={18} /><strong>Browse catalog</strong><small>Find products and inspect readiness.</small></span><ArrowRight size={16} /></button>
+          <button type="button" className="ds-quick-action" onClick={() => onNavigate('create')}><span><Sparkles size={18} /><strong>Create content</strong><small>Start from an eligible product.</small></span><ArrowRight size={16} /></button>
+          <button type="button" className="ds-quick-action" onClick={onOpenReview}><span><Activity size={18} /><strong>Review content</strong><small>{reviewCount ? `${reviewCount.toLocaleString()} waiting now.` : 'Nothing waiting right now.'}</small></span><ArrowRight size={16} /></button>
+          <button type="button" className="ds-quick-action" onClick={() => onNavigate('calendar')}><span><CalendarDays size={18} /><strong>Open calendar</strong><small>{scheduledCount ? `${scheduledCount.toLocaleString()} scheduled.` : 'No scheduled count reported.'}</small></span><ArrowRight size={16} /></button>
+        </div>
+      </Surface>
+    </div>
+
+    <div className="ds-home-grid">
+      <Surface>
+        <div className="ds-section-heading"><div><p className="ds-eyebrow">Connections</p><h2>Operational readiness</h2><p>Connection health without exposing low-level provider detail.</p></div><Button variant="ghost" onClick={() => onNavigate('connections')}>Manage <PlugZap size={15} /></Button></div>
+        <div className="ds-connection-pulse">
+          <div className="ds-connection-pulse__row"><div><strong>Shopify</strong><small>{shopifyStatus?.connected ? shopifyStatus.shop_domain || 'Catalog source connected' : shopifyStatus?.message || 'Connection status loading'}</small></div><StatusBadge status={shopifyPresentation.status} label={shopifyPresentation.label} /></div>
+          <div className="ds-connection-pulse__row"><div><strong>Publishing gate</strong><small>Controls whether approved scheduled work may dispatch.</small></div><StatusBadge status={publishingEnabled === true ? 'READY' : publishingEnabled === false ? 'BLOCKED' : 'CHECKING'} label={publishingEnabled === true ? 'Publishing on' : publishingEnabled === false ? 'Publishing paused' : 'Checking'} /></div>
+          <div className="ds-connection-pulse__row"><div><strong>Catalog QA</strong><small>{qaWarnings ? `${qaWarnings.toLocaleString()} products have normalization warnings.` : 'No catalog QA warnings reported.'}</small></div><StatusBadge status={qaWarnings ? 'BLOCKED' : 'READY'} label={qaWarnings ? 'Needs review' : 'Ready'} /></div>
+        </div>
+      </Surface>
+
+      <Surface>
+        <div className="ds-section-heading"><div><p className="ds-eyebrow">Operating model</p><h2>Simple outside. Rigorous inside.</h2></div></div>
+        <div className="status-row" aria-label="Content lifecycle"><span>CATALOG</span><b aria-hidden="true">→</b><span>CREATE</span><b aria-hidden="true">→</b><span>NEEDS REVIEW</span><b aria-hidden="true">→</b><span>APPROVED</span><b aria-hidden="true">→</b><span>SCHEDULED</span><b aria-hidden="true">→</b><span>PUBLISHED</span></div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 18 }}><ShieldCheck size={20} color="var(--ds-brand)" aria-hidden="true" /><strong>Publishing safety remains unchanged</strong></div>
+        <p style={{ color: 'var(--ds-text-secondary)', lineHeight: 1.6, marginBottom: 0 }}>Approvals, immutable publication identity, one-shot dispatch protections, no-blind-retry behavior and reconciliation rules remain behind the workflow.</p>
+      </Surface>
+    </div>
   </>
 }
 
