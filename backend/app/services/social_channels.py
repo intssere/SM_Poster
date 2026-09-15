@@ -1,18 +1,19 @@
 """Platform-neutral social content contracts and internal channel registry.
 
-This module deliberately contains no provider SDKs, credentials, network calls,
-publishing, or persistence. Existing Pinterest proposal/creative records are
-adapted into these contracts only when a caller explicitly asks for a view.
+This module contains no provider SDK calls, credentials, publishing side effects,
+or persistence. It describes which social workflows the product can prepare and
+review, independently from which providers are currently connected for delivery.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from typing import Any, Mapping, Protocol
 
 
 class ChannelStatus(str, Enum):
     INTERNAL_PREVIEW = "INTERNAL_PREVIEW"
+    CONTENT_READY = "CONTENT_READY"
     NOT_CONNECTED = "NOT_CONNECTED"
 
 
@@ -53,6 +54,8 @@ class ChannelAccount:
 @dataclass(frozen=True)
 class ChannelFeatureSet:
     content_preview: bool
+    content_generation: bool
+    review: bool
     account_connection: bool
     publishing: bool
     scheduling: bool
@@ -94,8 +97,6 @@ class SocialContent:
 
 
 class ChannelAdapter(Protocol):
-    """Contract implemented by each future channel adapter."""
-
     @property
     def descriptor(self) -> ChannelDescriptor: ...
 
@@ -115,12 +116,12 @@ PINTEREST_VARIANT = PlatformContentVariant(
             min_height=1500,
             max_duration_seconds=None,
             catalog_source_required=True,
-            notes="Internal preview uses the existing authentic Shopify product source.",
+            notes="Uses the existing authentic Shopify product source or verified rendered creative.",
         ),
     ),
 )
 
-FUTURE_VARIANTS = {
+CHANNEL_VARIANTS = {
     "instagram": (
         PlatformContentVariant(
             key="feed_post",
@@ -135,7 +136,7 @@ FUTURE_VARIANTS = {
                     min_height=1080,
                     max_duration_seconds=None,
                     catalog_source_required=False,
-                    notes="Future planning metadata only; no Instagram adapter is connected.",
+                    notes="Review-generation metadata is implemented; account connection and publishing are not yet implemented.",
                 ),
             ),
         ),
@@ -154,7 +155,26 @@ FUTURE_VARIANTS = {
                     min_height=630,
                     max_duration_seconds=None,
                     catalog_source_required=False,
-                    notes="Future planning metadata only; no Facebook adapter is connected.",
+                    notes="Review-generation metadata is implemented; account connection and publishing are not yet implemented.",
+                ),
+            ),
+        ),
+    ),
+    "linkedin": (
+        PlatformContentVariant(
+            key="page_post",
+            label="LinkedIn Page Post",
+            required_text_fields=("commentary",),
+            media_requirements=(
+                ChannelMediaRequirement(
+                    media_kind="image_or_video",
+                    accepted_formats=("JPEG", "PNG", "MP4"),
+                    aspect_ratios=("1.91:1", "1:1"),
+                    min_width=1200,
+                    min_height=627,
+                    max_duration_seconds=None,
+                    catalog_source_required=False,
+                    notes="Review-generation metadata is implemented; account connection and publishing are not yet implemented.",
                 ),
             ),
         ),
@@ -173,7 +193,7 @@ FUTURE_VARIANTS = {
                     min_height=1920,
                     max_duration_seconds=600,
                     catalog_source_required=False,
-                    notes="Future planning metadata only; no TikTok adapter is connected.",
+                    notes="Review-generation metadata is implemented; account connection and publishing are not yet implemented.",
                 ),
             ),
         ),
@@ -187,12 +207,12 @@ FUTURE_VARIANTS = {
                 ChannelMediaRequirement(
                     media_kind="video",
                     accepted_formats=("MP4", "MOV"),
-                    aspect_ratios=("16:9",),
+                    aspect_ratios=("16:9", "9:16"),
                     min_width=1280,
                     min_height=720,
                     max_duration_seconds=None,
                     catalog_source_required=False,
-                    notes="Future planning metadata only; no YouTube adapter is connected.",
+                    notes="YouTube is the canonical UI identity; existing youtube_shorts review revisions remain backward-compatible.",
                 ),
             ),
         ),
@@ -209,36 +229,17 @@ FUTURE_VARIANTS = {
                     min_height=720,
                     max_duration_seconds=None,
                     catalog_source_required=False,
-                    notes="Future planning metadata only; no YouTube adapter is connected.",
+                    notes="Review-generation metadata only; no YouTube publishing adapter is connected.",
                 ),
             ),
             destination_required=False,
-        ),
-    ),
-    "linkedin": (
-        PlatformContentVariant(
-            key="page_post",
-            label="LinkedIn Page Post",
-            required_text_fields=("commentary",),
-            media_requirements=(
-                ChannelMediaRequirement(
-                    media_kind="image_or_video",
-                    accepted_formats=("JPEG", "PNG", "MP4"),
-                    aspect_ratios=("1.91:1", "1:1"),
-                    min_width=1200,
-                    min_height=627,
-                    max_duration_seconds=None,
-                    catalog_source_required=False,
-                    notes="Future planning metadata only; no LinkedIn adapter is connected.",
-                ),
-            ),
         ),
     ),
 }
 
 
 class PinterestInternalPreviewAdapter:
-    """Compatibility adapter for the existing, non-publishing Pinterest flow."""
+    """Compatibility adapter for the existing Pinterest proposal/creative records."""
 
     @property
     def descriptor(self) -> ChannelDescriptor:
@@ -255,13 +256,15 @@ class PinterestInternalPreviewAdapter:
             ),
             capabilities=ChannelFeatureSet(
                 content_preview=True,
+                content_generation=True,
+                review=True,
                 account_connection=True,
                 publishing=False,
                 scheduling=False,
                 analytics=False,
             ),
             variants=(PINTEREST_VARIANT,),
-            capability_summary="Existing proposal and creative records available for internal review only.",
+            capability_summary="Pinterest content generation, review, account connection, scheduling, and publishing infrastructure are implemented; live execution still follows the production gate and authorization rules.",
         )
 
     def validate_content(self, content: SocialContent) -> tuple[str, ...]:
@@ -295,7 +298,6 @@ class PinterestInternalPreviewAdapter:
         return tuple(errors)
 
     def from_existing_proposal(self, proposal: Mapping[str, Any]) -> SocialContent:
-        """Map the existing proposal response shape without changing its records."""
         creative = proposal.get("creative") or {}
         image_spec = (creative.get("specification") or {}).get("image") or {}
         verified_render = (
@@ -339,46 +341,57 @@ CHANNEL_ADAPTERS: dict[str, ChannelAdapter] = {
     "pinterest": PinterestInternalPreviewAdapter(),
 }
 
-_FUTURE_LABELS = {
+_CHANNEL_LABELS = {
     "instagram": "Instagram",
     "facebook": "Facebook",
+    "linkedin": "LinkedIn",
     "tiktok": "TikTok",
     "youtube": "YouTube",
-    "linkedin": "LinkedIn",
 }
 
 
-def channel_descriptors() -> tuple[ChannelDescriptor, ...]:
-    current = [adapter.descriptor for adapter in CHANNEL_ADAPTERS.values()]
-    future = [
+def channel_descriptors(publishing_enabled: bool = False) -> tuple[ChannelDescriptor, ...]:
+    pinterest_base = CHANNEL_ADAPTERS["pinterest"].descriptor
+    pinterest = replace(
+        pinterest_base,
+        status=ChannelStatus.CONTENT_READY,
+        capabilities=replace(
+            pinterest_base.capabilities,
+            publishing=publishing_enabled,
+            scheduling=publishing_enabled,
+        ),
+    )
+    review_ready = [
         ChannelDescriptor(
             key=key,
             label=label,
-            status=ChannelStatus.NOT_CONNECTED,
-            future=True,
+            status=ChannelStatus.CONTENT_READY,
+            future=False,
             adapter_key=None,
             account=ChannelAccount(
                 channel_key=key,
                 status=AccountStatus.NOT_CONNECTED,
-                mode="future",
+                mode="content_ready_no_connection",
             ),
             capabilities=ChannelFeatureSet(
-                content_preview=False,
+                content_preview=True,
+                content_generation=True,
+                review=True,
                 account_connection=False,
                 publishing=False,
                 scheduling=False,
                 analytics=False,
             ),
-            variants=FUTURE_VARIANTS[key],
-            capability_summary="Future channel. No account, adapter, or external connection is configured.",
+            variants=CHANNEL_VARIANTS[key],
+            capability_summary="Content generation and review are available. Account connection, scheduling, publishing, and analytics are not yet implemented for this channel.",
         )
-        for key, label in _FUTURE_LABELS.items()
+        for key, label in _CHANNEL_LABELS.items()
     ]
-    return tuple(current + future)
+    return tuple([pinterest, *review_ready])
 
 
 def channel_capability_payload(publishing_enabled: bool = False) -> dict[str, Any]:
     return {
         "publishing_enabled": publishing_enabled,
-        "channels": [asdict(descriptor) for descriptor in channel_descriptors()],
+        "channels": [asdict(descriptor) for descriptor in channel_descriptors(publishing_enabled)],
     }
