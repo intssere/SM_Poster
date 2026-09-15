@@ -76,7 +76,7 @@ class RegenerationRequest(BaseModel):
     kind: Literal["copy", "creative", "content_variant", "image_background", "video_script", "storyboard"]
     template_key: str | None = Field(default=None, max_length=120)
     style_key: str | None = Field(default=None, max_length=80)
-    channel: Literal["pinterest", "instagram", "facebook", "tiktok", "youtube_shorts"] = "pinterest"
+    channel: Literal["pinterest", "instagram", "facebook", "linkedin", "tiktok", "youtube_shorts"] = "pinterest"
     count: int = Field(default=1, ge=1, le=4)
 
 

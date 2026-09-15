@@ -2,6 +2,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
 from app.middleware import AdminAuthMiddleware
+from app.services.multichannel_generation_contract import install_multichannel_generation_contract
+
+install_multichannel_generation_contract()
 
 from app.api.routes.health import router as health_router
 from app.api.routes.utilities import router as utilities_router
@@ -45,5 +48,5 @@ def root():
         "name": "Diamond Shelf Social Studio",
         "legacy_name": "Diamond Shelf Pinterest Engine",
         "phase": 0,
-        "message": "Social Studio foundation active. Pinterest remains internal-preview only and production publishing is disabled.",
+        "message": "Multi-channel content generation and review are active. Pinterest remains the currently implemented publishing channel; other social connections stay unavailable until separately implemented.",
     }
