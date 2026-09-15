@@ -38,6 +38,16 @@ export function contentChannel(versions?: RevisionLike[] | null): SocialChannel 
   return normalizeSocialChannel(intended)
 }
 
+export function contentChannels(versions?: RevisionLike[] | null): SocialChannel[] {
+  const values = new Set<SocialChannel>()
+  if (!versions?.length || versions.some((version) => version.kind === 'ORIGINAL' || !version.intended_channel)) values.add('pinterest')
+  for (const version of versions || []) {
+    if (version.intended_channel) values.add(normalizeSocialChannel(version.intended_channel))
+  }
+  if (!values.size) values.add('pinterest')
+  return SOCIAL_CHANNELS.map((channel) => channel.key).filter((key) => values.has(key))
+}
+
 export function matchesChannel(versions: RevisionLike[] | null | undefined, filter: SocialChannelFilter): boolean {
-  return filter === 'all' || contentChannel(versions) === filter
+  return filter === 'all' || contentChannels(versions).includes(filter)
 }
