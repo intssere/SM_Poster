@@ -1,13 +1,12 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Activity, ArrowRight, CalendarDays, CheckCircle2, Clock3, PackageSearch, PlugZap, ShieldCheck, Sparkles, TriangleAlert } from 'lucide-react'
 import { ProductsPage } from './Products'
-import { ProposalsPage } from './Proposals'
-import { CreativeGalleryPage } from './CreativeGallery'
 import { getCreativeQa, getProposalSummary, ProposalSummary } from '../api/proposals'
 import { getIntelligenceSummary, getShopifyStatus, IntelligenceSummary, ShopifyStatus } from '../api/catalog'
 import { ChannelsPage } from './Channels'
 import { CreativeStudioPage } from './CreativeStudio'
 import { PublicationsPage } from './Publications'
+import { UnifiedContentWorkspace } from './UnifiedContentWorkspace'
 import { AppShell, type ProductPage } from '../ui/AppShell'
 import { Alert, Button, MetricCard, PageHeader, StatusBadge, Surface } from '../ui/primitives'
 import { buildHomeAttention, connectionStatus, formatOperationalCount, type BackendStatus } from '../ui/phaseBPresentation'
@@ -170,7 +169,7 @@ function AuthenticatedDashboard() {
       onOpenChannels={() => selectPage('connections')}
       onOpenQueue={() => selectContent('review')}
     /> : null}
-    {activePage === 'content' ? <ContentWorkspace view={contentView} onSelectView={selectContent} /> : null}
+    {activePage === 'content' ? <ContentWorkspace view={contentView} /> : null}
     {activePage === 'calendar' ? <PublicationsPage /> : null}
     {activePage === 'connections' ? <ChannelsPage /> : null}
     {activePage === 'analytics' ? <FoundationPlaceholder
@@ -195,21 +194,8 @@ function AuthenticatedDashboard() {
   </AppShell>
 }
 
-function ContentWorkspace({ view, onSelectView }: { view: ContentView; onSelectView: (view: ContentView) => void }) {
-  return <div>
-    <PageHeader
-      eyebrow="Content"
-      title={view === 'review' ? 'Needs Review' : 'Content Library'}
-      description={view === 'review' ? 'Review and decide on generated content from one canonical workspace.' : 'Browse generated and approved creative work without leaving the content workspace.'}
-    />
-    <div className="ds-content-tabs" role="tablist" aria-label="Content views">
-      <button type="button" role="tab" aria-selected={view === 'library'} className={view === 'library' ? 'is-active' : ''} onClick={() => onSelectView('library')}>Library</button>
-      <button type="button" role="tab" aria-selected={view === 'review'} className={view === 'review' ? 'is-active' : ''} onClick={() => onSelectView('review')}>Needs review</button>
-    </div>
-    {view === 'review'
-      ? <ProposalsPage onOpenGallery={() => onSelectView('library')} />
-      : <CreativeGalleryPage onOpenQueue={() => onSelectView('review')} />}
-  </div>
+function ContentWorkspace({ view }: { view: ContentView }) {
+  return <UnifiedContentWorkspace initialView={view} />
 }
 
 function HomePage({ proposalSummary, publishingEnabled, backendStatus, catalogSummary, shopifyStatus, onNavigate, onOpenReview }: {
