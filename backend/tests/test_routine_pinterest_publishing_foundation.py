@@ -12,6 +12,7 @@ from app.models.routine_publishing import (
     RoutineAttemptBoundary,
     RoutineDispatchPermit,
     RoutinePublishingControl,
+    RoutinePublishingRun,
 )
 from app.services.publication_scheduler import due_publications, request_fingerprint_for
 
@@ -77,6 +78,23 @@ def test_routine_configuration_defaults_fail_closed():
     assert settings.routine_pinterest_daily_write_limit == 1
     with pytest.raises(Exception):
         Settings(database_url="sqlite:///:memory:", routine_pinterest_batch_size=26)
+
+
+def test_stale_worker_run_is_failed_before_new_singleton_run_starts():
+    from app.services.routine_publishing_control import start_run
+
+    engine = _engine(); SessionLocal = sessionmaker(bind=engine, expire_on_commit=False); db = SessionLocal()
+    now = datetime.now(timezone.utc)
+    stale = RoutinePublishingRun(
+        id="stale-run", mode="LIVE", started_at=now - timedelta(hours=1),
+        heartbeat_at=now - timedelta(hours=1), status="RUNNING", metadata_json={},
+    )
+    db.add(stale); db.commit()
+    new = start_run(db, mode="DRY_RUN", now=now, stale_seconds=60)
+    db.refresh(stale)
+    assert stale.status == "FAILED" and stale.error_code == "ROUTINE_WORKER_STALE"
+    assert new.status == "RUNNING" and new.id != stale.id
+    db.close(); engine.dispose()
 
 
 def test_claim_is_single_winner_and_consumes_only_routine_permit(tmp_path, monkeypatch):
