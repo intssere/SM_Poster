@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ spec = importlib.util.spec_from_file_location(
 )
 assert spec and spec.loader
 reconciler = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = reconciler
 spec.loader.exec_module(reconciler)
 
 
