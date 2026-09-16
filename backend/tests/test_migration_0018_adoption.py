@@ -317,7 +317,7 @@ def test_fresh_creation_declares_same_final_defaults_uniqueness_and_indexes(monk
     ]
     assert len(attempt_constraints) == 1
     assert attempt_constraints[0].name == m0018.ATTEMPT_UNIQUE_CONSTRAINT
-    assert tuple(column.name for column in attempt_constraints[0].columns) == ("attempt_id",)
+    assert tuple(attempt_constraints[0]._pending_colargs) == ("attempt_id",)
 
     attempt_indexes = [item for item in recorder.indexes if item[1] == "routine_attempt_boundaries"]
     explicit_attempt = next(item for item in attempt_indexes if item[0] == m0018.ATTEMPT_INDEX)
