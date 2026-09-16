@@ -23,4 +23,9 @@ def health():
         "service": "diamond-shelf-pinterest-engine",
         "publishing_enabled": settings.publishing_enabled,
         "database_connected": database_connected,
+        "routine_pinterest_worker_enabled": settings.routine_pinterest_worker_enabled,
+        "routine_buffer_dispatch_enabled": settings.routine_buffer_dispatch_enabled,
+        "routine_pinterest_dry_run": settings.routine_pinterest_dry_run,
+        "routine_pinterest_batch_size": settings.routine_pinterest_batch_size,
+        "routine_pinterest_daily_write_limit": settings.routine_pinterest_daily_write_limit,
     }
