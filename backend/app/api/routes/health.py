@@ -2,7 +2,8 @@ from fastapi import APIRouter
 from sqlalchemy import text
 
 from app.core.config import get_settings
-from app.db.session import engine
+from app.db.session import SessionLocal, engine
+from app.services.routine_publishing_control import routine_operational_snapshot
 
 router = APIRouter(prefix="/health", tags=["health"])
 
@@ -11,12 +12,28 @@ router = APIRouter(prefix="/health", tags=["health"])
 def health():
     settings = get_settings()
     database_connected = False
+    routine = {"available": False}
     try:
         with engine.connect() as connection:
             connection.execute(text("SELECT version_num FROM alembic_version LIMIT 1"))
         database_connected = True
+        db = SessionLocal()
+        try:
+            snapshot = routine_operational_snapshot(db)
+            routine = {
+                "available": True,
+                "control_state": snapshot["control_state"],
+                "latest_run_status": snapshot["latest_run"]["status"] if snapshot["latest_run"] else None,
+                "due_backlog": snapshot["due_backlog"],
+                "publishing_count": snapshot["publishing_count"],
+                "publish_unknown_count": snapshot["publish_unknown_count"],
+                "last_provider_mutation_started_at": snapshot["last_provider_mutation_started_at"],
+            }
+        finally:
+            db.close()
     except Exception:
         database_connected = False
+        routine = {"available": False}
 
     return {
         "status": "ok" if database_connected else "degraded",
@@ -28,4 +45,5 @@ def health():
         "routine_pinterest_dry_run": settings.routine_pinterest_dry_run,
         "routine_pinterest_batch_size": settings.routine_pinterest_batch_size,
         "routine_pinterest_daily_write_limit": settings.routine_pinterest_daily_write_limit,
+        "routine_publishing": routine,
     }
