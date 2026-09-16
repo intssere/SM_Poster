@@ -7,10 +7,8 @@ from sqlalchemy import select, update
 from app.core.config import Settings, get_settings
 from app.integrations.buffer.gateway import (
     BufferAmbiguousFailure,
-    BufferConfigurationError,
     BufferDefinitiveRejection,
     BufferGateway,
-    BufferReadError,
 )
 from app.models.domain import PinPublication, PublicationAttempt, PublicationStatus
 from app.models.routine_publishing import RoutineAttemptBoundary, RoutineDispatchPermit
@@ -297,8 +295,7 @@ async def dispatch_routine_buffer(
         db, publication_id, attempt_id, status=status, code=code, settings=settings,
         result=result, diagnostic=diagnostic,
     )
-    if status == PublicationStatus.PUBLISH_UNKNOWN:
-        pause_on_unknown(db, publication_id)
+
     if result is not None and result.status == "sent":
         try:
             await reconcile_buffer(db, publication_id, actor="routine-worker", settings=settings, gateway=gateway)
@@ -316,5 +313,12 @@ async def dispatch_routine_buffer(
             except Exception:
                 db.rollback()
                 raise PublicationReconciliationError("ROUTINE_RECONCILIATION_PERSISTENCE_FAILED") from None
+            pause_on_unknown(db, publication_id, reason="BUFFER_SENT_LINK_UNVERIFIED")
+    elif status == PublicationStatus.PUBLISH_UNKNOWN:
+        pause_on_unknown(db, publication_id)
+
     db.refresh(publication)
+    if publication.status == PublicationStatus.PUBLISH_UNKNOWN:
+        pause_on_unknown(db, publication_id)
+        db.refresh(publication)
     return publication
