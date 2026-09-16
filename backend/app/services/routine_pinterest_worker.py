@@ -15,6 +15,7 @@ from app.services.routine_publishing_control import (
     daily_provider_write_count,
     finish_run,
     get_control,
+    heartbeat_run,
     start_run,
 )
 
@@ -37,15 +38,22 @@ async def run_once(
         return {"status": "PAUSED", "dispatched": 0, "reason": control.pause_reason}
     mode = "DRY_RUN" if settings.routine_pinterest_dry_run or control.state == "DRY_RUN" else "LIVE"
     try:
-        run = start_run(db, mode=mode, now=now)
+        run = start_run(
+            db,
+            mode=mode,
+            now=now,
+            stale_seconds=settings.routine_claim_stale_seconds,
+        )
     except RoutineControlError as exc:
         return {"status": str(exc), "dispatched": 0}
     try:
         recover_stale_routine_claims(db, stale_seconds=settings.routine_claim_stale_seconds, now=now)
         candidates = due_publications(db, now=now, limit=settings.routine_pinterest_batch_size)
         run.scanned = len(candidates)
+        heartbeat_run(db, run, now=now)
         day_start = now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         for publication in candidates:
+            heartbeat_run(db, run)
             db.refresh(publication)
             permit = active_permit(db, publication.id)
             validated = validate_permit(db, publication, permit, now=now, require_due=True)
