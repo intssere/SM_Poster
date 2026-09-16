@@ -13,7 +13,7 @@ PUBLISHING_ENABLED = "true"
 [deployment]
 deploymentTarget = "autoscale"
 build = ["npm", "--prefix", "frontend", "run", "build"]
-run = ["sh", "-c", "(cd backend && exec uvicorn app.main:app --host 0.0.0.0 --port 8000) & exec npm --prefix frontend run preview -- --host 0.0.0.0 --port ${PORT:-5000}"]
+run = ["python", "scripts/start_production.py"]
 
 [workflows]
 runButton = "Project"
