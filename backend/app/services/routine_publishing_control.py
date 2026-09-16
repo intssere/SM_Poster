@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -64,8 +64,24 @@ def pause_on_unknown(db, publication_id: str, *, reason="PUBLISH_UNKNOWN_CIRCUIT
     return row
 
 
-def start_run(db, *, mode: str, now=None):
+def _recover_stale_running_run(db, *, now: datetime, stale_seconds: int) -> bool:
+    current = db.scalar(select(RoutinePublishingRun).where(RoutinePublishingRun.status == "RUNNING").limit(1))
+    if not current:
+        return False
+    heartbeat = current.heartbeat_at or current.started_at
+    if heartbeat is None or heartbeat > now - timedelta(seconds=stale_seconds):
+        raise RoutineControlError("ROUTINE_WORKER_ALREADY_RUNNING")
+    current.status = "FAILED"
+    current.error_code = "ROUTINE_WORKER_STALE"
+    current.completed_at = now
+    current.heartbeat_at = now
+    db.commit()
+    return True
+
+
+def start_run(db, *, mode: str, now=None, stale_seconds: int = 900):
     now = now or utcnow()
+    _recover_stale_running_run(db, now=now, stale_seconds=stale_seconds)
     row = RoutinePublishingRun(mode=mode, started_at=now, heartbeat_at=now, status="RUNNING")
     db.add(row)
     try:
@@ -75,6 +91,14 @@ def start_run(db, *, mode: str, now=None):
         raise RoutineControlError("ROUTINE_WORKER_ALREADY_RUNNING") from None
     db.refresh(row)
     return row
+
+
+def heartbeat_run(db, run, *, now=None):
+    if run.status != "RUNNING":
+        return run
+    run.heartbeat_at = now or utcnow()
+    db.commit()
+    return run
 
 
 def finish_run(db, run, *, status="SUCCEEDED", error_code=None, now=None):
