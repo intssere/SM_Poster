@@ -26,7 +26,6 @@ import sqlalchemy as sa
 from sqlalchemy.engine import make_url
 
 from app.core.config import get_settings
-from app.db.session import sqlalchemy_database_url
 
 SOURCE = "replit_pending_schema_diff"
 CURRENT_REVISION = "0017"
@@ -71,6 +70,16 @@ def _refuse(message: str) -> None:
     raise ReconciliationRefused(f"production Alembic reconciliation refused: {message}")
 
 
+def _sqlalchemy_database_url(database_url: str) -> str:
+    """Normalize legacy Replit/Postgres URLs without importing the app engine."""
+
+    if database_url.startswith("postgres://"):
+        return "postgresql+psycopg://" + database_url.removeprefix("postgres://")
+    if database_url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + database_url.removeprefix("postgresql://")
+    return database_url
+
+
 def _load_migration_0018() -> Any:
     spec = importlib.util.spec_from_file_location(
         "routine_pinterest_migration_0018_for_reconciliation", MIGRATION_PATH
@@ -85,7 +94,7 @@ def _load_migration_0018() -> Any:
 def database_identity_sha256(database_url: str) -> str:
     """Return a credential-free stable identity hash for the target database."""
 
-    url = make_url(sqlalchemy_database_url(database_url))
+    url = make_url(_sqlalchemy_database_url(database_url))
     backend = url.get_backend_name()
     host = (url.host or "").lower()
     port = url.port or 5432
@@ -269,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
     if settings.app_env.lower() not in {"production", "prod", "replit"}:
         _refuse("APP_ENV is not an allowed production environment value")
 
-    database_url = sqlalchemy_database_url(settings.database_url)
+    database_url = _sqlalchemy_database_url(settings.database_url)
     identity = database_identity_sha256(database_url)
     load_replit_schema_diff_attestation(
         args.attestation_file,
