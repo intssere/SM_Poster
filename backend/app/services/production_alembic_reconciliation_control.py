@@ -76,6 +76,12 @@ def _validate_runtime_and_secret(*, supplied_secret: str, confirmation: str) -> 
         _refuse("APP_ENV is not an allowed production value")
     if os.getenv("REPL_ID") != EXPECTED_REPL_ID:
         _refuse("Replit app id differs")
+    if settings.routine_pinterest_worker_enabled is not False:
+        _refuse("routine Pinterest worker is not fail-closed")
+    if settings.routine_buffer_dispatch_enabled is not False:
+        _refuse("routine Buffer dispatch is not fail-closed")
+    if settings.routine_pinterest_dry_run is not True:
+        _refuse("routine Pinterest dry-run is not enabled")
 
     configured_secret = settings.alembic_reconciliation_secret
     if len(configured_secret) < 32:
@@ -129,6 +135,33 @@ def _validate_external_zero_diff_evidence(
         _refuse("zero-diff evidence contains warnings")
 
     return raw
+
+
+def _validate_database_fail_closed_state(connection: Any) -> None:
+    control_rows = connection.execute(
+        sa.text("SELECT state FROM routine_publishing_control WHERE id = 'default'")
+    ).fetchall()
+    if len(control_rows) > 1:
+        _refuse("routine publishing control has multiple default rows")
+    control_state = str(control_rows[0][0]) if control_rows else "PAUSED"
+    if control_state != "PAUSED":
+        _refuse("routine publishing control is not PAUSED")
+
+    running_count = int(
+        connection.execute(
+            sa.text("SELECT count(*) FROM routine_publishing_runs WHERE status = 'RUNNING'")
+        ).one()[0]
+    )
+    if running_count != 0:
+        _refuse("a routine publishing run is active")
+
+    publishing_count = int(
+        connection.execute(
+            sa.text("SELECT count(*) FROM pin_publications WHERE status = 'PUBLISHING'")
+        ).one()[0]
+    )
+    if publishing_count != 0:
+        _refuse("a publication is currently PUBLISHING")
 
 
 def execute_temporary_reconciliation(
@@ -189,6 +222,8 @@ def execute_temporary_reconciliation(
                 _refuse("PostgreSQL cluster identity differs from live production")
             if str(database_name) != EXPECTED_DATABASE_NAME:
                 _refuse("PostgreSQL database name differs from live production")
+
+            _validate_database_fail_closed_state(connection)
 
             rows = connection.execute(
                 sa.text("SELECT version_num FROM alembic_version FOR UPDATE")
