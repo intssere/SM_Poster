@@ -12,11 +12,10 @@ from app.core.config import get_settings
 from app.services import production_alembic_reconciliation_control as control
 
 
-ATTESTATION = {
+EVIDENCE = {
     "source": "replit_pending_schema_diff",
     "repl_id": control.EXPECTED_REPL_ID,
     "database_scope": "production",
-    "database_identity_sha256": "d" * 64,
     "checked_at": "2026-09-17T12:00:00Z",
     "pending_statements": 0,
     "structural_data_loss": False,
@@ -25,8 +24,9 @@ ATTESTATION = {
 }
 
 
-def _attestation_sha256() -> str:
-    raw = json.dumps(ATTESTATION, sort_keys=True, separators=(",", ":")).encode()
+def _evidence_sha256(evidence=None) -> str:
+    payload = EVIDENCE if evidence is None else evidence
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -84,10 +84,15 @@ def _fake_reconciler(*, reconciled=True):
 
     def load_attestation(path, **kwargs):
         calls["attestation"] += 1
-        assert path.read_bytes()
+        full_attestation = json.loads(path.read_text())
+        assert full_attestation == {
+            **EVIDENCE,
+            "database_identity_sha256": "d" * 64,
+        }
+        assert kwargs["expected_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
         assert kwargs["expected_repl_id"] == control.EXPECTED_REPL_ID
         assert kwargs["expected_database_identity_sha256"] == "d" * 64
-        return ATTESTATION
+        return full_attestation
 
     def reconcile(_connection):
         calls["reconcile"] += 1
@@ -145,8 +150,8 @@ def test_control_executes_only_exact_guarded_reconciliation(monkeypatch):
     result = control.execute_temporary_reconciliation(
         supplied_secret="s" * 48,
         confirmation=control.CONFIRMATION,
-        attestation=ATTESTATION,
-        attestation_sha256=_attestation_sha256(),
+        evidence=EVIDENCE,
+        evidence_sha256=_evidence_sha256(),
     )
 
     assert result == {
@@ -171,8 +176,8 @@ def test_control_self_invalidates_when_revision_is_not_0017(monkeypatch):
         control.execute_temporary_reconciliation(
             supplied_secret="s" * 48,
             confirmation=control.CONFIRMATION,
-            attestation=ATTESTATION,
-            attestation_sha256=_attestation_sha256(),
+            evidence=EVIDENCE,
+            evidence_sha256=_evidence_sha256(),
         )
     assert fake_reconciler.calls["reconcile"] == 0
 
@@ -188,22 +193,44 @@ def test_control_rejects_wrong_production_database_cluster(monkeypatch):
         control.execute_temporary_reconciliation(
             supplied_secret="s" * 48,
             confirmation=control.CONFIRMATION,
-            attestation=ATTESTATION,
-            attestation_sha256=_attestation_sha256(),
+            evidence=EVIDENCE,
+            evidence_sha256=_evidence_sha256(),
         )
     assert fake_reconciler.calls["reconcile"] == 0
 
 
-def test_control_rejects_attestation_digest_mismatch(monkeypatch):
+def test_control_rejects_evidence_digest_mismatch(monkeypatch):
     _configure_production(monkeypatch)
-    monkeypatch.setattr(control, "_load_canonical_reconciler", lambda: _fake_reconciler())
 
-    with pytest.raises(control.ReconciliationControlRefused, match="attestation SHA-256 does not match"):
+    with pytest.raises(control.ReconciliationControlRefused, match="evidence SHA-256 does not match"):
         control.execute_temporary_reconciliation(
             supplied_secret="s" * 48,
             confirmation=control.CONFIRMATION,
-            attestation=ATTESTATION,
-            attestation_sha256="0" * 64,
+            evidence=EVIDENCE,
+            evidence_sha256="0" * 64,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("pending_statements", 1, "pending statements"),
+        ("structural_data_loss", True, "structural data loss"),
+        ("potential_incompatibility", True, "potential incompatibility"),
+        ("warnings", ["warning"], "contains warnings"),
+        ("database_scope", "development", "scope is not production"),
+    ],
+)
+def test_control_rejects_unsafe_external_zero_diff_evidence(monkeypatch, field, value, message):
+    _configure_production(monkeypatch)
+    evidence = {**EVIDENCE, field: value}
+
+    with pytest.raises(control.ReconciliationControlRefused, match=message):
+        control.execute_temporary_reconciliation(
+            supplied_secret="s" * 48,
+            confirmation=control.CONFIRMATION,
+            evidence=evidence,
+            evidence_sha256=_evidence_sha256(evidence),
         )
 
 
@@ -236,8 +263,8 @@ def test_hidden_route_is_public_only_at_secret_gated_boundary(monkeypatch):
     payload = {
         "authorization_secret": "s" * 48,
         "confirmation": control.CONFIRMATION,
-        "attestation": ATTESTATION,
-        "attestation_sha256": _attestation_sha256(),
+        "evidence": EVIDENCE,
+        "evidence_sha256": _evidence_sha256(),
     }
     path = "/api/maintenance/production-alembic-0017-0018/reconcile"
 
