@@ -8,7 +8,13 @@ from app.core.config import get_settings
 from app.services.public_creative_media import PUBLIC_CREATIVE_PATH
 
 
-PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/status", "/api/channels/pinterest/callback"}
+PUBLIC_PATHS = {
+    "/api/health",
+    "/api/auth/login",
+    "/api/auth/status",
+    "/api/channels/pinterest/callback",
+    "/api/maintenance/production-alembic-0017-0018/reconcile",
+}
 
 
 class AdminAuthMiddleware(BaseHTTPMiddleware):
