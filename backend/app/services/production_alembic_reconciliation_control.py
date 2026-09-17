@@ -5,6 +5,7 @@ import hmac
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -43,14 +44,17 @@ def _load_canonical_reconciler() -> Any:
     if actual_sha256 != EXPECTED_RECONCILER_SHA256:
         _refuse("canonical reconciler source identity differs")
 
-    spec = importlib.util.spec_from_file_location(
-        "canonical_production_alembic_reconciler_for_temporary_control",
-        RECONCILER_PATH,
-    )
+    module_name = "canonical_production_alembic_reconciler_for_temporary_control"
+    spec = importlib.util.spec_from_file_location(module_name, RECONCILER_PATH)
     if spec is None or spec.loader is None:
         _refuse("canonical reconciler could not be loaded")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
     return module
 
 
