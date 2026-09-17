@@ -68,6 +68,16 @@ class Clock:
         self.value += seconds
 
 
+def _lifecycle_events(output: str) -> list[str]:
+    events = []
+    for line in output.splitlines():
+        if not line.startswith(f"{startup.LOG_PREFIX} event="):
+            continue
+        event_token = line.split()[1]
+        events.append(event_token.split("=", 1)[1])
+    return events
+
+
 def test_probe_requires_ok_and_database_connected_true():
     def opener(_url, timeout):
         assert timeout == 2.0
@@ -190,6 +200,70 @@ def test_run_never_starts_frontend_when_readiness_fails(monkeypatch):
     assert startup.run() == 1
     assert events == ["backend", "readiness_failed"]
     assert backend.terminated is True
+
+
+def test_lifecycle_log_records_monotonic_elapsed_time(capsys):
+    startup.log_lifecycle_event(
+        "example",
+        started_at=10.0,
+        monotonic=lambda: 12.345,
+    )
+
+    assert capsys.readouterr().out.strip() == (
+        "production-startup event=example elapsed_ms=2345"
+    )
+
+
+def test_run_emits_success_lifecycle_events_in_order(monkeypatch, capsys):
+    backend = FakeProcess()
+    frontend = FakeProcess()
+
+    monkeypatch.setattr(startup, "start_backend", lambda: backend)
+    monkeypatch.setattr(startup, "wait_for_backend_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(startup, "start_frontend", lambda: frontend)
+    monkeypatch.setattr(startup, "supervise", lambda _backend, _frontend: 0)
+
+    assert startup.run() == 0
+    output = capsys.readouterr().out
+
+    assert _lifecycle_events(output) == [
+        "wrapper_start",
+        "backend_process_started",
+        "backend_readiness_succeeded",
+        "frontend_process_started",
+        "supervision_entered",
+    ]
+    lifecycle_lines = [
+        line for line in output.splitlines() if line.startswith(startup.LOG_PREFIX)
+    ]
+    assert all(" elapsed_ms=" in line for line in lifecycle_lines)
+
+
+def test_run_omits_frontend_lifecycle_events_on_readiness_failure(monkeypatch, capsys):
+    backend = FakeProcess()
+
+    monkeypatch.setattr(startup, "start_backend", lambda: backend)
+
+    def refuse(*_args, **_kwargs):
+        raise startup.StartupError("not ready")
+
+    monkeypatch.setattr(startup, "wait_for_backend_ready", refuse)
+    monkeypatch.setattr(
+        startup,
+        "start_frontend",
+        lambda: pytest.fail("frontend must not start before readiness"),
+    )
+
+    assert startup.run() == 1
+    output = capsys.readouterr().out
+
+    assert _lifecycle_events(output) == [
+        "wrapper_start",
+        "backend_process_started",
+    ]
+    assert "backend_readiness_succeeded" not in output
+    assert "frontend_process_started" not in output
+    assert "supervision_entered" not in output
 
 
 def test_replit_deployment_uses_readiness_wrapper():
