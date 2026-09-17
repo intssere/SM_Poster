@@ -37,6 +37,9 @@ def _configure_production(monkeypatch):
     monkeypatch.setenv("ALEMBIC_RECONCILIATION_SECRET", "s" * 48)
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@db.example/neondb")
     monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "https://Diamondshelf.replit.app")
+    monkeypatch.setenv("ROUTINE_PINTEREST_WORKER_ENABLED", "false")
+    monkeypatch.setenv("ROUTINE_BUFFER_DISPATCH_ENABLED", "false")
+    monkeypatch.setenv("ROUTINE_PINTEREST_DRY_RUN", "true")
     get_settings.cache_clear()
 
 
@@ -53,15 +56,33 @@ class _Result:
 
 
 class _Connection:
-    def __init__(self, *, revision="0017", system_identifier=control.EXPECTED_DATABASE_SYSTEM_IDENTIFIER):
+    def __init__(
+        self,
+        *,
+        revision="0017",
+        system_identifier=control.EXPECTED_DATABASE_SYSTEM_IDENTIFIER,
+        control_state="PAUSED",
+        running_count=0,
+        publishing_count=0,
+    ):
         self.revision = revision
         self.system_identifier = system_identifier
+        self.control_state = control_state
+        self.running_count = running_count
+        self.publishing_count = publishing_count
 
     def execute(self, statement):
-        sql = str(statement)
+        sql = " ".join(str(statement).split())
         if "pg_control_system" in sql:
             return _Result(one=(self.system_identifier, control.EXPECTED_DATABASE_NAME))
-        if "SELECT version_num FROM alembic_version FOR UPDATE" in sql:
+        if sql == "SELECT state FROM routine_publishing_control WHERE id = 'default'":
+            rows = [] if self.control_state is None else [(self.control_state,)]
+            return _Result(rows=rows)
+        if sql == "SELECT count(*) FROM routine_publishing_runs WHERE status = 'RUNNING'":
+            return _Result(one=(self.running_count,))
+        if sql == "SELECT count(*) FROM pin_publications WHERE status = 'PUBLISHING'":
+            return _Result(one=(self.publishing_count,))
+        if sql == "SELECT version_num FROM alembic_version FOR UPDATE":
             return _Result(rows=[(self.revision,)])
         raise AssertionError(f"unexpected SQL in temporary control test: {sql}")
 
@@ -140,6 +161,17 @@ def test_static_runtime_and_secret_guards_fail_closed(monkeypatch):
         )
 
 
+def test_static_publishing_gates_must_remain_fail_closed(monkeypatch):
+    _configure_production(monkeypatch)
+    monkeypatch.setenv("ROUTINE_PINTEREST_WORKER_ENABLED", "true")
+    get_settings.cache_clear()
+    with pytest.raises(control.ReconciliationControlRefused, match="worker is not fail-closed"):
+        control._validate_runtime_and_secret(
+            supplied_secret="s" * 48,
+            confirmation=control.CONFIRMATION,
+        )
+
+
 def test_control_executes_only_exact_guarded_reconciliation(monkeypatch):
     _configure_production(monkeypatch)
     fake_reconciler = _fake_reconciler()
@@ -173,6 +205,30 @@ def test_control_self_invalidates_when_revision_is_not_0017(monkeypatch):
     monkeypatch.setattr(control.sa, "create_engine", lambda *args, **kwargs: engine)
 
     with pytest.raises(control.ReconciliationControlRefused, match="exactly one row at 0017"):
+        control.execute_temporary_reconciliation(
+            supplied_secret="s" * 48,
+            confirmation=control.CONFIRMATION,
+            evidence=EVIDENCE,
+            evidence_sha256=_evidence_sha256(),
+        )
+    assert fake_reconciler.calls["reconcile"] == 0
+
+
+@pytest.mark.parametrize(
+    ("connection", "message"),
+    [
+        (_Connection(control_state="LIVE"), "control is not PAUSED"),
+        (_Connection(running_count=1), "run is active"),
+        (_Connection(publishing_count=1), "currently PUBLISHING"),
+    ],
+)
+def test_control_rejects_non_fail_closed_database_state(monkeypatch, connection, message):
+    _configure_production(monkeypatch)
+    fake_reconciler = _fake_reconciler()
+    monkeypatch.setattr(control, "_load_canonical_reconciler", lambda: fake_reconciler)
+    monkeypatch.setattr(control.sa, "create_engine", lambda *args, **kwargs: _Engine(connection))
+
+    with pytest.raises(control.ReconciliationControlRefused, match=message):
         control.execute_temporary_reconciliation(
             supplied_secret="s" * 48,
             confirmation=control.CONFIRMATION,
