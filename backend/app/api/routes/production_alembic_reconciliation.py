@@ -13,13 +13,12 @@ from app.services.production_alembic_reconciliation_control import (
 router = APIRouter(prefix="/maintenance", tags=["maintenance"])
 
 
-class ReplitSchemaDiffAttestation(BaseModel):
+class ReplitSchemaDiffEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: str
     repl_id: str
     database_scope: str
-    database_identity_sha256: str
     checked_at: str
     pending_statements: int
     structural_data_loss: bool
@@ -32,8 +31,8 @@ class ReconciliationRequest(BaseModel):
 
     authorization_secret: str = Field(min_length=1, max_length=4096)
     confirmation: str
-    attestation: ReplitSchemaDiffAttestation
-    attestation_sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+    evidence: ReplitSchemaDiffEvidence
+    evidence_sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
 
 
 @router.post(
@@ -45,8 +44,8 @@ def reconcile_production_alembic(payload: ReconciliationRequest) -> dict[str, An
         return execute_temporary_reconciliation(
             supplied_secret=payload.authorization_secret,
             confirmation=payload.confirmation,
-            attestation=payload.attestation.model_dump(mode="json"),
-            attestation_sha256=payload.attestation_sha256,
+            evidence=payload.evidence.model_dump(mode="json"),
+            evidence_sha256=payload.evidence_sha256,
         )
     except ReconciliationControlRefused as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
