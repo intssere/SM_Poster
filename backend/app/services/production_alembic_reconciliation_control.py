@@ -20,6 +20,16 @@ EXPECTED_DATABASE_NAME = "neondb"
 EXPECTED_RECONCILER_SHA256 = "b508614c2202624bb67741e2f4bfc856a3f062698a67c106b8ce6f66964377a7"
 CONFIRMATION = "RECONCILE-PRODUCTION-ALEMBIC-0017-TO-0018-NO-DDL"
 RECONCILER_PATH = Path(__file__).parents[2] / "scripts" / "reconcile_production_alembic_revision.py"
+REQUIRED_EVIDENCE_KEYS = {
+    "source",
+    "repl_id",
+    "database_scope",
+    "checked_at",
+    "pending_statements",
+    "structural_data_loss",
+    "potential_incompatibility",
+    "warnings",
+}
 
 
 class ReconciliationControlRefused(RuntimeError):
@@ -76,26 +86,57 @@ def _validate_runtime_and_secret(*, supplied_secret: str, confirmation: str) -> 
         _refuse("explicit confirmation phrase differs")
 
 
-def _canonical_attestation_bytes(attestation: dict[str, Any]) -> bytes:
+def _canonical_json_bytes(payload: dict[str, Any]) -> bytes:
     try:
         return json.dumps(
-            attestation,
+            payload,
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
         ).encode("utf-8")
     except (TypeError, ValueError) as exc:
         raise ReconciliationControlRefused(
-            "temporary production Alembic reconciliation refused: attestation is not JSON serializable"
+            "temporary production Alembic reconciliation refused: evidence is not JSON serializable"
         ) from exc
+
+
+def _validate_external_zero_diff_evidence(
+    evidence: dict[str, Any],
+    *,
+    expected_sha256: str,
+) -> bytes:
+    if not isinstance(evidence, dict) or set(evidence) != REQUIRED_EVIDENCE_KEYS:
+        _refuse("zero-diff evidence field set differs")
+
+    raw = _canonical_json_bytes(evidence)
+    actual_sha256 = hashlib.sha256(raw).hexdigest()
+    if not hmac.compare_digest(actual_sha256, expected_sha256.lower()):
+        _refuse("zero-diff evidence SHA-256 does not match")
+
+    if evidence["source"] != "replit_pending_schema_diff":
+        _refuse("zero-diff evidence source differs")
+    if evidence["repl_id"] != EXPECTED_REPL_ID:
+        _refuse("zero-diff evidence Replit app id differs")
+    if evidence["database_scope"] != "production":
+        _refuse("zero-diff evidence database scope is not production")
+    if type(evidence["pending_statements"]) is not int or evidence["pending_statements"] != 0:
+        _refuse("zero-diff evidence reports pending statements")
+    if evidence["structural_data_loss"] is not False:
+        _refuse("zero-diff evidence reports structural data loss")
+    if evidence["potential_incompatibility"] is not False:
+        _refuse("zero-diff evidence reports potential incompatibility")
+    if evidence["warnings"] != []:
+        _refuse("zero-diff evidence contains warnings")
+
+    return raw
 
 
 def execute_temporary_reconciliation(
     *,
     supplied_secret: str,
     confirmation: str,
-    attestation: dict[str, Any],
-    attestation_sha256: str,
+    evidence: dict[str, Any],
+    evidence_sha256: str,
 ) -> dict[str, Any]:
     """Execute the one permitted 0017→0018 bookkeeping CAS after every guard passes."""
 
@@ -103,16 +144,22 @@ def execute_temporary_reconciliation(
         supplied_secret=supplied_secret,
         confirmation=confirmation,
     )
+    _validate_external_zero_diff_evidence(
+        evidence,
+        expected_sha256=evidence_sha256,
+    )
     reconciler = _load_canonical_reconciler()
-
-    raw_attestation = _canonical_attestation_bytes(attestation)
-    actual_attestation_sha256 = hashlib.sha256(raw_attestation).hexdigest()
-    if not hmac.compare_digest(actual_attestation_sha256, attestation_sha256.lower()):
-        _refuse("attestation SHA-256 does not match")
 
     settings = get_settings()
     database_url = reconciler._sqlalchemy_database_url(settings.database_url)
     database_identity_sha256 = reconciler.database_identity_sha256(database_url)
+
+    attestation = {
+        **evidence,
+        "database_identity_sha256": database_identity_sha256,
+    }
+    raw_attestation = _canonical_json_bytes(attestation)
+    attestation_sha256 = hashlib.sha256(raw_attestation).hexdigest()
 
     temporary_path: Path | None = None
     try:
@@ -122,7 +169,7 @@ def execute_temporary_reconciliation(
 
         reconciler.load_replit_schema_diff_attestation(
             temporary_path,
-            expected_sha256=actual_attestation_sha256,
+            expected_sha256=attestation_sha256,
             expected_repl_id=EXPECTED_REPL_ID,
             expected_database_identity_sha256=database_identity_sha256,
         )
