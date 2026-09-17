@@ -100,11 +100,17 @@ class _Engine:
         self.disposed = True
 
 
-def _fake_reconciler(*, reconciled=True):
+class _CanonicalRefusal(RuntimeError):
+    pass
+
+
+def _fake_reconciler(*, reconciled=True, attestation_refusal=None, reconcile_refusal=None):
     calls = {"reconcile": 0, "attestation": 0}
 
     def load_attestation(path, **kwargs):
         calls["attestation"] += 1
+        if attestation_refusal:
+            raise _CanonicalRefusal(attestation_refusal)
         full_attestation = json.loads(path.read_text())
         assert full_attestation == {
             **EVIDENCE,
@@ -117,6 +123,8 @@ def _fake_reconciler(*, reconciled=True):
 
     def reconcile(_connection):
         calls["reconcile"] += 1
+        if reconcile_refusal:
+            raise _CanonicalRefusal(reconcile_refusal)
         if not reconciled:
             return SimpleNamespace(
                 mutated=False,
@@ -132,6 +140,7 @@ def _fake_reconciler(*, reconciled=True):
         )
 
     return SimpleNamespace(
+        ReconciliationRefused=_CanonicalRefusal,
         _sqlalchemy_database_url=lambda value: value,
         database_identity_sha256=lambda _value: "d" * 64,
         load_replit_schema_diff_attestation=load_attestation,
@@ -288,6 +297,43 @@ def test_control_rejects_unsafe_external_zero_diff_evidence(monkeypatch, field, 
             evidence=evidence,
             evidence_sha256=_evidence_sha256(evidence),
         )
+
+
+def test_canonical_attestation_refusal_is_translated(monkeypatch):
+    _configure_production(monkeypatch)
+    fake_reconciler = _fake_reconciler(attestation_refusal="stale attestation")
+    monkeypatch.setattr(control, "_load_canonical_reconciler", lambda: fake_reconciler)
+
+    with pytest.raises(
+        control.ReconciliationControlRefused,
+        match="canonical attestation guard refused: stale attestation",
+    ):
+        control.execute_temporary_reconciliation(
+            supplied_secret="s" * 48,
+            confirmation=control.CONFIRMATION,
+            evidence=EVIDENCE,
+            evidence_sha256=_evidence_sha256(),
+        )
+
+
+def test_canonical_reconciliation_refusal_is_translated(monkeypatch):
+    _configure_production(monkeypatch)
+    fake_reconciler = _fake_reconciler(reconcile_refusal="schema drift")
+    engine = _Engine(_Connection())
+    monkeypatch.setattr(control, "_load_canonical_reconciler", lambda: fake_reconciler)
+    monkeypatch.setattr(control.sa, "create_engine", lambda *args, **kwargs: engine)
+
+    with pytest.raises(
+        control.ReconciliationControlRefused,
+        match="canonical reconciliation guard refused: schema drift",
+    ):
+        control.execute_temporary_reconciliation(
+            supplied_secret="s" * 48,
+            confirmation=control.CONFIRMATION,
+            evidence=EVIDENCE,
+            evidence_sha256=_evidence_sha256(),
+        )
+    assert engine.disposed is True
 
 
 def test_canonical_reconciler_source_identity_is_pinned(monkeypatch, tmp_path):
