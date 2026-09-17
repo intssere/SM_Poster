@@ -2,7 +2,7 @@
 """Fail-closed production process supervisor for Replit Autoscale.
 
 The public frontend is not started until the backend health contract proves both
-``status == "ok"`` and ``database_connected is True``.  The wrapper uses only
+``status == "ok"`` and ``database_connected is True``. The wrapper uses only
 Python's standard library so deployment startup does not depend on curl/jq or
 other auxiliary binaries.
 """
@@ -23,6 +23,7 @@ BACKEND_DIR = ROOT / "backend"
 READINESS_URL = "http://127.0.0.1:8000/api/health"
 DEFAULT_READY_TIMEOUT_SECONDS = 180.0
 DEFAULT_POLL_INTERVAL_SECONDS = 1.0
+LOG_PREFIX = "production-startup"
 
 
 class StartupError(RuntimeError):
@@ -31,6 +32,19 @@ class StartupError(RuntimeError):
 
 class ShutdownRequested(BaseException):
     """Raised by SIGTERM/SIGINT so child processes can be cleaned up."""
+
+
+def log_lifecycle_event(
+    event: str,
+    *,
+    started_at: float,
+    monotonic: Callable[[], float] | None = None,
+) -> None:
+    """Emit a deterministic startup event without sensitive runtime details."""
+
+    now = (monotonic or time.monotonic)()
+    elapsed_ms = max(0, int(round((now - started_at) * 1000)))
+    print(f"{LOG_PREFIX} event={event} elapsed_ms={elapsed_ms}", flush=True)
 
 
 def backend_command() -> list[str]:
@@ -169,6 +183,10 @@ def run() -> int:
     backend: object | None = None
     frontend: object | None = None
     previous_handlers: dict[int, object] = {}
+    started_at = time.monotonic()
+
+    def lifecycle(event: str) -> None:
+        log_lifecycle_event(event, started_at=started_at)
 
     def request_shutdown(signum: int, _frame: object) -> None:
         raise ShutdownRequested(signum)
@@ -178,13 +196,18 @@ def run() -> int:
         signal.signal(signum, request_shutdown)
 
     try:
+        lifecycle("wrapper_start")
         backend = start_backend()
+        lifecycle("backend_process_started")
         wait_for_backend_ready(
             backend,
             timeout_seconds=_timeout_from_environment(),
         )
+        lifecycle("backend_readiness_succeeded")
         # This is the only point at which the public frontend may start.
         frontend = start_frontend()
+        lifecycle("frontend_process_started")
+        lifecycle("supervision_entered")
         return supervise(backend, frontend)
     except StartupError as exc:
         print(f"production startup refused: {exc}", file=sys.stderr, flush=True)
