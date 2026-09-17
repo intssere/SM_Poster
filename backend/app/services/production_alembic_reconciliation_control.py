@@ -200,12 +200,15 @@ def execute_temporary_reconciliation(
             handle.write(raw_attestation)
             temporary_path = Path(handle.name)
 
-        reconciler.load_replit_schema_diff_attestation(
-            temporary_path,
-            expected_sha256=attestation_sha256,
-            expected_repl_id=EXPECTED_REPL_ID,
-            expected_database_identity_sha256=database_identity_sha256,
-        )
+        try:
+            reconciler.load_replit_schema_diff_attestation(
+                temporary_path,
+                expected_sha256=attestation_sha256,
+                expected_repl_id=EXPECTED_REPL_ID,
+                expected_database_identity_sha256=database_identity_sha256,
+            )
+        except reconciler.ReconciliationRefused as exc:
+            _refuse(f"canonical attestation guard refused: {exc}")
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
@@ -231,7 +234,10 @@ def execute_temporary_reconciliation(
             if len(rows) != 1 or str(rows[0][0]) != "0017":
                 _refuse("alembic_version is not exactly one row at 0017")
 
-            result = reconciler.reconcile_revision(connection)
+            try:
+                result = reconciler.reconcile_revision(connection)
+            except reconciler.ReconciliationRefused as exc:
+                _refuse(f"canonical reconciliation guard refused: {exc}")
             if not (
                 result.mutated is True
                 and result.status == "reconciled"
