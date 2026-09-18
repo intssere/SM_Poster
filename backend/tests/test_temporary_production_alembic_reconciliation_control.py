@@ -163,6 +163,7 @@ def test_static_runtime_and_secret_guards_fail_closed(monkeypatch):
         )
 
 
+
 def test_development_app_env_does_not_refuse_when_direct_production_guards_are_valid(monkeypatch):
     _configure_production(monkeypatch)
     monkeypatch.setenv("APP_ENV", "development")
