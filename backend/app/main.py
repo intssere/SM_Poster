@@ -18,7 +18,6 @@ from app.api.routes.publications import router as publications_router
 from app.api.routes.buffer_reconciliation_discovery import router as buffer_reconciliation_discovery_router
 from app.api.routes.buffer_reconciliation import router as buffer_reconciliation_router
 from app.api.routes.routine_publishing import router as routine_publishing_router
-from app.api.routes.production_alembic_reconciliation import router as production_alembic_reconciliation_router
 
 cors_origins = get_settings().allowed_origins
 
@@ -43,7 +42,6 @@ app.include_router(publications_router, prefix="/api")
 app.include_router(buffer_reconciliation_discovery_router, prefix="/api")
 app.include_router(buffer_reconciliation_router, prefix="/api")
 app.include_router(routine_publishing_router, prefix="/api")
-app.include_router(production_alembic_reconciliation_router, prefix="/api")
 
 
 @app.get("/")
