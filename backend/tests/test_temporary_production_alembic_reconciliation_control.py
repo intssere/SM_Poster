@@ -33,7 +33,7 @@ def _evidence_sha256(evidence=None) -> str:
 def _configure_production(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("REPLIT_DEPLOYMENT", "1")
-    monkeypatch.setenv("REPL_ID", control.EXPECTED_REPL_ID)
+    monkeypatch.setenv("ALEMBIC_RECONCILIATION_APP_ID", control.EXPECTED_REPL_ID)
     monkeypatch.setenv("ALEMBIC_RECONCILIATION_SECRET", "s" * 48)
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@db.example/neondb")
     monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "https://Diamondshelf.replit.app")
@@ -191,10 +191,10 @@ def test_missing_or_wrong_replit_deployment_refuses(monkeypatch, deployment_valu
         )
 
 
-def test_wrong_repl_id_refuses(monkeypatch):
+def test_wrong_deployment_app_id_binding_refuses(monkeypatch):
     _configure_production(monkeypatch)
-    monkeypatch.setenv("REPL_ID", "wrong-app")
-    with pytest.raises(control.ReconciliationControlRefused, match="app id differs"):
+    monkeypatch.setenv("ALEMBIC_RECONCILIATION_APP_ID", "wrong-app")
+    with pytest.raises(control.ReconciliationControlRefused, match="deployment app id binding differs"):
         control._validate_runtime_and_secret(
             supplied_secret="s" * 48,
             confirmation=control.CONFIRMATION,
