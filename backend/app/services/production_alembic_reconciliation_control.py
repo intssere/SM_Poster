@@ -72,8 +72,6 @@ def _validate_runtime_and_secret(*, supplied_secret: str, confirmation: str) -> 
     settings = get_settings()
     if os.getenv("REPLIT_DEPLOYMENT") != "1":
         _refuse("runtime is not an active Replit deployment")
-    if settings.app_env.lower() not in {"production", "prod", "replit"}:
-        _refuse("APP_ENV is not an allowed production value")
     if os.getenv("REPL_ID") != EXPECTED_REPL_ID:
         _refuse("Replit app id differs")
     if settings.routine_pinterest_worker_enabled is not False:
