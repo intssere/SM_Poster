@@ -14,7 +14,6 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("APP_SECRET_KEY", "SESSION_SECRET"),
     )
-    alembic_reconciliation_secret: str = Field(default="", repr=False, exclude=True)
     publishing_enabled: bool = False
     public_media_base_url: str | None = None
     buffer_api_key: str | None = Field(default=None, repr=False, exclude=True)
