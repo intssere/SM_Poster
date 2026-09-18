@@ -13,7 +13,6 @@ PUBLIC_PATHS = {
     "/api/auth/login",
     "/api/auth/status",
     "/api/channels/pinterest/callback",
-    "/api/maintenance/production-alembic-0017-0018/reconcile",
 }
 
 
