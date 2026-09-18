@@ -72,8 +72,8 @@ def _validate_runtime_and_secret(*, supplied_secret: str, confirmation: str) -> 
     settings = get_settings()
     if os.getenv("REPLIT_DEPLOYMENT") != "1":
         _refuse("runtime is not an active Replit deployment")
-    if os.getenv("REPL_ID") != EXPECTED_REPL_ID:
-        _refuse("Replit app id differs")
+    if os.getenv("ALEMBIC_RECONCILIATION_APP_ID") != EXPECTED_REPL_ID:
+        _refuse("deployment app id binding differs")
     if settings.routine_pinterest_worker_enabled is not False:
         _refuse("routine Pinterest worker is not fail-closed")
     if settings.routine_buffer_dispatch_enabled is not False:
