@@ -162,6 +162,37 @@ def test_static_runtime_and_secret_guards_fail_closed(monkeypatch):
             confirmation=control.CONFIRMATION,
         )
 
+
+
+def test_development_app_env_does_not_refuse_when_direct_production_guards_are_valid(monkeypatch):
+    _configure_production(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "development")
+    get_settings.cache_clear()
+    control._validate_runtime_and_secret(
+        supplied_secret="s" * 48,
+        confirmation=control.CONFIRMATION,
+    )
+
+
+@pytest.mark.parametrize("deployment_value", [None, "0", "true"])
+def test_missing_or_wrong_replit_deployment_refuses(monkeypatch, deployment_value):
+    _configure_production(monkeypatch)
+    if deployment_value is None:
+        monkeypatch.delenv("REPLIT_DEPLOYMENT")
+    else:
+        monkeypatch.setenv("REPLIT_DEPLOYMENT", deployment_value)
+    with pytest.raises(
+        control.ReconciliationControlRefused,
+        match="not an active Replit deployment",
+    ):
+        control._validate_runtime_and_secret(
+            supplied_secret="s" * 48,
+            confirmation=control.CONFIRMATION,
+        )
+
+
+def test_wrong_repl_id_refuses(monkeypatch):
+    _configure_production(monkeypatch)
     monkeypatch.setenv("REPL_ID", "wrong-app")
     with pytest.raises(control.ReconciliationControlRefused, match="app id differs"):
         control._validate_runtime_and_secret(
