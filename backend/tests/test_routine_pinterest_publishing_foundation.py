@@ -274,19 +274,117 @@ def test_one_shot_dry_run_settings_fail_closed(settings, control_state, expected
 
 
 @pytest.mark.asyncio
-async def test_one_shot_dry_run_route_targets_exact_queue_head(monkeypatch):
+async def test_targeted_dry_run_selects_exact_publication_without_scanning_older_due(monkeypatch):
+    from app.services import routine_pinterest_worker as worker
+    from app.services.routine_publishing_control import get_control
+
+    engine = _engine(); SessionLocal = sessionmaker(bind=engine, expire_on_commit=False); db = SessionLocal()
+    now = datetime.now(timezone.utc)
+    older = _publication(
+        ident="older-due", scheduled_for=now - timedelta(minutes=20), fingerprint_char="o"
+    )
+    target = _publication(
+        ident="target-due", scheduled_for=now - timedelta(minutes=5), fingerprint_char="t"
+    )
+    db.add_all([older, target]); db.commit()
+    control = get_control(db); control.state = "DRY_RUN"; control.pause_reason = None; db.commit()
+
+    dummy_permit = SimpleNamespace(id="target-permit")
+    dummy_evidence = SimpleNamespace(publication_id=target.id)
+    seen = []
+
+    def should_not_recover(*args, **kwargs):
+        raise AssertionError("targeted dry-run must not recover unrelated publication claims")
+
+    def fake_active_permit(db_, publication_id):
+        seen.append(publication_id)
+        return dummy_permit
+
+    monkeypatch.setattr(worker, "recover_stale_routine_claims", should_not_recover)
+    monkeypatch.setattr(worker, "active_permit", fake_active_permit)
+    monkeypatch.setattr(worker, "validate_permit", lambda *a, **k: {"valid": True, "status": "ACTIVE"})
+
+    async def preflight(*a, **k):
+        return dummy_evidence
+
+    monkeypatch.setattr(worker, "build_routine_execution_evidence", preflight)
+    settings = Settings(
+        database_url="sqlite:///:memory:",
+        routine_pinterest_worker_enabled=True,
+        routine_buffer_dispatch_enabled=False,
+        routine_pinterest_dry_run=True,
+        routine_pinterest_batch_size=1,
+        routine_pinterest_daily_write_limit=1,
+    )
+
+    result = await worker.run_once(
+        db,
+        settings=settings,
+        now=now,
+        target_publication_id=target.id,
+    )
+
+    db.refresh(older); db.refresh(target)
+    assert result["status"] == "SUCCEEDED"
+    assert result["mode"] == "DRY_RUN"
+    assert result["scanned"] == 1
+    assert result["eligible"] == 1
+    assert result["skipped"] == 0
+    assert result["claimed"] == result["dispatched"] == 0
+    assert seen == [target.id]
+    assert older.status == PublicationStatus.SCHEDULED
+    assert target.status == PublicationStatus.SCHEDULED
+    assert db.scalars(select(PublicationAttempt)).all() == []
+    assert db.scalars(select(RoutineAttemptBoundary)).all() == []
+    db.close(); engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_targeted_worker_invocation_fails_closed_outside_dry_run():
+    from app.services import routine_pinterest_worker as worker
+    from app.services.routine_publishing_control import get_control
+
+    engine = _engine(); SessionLocal = sessionmaker(bind=engine, expire_on_commit=False); db = SessionLocal()
+    publication = _publication(ident="live-target", fingerprint_char="l")
+    db.add(publication); db.commit()
+    control = get_control(db); control.state = "LIVE"; control.pause_reason = None; db.commit()
+    settings = Settings(
+        database_url="sqlite:///:memory:",
+        routine_pinterest_worker_enabled=True,
+        routine_buffer_dispatch_enabled=False,
+        routine_pinterest_dry_run=False,
+        routine_pinterest_batch_size=1,
+        routine_pinterest_daily_write_limit=1,
+    )
+
+    result = await worker.run_once(
+        db,
+        settings=settings,
+        now=datetime.now(timezone.utc),
+        target_publication_id=publication.id,
+    )
+
+    assert result == {"status": "ROUTINE_TARGETED_RUN_DRY_RUN_ONLY", "dispatched": 0}
+    assert db.scalars(select(RoutinePublishingRun)).all() == []
+    assert db.scalars(select(PublicationAttempt)).all() == []
+    assert db.scalars(select(RoutineAttemptBoundary)).all() == []
+    db.close(); engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_one_shot_dry_run_route_targets_exact_publication(monkeypatch):
     from app.api.routes import routine_publishing as route
 
-    publication = SimpleNamespace(id="target-publication")
+    publication_id = "target-publication"
     db = object()
     monkeypatch.setattr(route, "_actor", lambda request: "operator")
     monkeypatch.setattr(route, "get_settings", lambda: _one_shot_settings())
     monkeypatch.setattr(route, "get_control", lambda db_, create=False: SimpleNamespace(state="DRY_RUN"))
-    monkeypatch.setattr(route, "due_publications", lambda db_, now, limit: [publication])
     calls = []
 
-    async def fake_run_once(db_, *, settings, now):
-        calls.append((db_, settings, now))
+    async def fake_run_once(db_, *, settings, now, target_publication_id):
+        calls.append((db_, settings, now, target_publication_id))
+        assert target_publication_id == publication_id
         assert settings.routine_pinterest_worker_enabled is True
         assert settings.routine_buffer_dispatch_enabled is False
         assert settings.routine_pinterest_dry_run is True
@@ -307,7 +405,7 @@ async def test_one_shot_dry_run_route_targets_exact_queue_head(monkeypatch):
 
     monkeypatch.setattr(route, "run_routine_worker_once", fake_run_once)
     result = await route.run_once_dry_run(
-        publication.id,
+        publication_id,
         object(),
         route.RunOnceDryRunRequest(
             confirmed=True,
@@ -323,23 +421,31 @@ async def test_one_shot_dry_run_route_targets_exact_queue_head(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_one_shot_dry_run_route_rejects_queue_head_mismatch(monkeypatch):
+async def test_one_shot_dry_run_route_rejects_ineligible_target(monkeypatch):
     from fastapi import HTTPException
     from app.api.routes import routine_publishing as route
 
     monkeypatch.setattr(route, "_actor", lambda request: "operator")
     monkeypatch.setattr(route, "get_settings", lambda: _one_shot_settings())
     monkeypatch.setattr(route, "get_control", lambda db_, create=False: SimpleNamespace(state="DRY_RUN"))
-    monkeypatch.setattr(
-        route,
-        "due_publications",
-        lambda db_, now, limit: [SimpleNamespace(id="different-publication")],
-    )
 
-    async def should_not_run(*args, **kwargs):
-        raise AssertionError("worker must not run for a queue-head mismatch")
+    async def fake_run_once(db_, *, settings, now, target_publication_id):
+        return {
+            "status": "SUCCEEDED",
+            "mode": "DRY_RUN",
+            "run_id": "run-2",
+            "scanned": 0,
+            "eligible": 0,
+            "skipped": 0,
+            "claimed": 0,
+            "dispatched": 0,
+            "published": 0,
+            "failed": 0,
+            "unknown": 0,
+            "error_code": None,
+        }
 
-    monkeypatch.setattr(route, "run_routine_worker_once", should_not_run)
+    monkeypatch.setattr(route, "run_routine_worker_once", fake_run_once)
     with pytest.raises(HTTPException) as raised:
         await route.run_once_dry_run(
             "target-publication",
@@ -351,4 +457,4 @@ async def test_one_shot_dry_run_route_rejects_queue_head_mismatch(monkeypatch):
             object(),
         )
     assert raised.value.status_code == 409
-    assert raised.value.detail == "ROUTINE_DRY_RUN_QUEUE_HEAD_MISMATCH"
+    assert raised.value.detail == "ROUTINE_DRY_RUN_TARGET_NOT_ELIGIBLE"
