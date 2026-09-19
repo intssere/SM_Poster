@@ -239,3 +239,116 @@ async def test_routine_reconciler_has_no_dispatch_path(monkeypatch):
     assert calls == [publication.id]
     assert result == {"checked": 1, "reconciled": 1, "unresolved": 0, "dispatched": 0}
     db.close(); engine.dispose()
+
+
+def _one_shot_settings(**overrides):
+    values = {
+        "database_url": "sqlite:///:memory:",
+        "routine_pinterest_worker_enabled": False,
+        "routine_buffer_dispatch_enabled": False,
+        "routine_pinterest_dry_run": True,
+        "routine_pinterest_batch_size": 1,
+        "routine_pinterest_daily_write_limit": 1,
+    }
+    values.update(overrides)
+    return Settings(**values)
+
+
+@pytest.mark.parametrize(
+    ("settings", "control_state", "expected"),
+    [
+        (_one_shot_settings(), "PAUSED", "ROUTINE_CONTROL_NOT_DRY_RUN"),
+        (_one_shot_settings(), "LIVE", "ROUTINE_CONTROL_NOT_DRY_RUN"),
+        (_one_shot_settings(routine_pinterest_worker_enabled=True), "DRY_RUN", "ROUTINE_WORKER_MUST_BE_DISABLED"),
+        (_one_shot_settings(routine_buffer_dispatch_enabled=True), "DRY_RUN", "ROUTINE_BUFFER_DISPATCH_MUST_BE_DISABLED"),
+        (_one_shot_settings(routine_pinterest_dry_run=False), "DRY_RUN", "ROUTINE_DRY_RUN_CONFIG_REQUIRED"),
+        (_one_shot_settings(routine_pinterest_batch_size=2), "DRY_RUN", "ROUTINE_DRY_RUN_BATCH_SIZE_MUST_BE_ONE"),
+        (_one_shot_settings(routine_pinterest_daily_write_limit=2), "DRY_RUN", "ROUTINE_DRY_RUN_DAILY_LIMIT_MUST_BE_ONE"),
+    ],
+)
+def test_one_shot_dry_run_settings_fail_closed(settings, control_state, expected):
+    from app.api.routes import routine_publishing as route
+
+    with pytest.raises(route.RoutineControlError, match=f"^{expected}$"):
+        route._one_shot_dry_run_settings(settings, SimpleNamespace(state=control_state))
+
+
+@pytest.mark.asyncio
+async def test_one_shot_dry_run_route_targets_exact_queue_head(monkeypatch):
+    from app.api.routes import routine_publishing as route
+
+    publication = SimpleNamespace(id="target-publication")
+    db = object()
+    monkeypatch.setattr(route, "_actor", lambda request: "operator")
+    monkeypatch.setattr(route, "get_settings", lambda: _one_shot_settings())
+    monkeypatch.setattr(route, "get_control", lambda db_, create=False: SimpleNamespace(state="DRY_RUN"))
+    monkeypatch.setattr(route, "due_publications", lambda db_, now, limit: [publication])
+    calls = []
+
+    async def fake_run_once(db_, *, settings, now):
+        calls.append((db_, settings, now))
+        assert settings.routine_pinterest_worker_enabled is True
+        assert settings.routine_buffer_dispatch_enabled is False
+        assert settings.routine_pinterest_dry_run is True
+        return {
+            "status": "SUCCEEDED",
+            "mode": "DRY_RUN",
+            "run_id": "run-1",
+            "scanned": 1,
+            "eligible": 1,
+            "skipped": 0,
+            "claimed": 0,
+            "dispatched": 0,
+            "published": 0,
+            "failed": 0,
+            "unknown": 0,
+            "error_code": None,
+        }
+
+    monkeypatch.setattr(route, "run_routine_worker_once", fake_run_once)
+    result = await route.run_once_dry_run(
+        publication.id,
+        object(),
+        route.RunOnceDryRunRequest(
+            confirmed=True,
+            confirmation_text_version="ROUTINE_DRY_RUN_ONCE_V1",
+        ),
+        db,
+    )
+
+    assert result["status"] == "SUCCEEDED"
+    assert result["mode"] == "DRY_RUN"
+    assert result["scanned"] == 1 and result["eligible"] == 1
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_one_shot_dry_run_route_rejects_queue_head_mismatch(monkeypatch):
+    from fastapi import HTTPException
+    from app.api.routes import routine_publishing as route
+
+    monkeypatch.setattr(route, "_actor", lambda request: "operator")
+    monkeypatch.setattr(route, "get_settings", lambda: _one_shot_settings())
+    monkeypatch.setattr(route, "get_control", lambda db_, create=False: SimpleNamespace(state="DRY_RUN"))
+    monkeypatch.setattr(
+        route,
+        "due_publications",
+        lambda db_, now, limit: [SimpleNamespace(id="different-publication")],
+    )
+
+    async def should_not_run(*args, **kwargs):
+        raise AssertionError("worker must not run for a queue-head mismatch")
+
+    monkeypatch.setattr(route, "run_routine_worker_once", should_not_run)
+    with pytest.raises(HTTPException) as raised:
+        await route.run_once_dry_run(
+            "target-publication",
+            object(),
+            route.RunOnceDryRunRequest(
+                confirmed=True,
+                confirmation_text_version="ROUTINE_DRY_RUN_ONCE_V1",
+            ),
+            object(),
+        )
+    assert raised.value.status_code == 409
+    assert raised.value.detail == "ROUTINE_DRY_RUN_QUEUE_HEAD_MISMATCH"
