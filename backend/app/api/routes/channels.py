@@ -11,8 +11,9 @@ from app.db.session import get_db
 from app.core.config import get_settings
 from app.models.domain import PinterestOAuthState, PinterestConnection, PinterestBoard, PinterestBoardSection
 from app.services.pinterest_boards import sync_boards
-from app.services.pinterest_oauth import authorization_url, new_state, PinterestClient, encrypt_token, READ_SCOPES
+from app.services.pinterest_oauth import authorization_url, new_state, PinterestClient, encrypt_token, granted_scopes_valid
 from app.services.social_channels import channel_capability_payload
+from app.services.pinterest_board_strategy import board_strategy
 
 
 router = APIRouter(prefix="/channels", tags=["social-channels"])
@@ -81,6 +82,20 @@ async def pinterest_boards_sync(db: Session = Depends(get_db)):
         "boards": [_board_payload(db, r) for r in rows],
         "sync": {"boards_seen": count},
     }
+
+
+@router.get("/pinterest/board-strategy")
+def pinterest_board_strategy(
+    draft_id: str | None = None,
+    canonical_key: str | None = None,
+    db: Session = Depends(get_db),
+):
+    return board_strategy(
+        db,
+        draft_id=draft_id,
+        canonical_key=canonical_key,
+        settings=get_settings(),
+    )
 
 
 @router.get("/pinterest/boards")
@@ -203,10 +218,9 @@ async def pinterest_callback(
         scopes = tokens.get("scope", "")
         scopes = scopes.split() if isinstance(scopes, str) else list(scopes or [])
         if (
-            "boards:write" in scopes
-            or not tokens.get("access_token")
+            not tokens.get("access_token")
             or not tokens.get("refresh_token")
-            or not set(READ_SCOPES).issubset(scopes)
+            or not granted_scopes_valid(scopes, get_settings())
         ):
             raise RuntimeError("Pinterest authorization did not grant required access")
         account = await PinterestClient().user_account(tokens["access_token"])

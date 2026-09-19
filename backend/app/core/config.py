@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     routine_pinterest_scheduler_interval_seconds: int = Field(default=300, ge=60, le=86400)
     routine_autonomous_authorization_enabled: bool = False
     pinterest_write_scope_enabled: bool = False
+    pinterest_board_write_scope_enabled: bool = False
+    pinterest_board_provisioning_enabled: bool = False
     pinterest_single_pin_pilot_enabled: bool = False
     pinterest_single_pin_pilot_publication_id: str = ""
     pinterest_single_pin_pilot_publication_fingerprint: str = ""
