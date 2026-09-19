@@ -52,6 +52,7 @@ def test_postgres_connection_close_naturally_releases_leader_lock():
             text("SELECT pg_try_advisory_lock(:key)"),
             {"key": ROUTINE_SCHEDULER_ADVISORY_LOCK_KEY},
         ).scalar_one()) is True
+        first.detach()
         assert bool(second.execute(
             text("SELECT pg_try_advisory_lock(:key)"),
             {"key": ROUTINE_SCHEDULER_ADVISORY_LOCK_KEY},
