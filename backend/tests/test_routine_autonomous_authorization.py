@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import hashlib
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -76,8 +77,8 @@ def _seed_original(db, *, draft_id="draft-1", unsupported=None, render_status="R
             template_id="template-1",
             source_image_id=f"image-{draft_id}",
             rendered_url=f"/api/pins/public-creatives/{draft_id}/{index}.png",
-            sha256=(str(index + 1) * 64)[:64],
-            creative_fingerprint=(str(index + 3) * 64)[:64],
+            sha256=hashlib.sha256(f"{draft_id}:{index}:png".encode()).hexdigest(),
+            creative_fingerprint=hashlib.sha256(f"{draft_id}:{index}:creative".encode()).hexdigest(),
             width=1000,
             height=1500,
             render_status=render_status,
