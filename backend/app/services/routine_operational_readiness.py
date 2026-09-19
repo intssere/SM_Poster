@@ -107,6 +107,34 @@ def derive_operational_alerts(metrics: dict) -> list[dict]:
             "The scheduler is enabled while the routine worker is disabled.",
         ))
 
+    if not scheduler["enabled"] and scheduler.get("lease_held"):
+        alerts.append(_alert(
+            "SCHEDULER_DISABLED_LEASE_HELD",
+            "critical",
+            "A distributed scheduler lease is held while scheduler configuration is disabled.",
+        ))
+    if scheduler["enabled"] and not scheduler.get("lease_supported", False):
+        alerts.append(_alert(
+            "SCHEDULER_LEASE_UNSUPPORTED",
+            "critical",
+            "The enabled scheduler cannot use the required PostgreSQL leader lease.",
+            backend=scheduler.get("lease_backend"),
+        ))
+    if scheduler["enabled"] and scheduler.get("lease_role") == "error":
+        alerts.append(_alert(
+            "SCHEDULER_LEASE_ERROR",
+            "critical",
+            "The enabled scheduler cannot establish or validate distributed leadership.",
+            status=scheduler.get("last_lease_status"),
+            error=scheduler.get("last_lease_error"),
+        ))
+    if scheduler["enabled"] and scheduler.get("lease_role") == "leader" and not scheduler.get("lease_held"):
+        alerts.append(_alert(
+            "SCHEDULER_LEADER_WITHOUT_LEASE",
+            "critical",
+            "The scheduler reports leader role without holding the distributed lease.",
+        ))
+
     if metrics["control_state"] == "LIVE":
         unsafe = []
         if not scheduler["enabled"]:
@@ -210,6 +238,15 @@ def routine_readiness_snapshot(
             "last_tick_started_at": sched.get("last_tick_started_at"),
             "last_tick_completed_at": sched.get("last_tick_completed_at"),
             "last_error": sched.get("last_error"),
+            "lease_required": bool(sched.get("lease_required")),
+            "lease_backend": sched.get("lease_backend"),
+            "lease_supported": bool(sched.get("lease_supported")),
+            "lease_role": sched.get("lease_role"),
+            "lease_held": bool(sched.get("lease_held")),
+            "last_lease_status": sched.get("last_lease_status"),
+            "last_lease_acquired_at": sched.get("last_lease_acquired_at"),
+            "last_lease_lost_at": sched.get("last_lease_lost_at"),
+            "last_lease_error": sched.get("last_lease_error"),
         },
     }
     alerts = derive_operational_alerts(metrics)

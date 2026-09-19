@@ -42,6 +42,15 @@ def _scheduler(**overrides):
         "last_tick_started_at": None,
         "last_tick_completed_at": None,
         "last_error": None,
+        "lease_required": False,
+        "lease_backend": "postgresql_advisory_lock",
+        "lease_supported": True,
+        "lease_role": "disabled",
+        "lease_held": False,
+        "last_lease_status": "NOT_ATTEMPTED",
+        "last_lease_acquired_at": None,
+        "last_lease_lost_at": None,
+        "last_lease_error": None,
     }
     values.update(overrides)
     return values
@@ -260,3 +269,60 @@ def test_readiness_snapshot_is_read_only_and_excludes_credentials():
     assert "org-secret" not in rendered
     assert "channel-secret" not in rendered
     db.close()
+
+
+def test_scheduler_lease_readiness_alerts_and_standby_health():
+    unsupported = derive_operational_alerts(_metrics(
+        scheduler=_scheduler(
+            enabled=True,
+            started=True,
+            task_running=True,
+            lease_required=True,
+            lease_supported=False,
+            lease_role="error",
+            last_lease_status="UNSUPPORTED_BACKEND",
+            last_lease_error="POSTGRESQL_REQUIRED",
+        ),
+    ))
+    assert "SCHEDULER_LEASE_UNSUPPORTED" in _codes(unsupported)
+    assert "SCHEDULER_LEASE_ERROR" in _codes(unsupported)
+
+    disabled_held = derive_operational_alerts(_metrics(
+        scheduler=_scheduler(
+            enabled=False,
+            lease_held=True,
+            lease_role="leader",
+            last_lease_status="ACQUIRED",
+        ),
+    ))
+    assert "SCHEDULER_DISABLED_LEASE_HELD" in _codes(disabled_held)
+
+    impossible_leader = derive_operational_alerts(_metrics(
+        scheduler=_scheduler(
+            enabled=True,
+            started=True,
+            task_running=True,
+            lease_required=True,
+            lease_supported=True,
+            lease_role="leader",
+            lease_held=False,
+            last_lease_status="ACQUIRED",
+        ),
+    ))
+    assert "SCHEDULER_LEADER_WITHOUT_LEASE" in _codes(impossible_leader)
+
+    standby = derive_operational_alerts(_metrics(
+        worker_enabled=True,
+        scheduler=_scheduler(
+            enabled=True,
+            started=True,
+            task_running=True,
+            lease_required=True,
+            lease_supported=True,
+            lease_role="standby",
+            lease_held=False,
+            last_lease_status="STANDBY",
+        ),
+    ))
+    assert not any(code.startswith("SCHEDULER_LEASE") for code in _codes(standby))
+    assert "SCHEDULER_LEADER_WITHOUT_LEASE" not in _codes(standby)
