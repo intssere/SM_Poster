@@ -270,6 +270,28 @@ def test_generic_board_snapshot_derives_public_digest_url(monkeypatch):
         get_settings.cache_clear(); db.close()
 
 
+def test_publication_snapshot_rejects_unavailable_public_media(monkeypatch):
+    db, proposals, draft, creative, board, approval = _media_snapshot_setup(
+        "media-fail-closed", monkeypatch, "http://media.example.com"
+    )
+    try:
+        try:
+            PublicationIdentityService(proposals.session_factory).create_snapshot(
+                approval_id=approval.id,
+                board_id=board.id,
+            )
+        except PublicationIdentityError as exc:
+            assert str(exc) == "Provider-safe public creative media is unavailable."
+        else:
+            raise AssertionError("Private preview media must never be snapshotted")
+        assert db.scalar(
+            select(PinPublication).where(PinPublication.approval_id == approval.id)
+        ) is None
+    finally:
+        get_settings.cache_clear()
+        db.close()
+
+
 def test_direct_pinterest_snapshot_derives_public_digest_url(monkeypatch):
     db, proposals, draft, creative = _prepared("direct-media")
     creative.render_status = "RENDERED"; creative.sha256 = "a" * 64; creative.rendered_url = f"/api/pins/creatives/{creative.id}/image"
