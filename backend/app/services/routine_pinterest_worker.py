@@ -4,9 +4,10 @@ from datetime import datetime, timezone
 
 from app.core.config import Settings, get_settings
 from app.integrations.buffer.gateway import BufferGateway
-from app.models.domain import PublicationStatus
+from app.models.domain import PinPublication, PublicationStatus
 from app.services.buffer_execution_preflight import BufferPreflightError
 from app.services.publication_scheduler import due_publications
+from app.services.pinterest_publisher import normalize_persisted_utc
 from app.services.routine_buffer_dispatch import RoutineDispatchError, dispatch_routine_buffer, recover_stale_routine_claims
 from app.services.routine_buffer_preflight import build_routine_execution_evidence
 from app.services.routine_dispatch_authorization import active_permit, validate_permit
@@ -28,6 +29,7 @@ async def run_once(
     media_client=None,
     resolver=None,
     now=None,
+    target_publication_id: str | None = None,
 ):
     settings = settings or get_settings()
     now = now or datetime.now(timezone.utc)
@@ -37,6 +39,8 @@ async def run_once(
     if control.state == "PAUSED":
         return {"status": "PAUSED", "dispatched": 0, "reason": control.pause_reason}
     mode = "DRY_RUN" if settings.routine_pinterest_dry_run or control.state == "DRY_RUN" else "LIVE"
+    if target_publication_id is not None and mode != "DRY_RUN":
+        return {"status": "ROUTINE_TARGETED_RUN_DRY_RUN_ONLY", "dispatched": 0}
     try:
         run = start_run(
             db,
@@ -47,8 +51,18 @@ async def run_once(
     except RoutineControlError as exc:
         return {"status": str(exc), "dispatched": 0}
     try:
-        recover_stale_routine_claims(db, stale_seconds=settings.routine_claim_stale_seconds, now=now)
-        candidates = due_publications(db, now=now, limit=settings.routine_pinterest_batch_size)
+        if target_publication_id is None:
+            recover_stale_routine_claims(db, stale_seconds=settings.routine_claim_stale_seconds, now=now)
+            candidates = due_publications(db, now=now, limit=settings.routine_pinterest_batch_size)
+        else:
+            publication = db.get(PinPublication, target_publication_id)
+            scheduled_for = normalize_persisted_utc(publication.scheduled_for) if publication and publication.scheduled_for else None
+            candidates = [publication] if (
+                publication
+                and publication.status == PublicationStatus.SCHEDULED
+                and scheduled_for is not None
+                and scheduled_for <= normalize_persisted_utc(now)
+            ) else []
         run.scanned = len(candidates)
         heartbeat_run(db, run, now=now)
         day_start = now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
