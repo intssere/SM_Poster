@@ -658,6 +658,39 @@ class PinterestBoard(Base):
     __table_args__ = (UniqueConstraint("connection_id", "external_board_id", name="uq_pinterest_board_identity"),)
 
 
+class PinterestBoardProvisioningAttempt(Base):
+    __tablename__ = "pinterest_board_provisioning_attempts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("pinterest_connections.id", ondelete="RESTRICT"), index=True, nullable=False
+    )
+    canonical_key: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    desired_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    desired_description: Mapped[str] = mapped_column(Text, nullable=False)
+    privacy: Mapped[str] = mapped_column(String(40), nullable=False, default="PUBLIC")
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="STARTED", index=True)
+    provider_board_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_code: Mapped[str | None] = mapped_column(String(120))
+    safe_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('STARTED','SUCCEEDED','FAILED','UNKNOWN')",
+            name="ck_pinterest_board_provisioning_attempt_status",
+        ),
+        Index(
+            "ix_pinterest_board_provisioning_connection_key",
+            "connection_id",
+            "canonical_key",
+        ),
+    )
+
+
 class PinterestBoardSection(Base):
     __tablename__ = "pinterest_board_sections"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
