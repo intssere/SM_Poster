@@ -54,7 +54,7 @@ def public_creative_url_matches(creative, value, *, settings=None):
 
 def snapshot_media_url(creative, *, settings=None):
     if creative.rendered_url == f"/api/pins/creatives/{creative.id}/image":
-        return public_creative_url(creative, settings=settings) or creative.rendered_url
+        return public_creative_url(creative, settings=settings)
     return creative.rendered_url
 
 
