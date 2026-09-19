@@ -137,6 +137,8 @@ def _seed_revision(db):
 
 
 def _machine_approval(db, draft, creative, *, revision_id=None, version_id="original"):
+    snapshot = autonomous.autonomous_content_policy(db, draft.id)
+    assert snapshot["ready"] is True
     approval = PinApproval(
         id=f"approval-{draft.id}",
         draft_id=draft.id,
@@ -145,7 +147,7 @@ def _machine_approval(db, draft, creative, *, revision_id=None, version_id="orig
         approved_version_id=version_id,
         decision="APPROVED",
         decided_by=autonomous.AUTONOMOUS_ACTOR,
-        note=f"{autonomous.AUTONOMOUS_NOTE_PREFIX}{'f' * 64}",
+        note=f"{autonomous.AUTONOMOUS_NOTE_PREFIX}{snapshot['policy_fingerprint']}",
     )
     draft.status = DraftStatus.APPROVED
     db.add(approval)
@@ -485,4 +487,28 @@ def test_readiness_endpoint_payload_exposes_no_provider_action_or_secret():
     assert result["ready"] is True
     assert result["provider_called"] is False
     assert "super-secret" not in repr(result)
+    db.close()
+
+
+def test_existing_machine_approval_fails_closed_on_creative_drift():
+    db = _db()
+    draft, creatives = _seed_original(db)
+    approval = _machine_approval(db, draft, creatives[0])
+
+    creatives[0].sha256 = "e" * 64
+    db.commit()
+
+    result = autonomous.autonomous_content_policy(db, draft.id)
+    assert result["already_authorized"] is True
+    assert result["ready"] is False
+    assert result["blockers"] == ["AUTONOMOUS_APPROVAL_DRIFT"]
+
+    publication = _scheduled_publication(db, draft, creatives[0], approval)
+    with pytest.raises(autonomous.AutonomousAuthorizationError, match="AUTONOMOUS_APPROVAL_DRIFT"):
+        autonomous.auto_permit_publication(
+            db,
+            publication.id,
+            settings=_settings(routine_autonomous_authorization_enabled=True),
+            now=NOW,
+        )
     db.close()
