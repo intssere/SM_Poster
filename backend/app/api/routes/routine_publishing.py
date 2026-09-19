@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,6 +24,7 @@ from app.services.routine_dispatch_authorization import (
 from app.services.routine_pinterest_worker import run_once as run_routine_worker_once
 from app.services.routine_pinterest_scheduler import scheduler_status
 from app.services.routine_operational_readiness import routine_readiness_snapshot
+from app.services.routine_activation_readiness import routine_activation_readiness
 from app.services.routine_publishing_control import (
     RoutineControlError,
     daily_provider_write_count,
@@ -146,6 +148,18 @@ def status(db: Session = Depends(get_db)):
 @router.get("/readiness")
 def readiness(db: Session = Depends(get_db)):
     return routine_readiness_snapshot(db, settings=get_settings())
+
+
+@router.get("/activation-readiness")
+def activation_readiness(
+    target_mode: Literal["DRY_RUN", "LIVE"] = "DRY_RUN",
+    db: Session = Depends(get_db),
+):
+    return routine_activation_readiness(
+        db,
+        target_mode=target_mode,
+        settings=get_settings(),
+    )
 
 
 @router.post("/publications/{publication_id}/run-once-dry-run")
