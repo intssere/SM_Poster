@@ -9,7 +9,7 @@ from app.models.domain import AuditLog, Board
 from app.services.buffer_pilot_candidate_materialization import (
     BufferDestinationBindingEvidence, bind_buffer_destination,
 )
-from app.services.public_creative_media import public_origin, public_creative_url
+from app.services.public_creative_media import public_origin, public_creative_url, snapshot_media_url
 from test_manual_publication_dispatch import _db
 
 
@@ -66,6 +66,19 @@ def test_public_creative_url_requires_digest_and_exact_identity():
     class Creative:
         id = "creative-1"; sha256 = "a" * 64; render_status = "RENDERED"
     assert public_creative_url(Creative(), settings=_settings()) == "https://media.example.com/api/pins/public-creatives/creative-1/" + "a" * 64 + ".png"
+
+
+def test_snapshot_media_url_never_falls_back_to_private_preview():
+    class Creative:
+        id = "creative-1"
+        sha256 = "a" * 64
+        render_status = "RENDERED"
+        rendered_url = "/api/pins/creatives/creative-1/image"
+
+    class InvalidPublicSettings:
+        public_media_base_url = "http://media.example.com"
+
+    assert snapshot_media_url(Creative(), settings=InvalidPublicSettings()) is None
 
 
 @pytest.mark.parametrize("mutation", ["missing", "inactive", "conflict"])
