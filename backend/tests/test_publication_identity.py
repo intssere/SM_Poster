@@ -103,8 +103,14 @@ def test_approval_binds_exact_revision_and_creative_and_is_immutable_after_selec
     db.close()
 
 
-def test_publication_snapshot_keeps_exact_identity_when_proposal_state_changes():
+def test_publication_snapshot_keeps_exact_identity_when_proposal_state_changes(monkeypatch):
     db, proposals, draft, creative = _prepared("snapshot")
+    creative.render_status = "RENDERED"
+    creative.sha256 = "a" * 64
+    creative.rendered_url = f"/api/pins/creatives/{creative.id}/image"
+    db.commit()
+    monkeypatch.setenv("PUBLIC_MEDIA_BASE_URL", "https://media.example.com")
+    get_settings.cache_clear()
     revision = _revision(db, draft, creative, 2)
     _activate(db, draft, revision)
     proposals.decide(draft.id, "APPROVED", reviewed_creative_id=creative.id)
@@ -137,11 +143,18 @@ def test_publication_snapshot_keeps_exact_identity_when_proposal_state_changes()
     assert snapshot == {key: getattr(publication, key) for key in snapshot}
     assert publication.pinterest_pin_id is None
     assert publication.provider_response == {}
+    get_settings.cache_clear()
     db.close()
 
 
-def test_duplicate_snapshot_and_mismatched_revision_creative_fail_closed():
+def test_duplicate_snapshot_and_mismatched_revision_creative_fail_closed(monkeypatch):
     db, proposals, draft, creative = _prepared("duplicate")
+    creative.render_status = "RENDERED"
+    creative.sha256 = "b" * 64
+    creative.rendered_url = f"/api/pins/creatives/{creative.id}/image"
+    db.commit()
+    monkeypatch.setenv("PUBLIC_MEDIA_BASE_URL", "https://media.example.com")
+    get_settings.cache_clear()
     revision = _revision(db, draft, creative, 2)
     _activate(db, draft, revision)
     proposals.decide(draft.id, "APPROVED", reviewed_creative_id=creative.id)
@@ -194,6 +207,7 @@ def test_duplicate_snapshot_and_mismatched_revision_creative_fail_closed():
         assert "incomplete or mismatched" in str(exc)
     else:
         raise AssertionError("Mismatched revision/creative must fail closed")
+    get_settings.cache_clear()
     db.close()
     db2.close()
 
