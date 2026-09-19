@@ -13,6 +13,7 @@ from app.models.domain import PinterestOAuthState, PinterestConnection, Pinteres
 from app.services.pinterest_boards import sync_boards
 from app.services.pinterest_oauth import authorization_url, new_state, PinterestClient, encrypt_token, granted_scopes_valid
 from app.services.social_channels import channel_capability_payload
+from app.services.pinterest_board_strategy import board_strategy
 
 
 router = APIRouter(prefix="/channels", tags=["social-channels"])
@@ -81,6 +82,20 @@ async def pinterest_boards_sync(db: Session = Depends(get_db)):
         "boards": [_board_payload(db, r) for r in rows],
         "sync": {"boards_seen": count},
     }
+
+
+@router.get("/pinterest/board-strategy")
+def pinterest_board_strategy(
+    draft_id: str | None = None,
+    canonical_key: str | None = None,
+    db: Session = Depends(get_db),
+):
+    return board_strategy(
+        db,
+        draft_id=draft_id,
+        canonical_key=canonical_key,
+        settings=get_settings(),
+    )
 
 
 @router.get("/pinterest/boards")
