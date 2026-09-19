@@ -12,6 +12,9 @@ PUB_ID = "target-publication"
 PERMIT_ID = "permit-1"
 PUB_FP = "a" * 64
 REQ_FP = "b" * 64
+ORG_ID = "buffer-org-1"
+CHANNEL_ID = "buffer-channel-1"
+BOARD_ID = "pinterest-board-1"
 
 
 class FakeDB:
@@ -38,6 +41,8 @@ def _persistent_settings(**overrides):
         "database_url": "sqlite:///:memory:",
         "publishing_enabled": True,
         "buffer_publishing_enabled": True,
+        "buffer_organization_id": ORG_ID,
+        "buffer_pinterest_channel_id": CHANNEL_ID,
         "routine_pinterest_worker_enabled": False,
         "routine_buffer_dispatch_enabled": False,
         "routine_pinterest_dry_run": True,
@@ -62,6 +67,7 @@ def _publication():
         status=PublicationStatus.SCHEDULED,
         scheduled_for=None,
         publication_fingerprint=PUB_FP,
+        pinterest_board_id_snapshot=BOARD_ID,
     )
 
 
@@ -131,6 +137,9 @@ async def test_live_route_requires_explicit_confirmation(monkeypatch):
         permit_id=PERMIT_ID,
         publication_fingerprint=PUB_FP,
         request_fingerprint=REQ_FP,
+        buffer_organization_id=ORG_ID,
+        buffer_pinterest_channel_id=CHANNEL_ID,
+        pinterest_board_id=BOARD_ID,
     )
     with pytest.raises(HTTPException) as raised:
         await route.run_once_live(PUB_ID, object(), payload, FakeDB())
@@ -186,6 +195,9 @@ async def test_live_route_binds_exact_identity_and_always_pauses(monkeypatch):
         permit_id=PERMIT_ID,
         publication_fingerprint=PUB_FP,
         request_fingerprint=REQ_FP,
+        buffer_organization_id=ORG_ID,
+        buffer_pinterest_channel_id=CHANNEL_ID,
+        pinterest_board_id=BOARD_ID,
     )
 
     result = await route.run_once_live(PUB_ID, object(), payload, db)
@@ -220,6 +232,9 @@ async def test_live_route_rejects_identity_drift_before_arming(monkeypatch):
         permit_id=PERMIT_ID,
         publication_fingerprint="c" * 64,
         request_fingerprint=REQ_FP,
+        buffer_organization_id=ORG_ID,
+        buffer_pinterest_channel_id=CHANNEL_ID,
+        pinterest_board_id=BOARD_ID,
     )
     with pytest.raises(HTTPException) as raised:
         await route.run_once_live(PUB_ID, object(), payload, db)
@@ -240,6 +255,9 @@ async def test_live_route_rejects_active_run_and_daily_quota_before_live(monkeyp
         permit_id=PERMIT_ID,
         publication_fingerprint=PUB_FP,
         request_fingerprint=REQ_FP,
+        buffer_organization_id=ORG_ID,
+        buffer_pinterest_channel_id=CHANNEL_ID,
+        pinterest_board_id=BOARD_ID,
     )
 
     async def run_case(active_run, write_count, expected):
@@ -296,6 +314,9 @@ async def test_live_route_pauses_after_unexpected_worker_exception(monkeypatch):
         permit_id=PERMIT_ID,
         publication_fingerprint=PUB_FP,
         request_fingerprint=REQ_FP,
+        buffer_organization_id=ORG_ID,
+        buffer_pinterest_channel_id=CHANNEL_ID,
+        pinterest_board_id=BOARD_ID,
     )
 
     with pytest.raises(RuntimeError, match="boom"):
@@ -546,6 +567,9 @@ async def test_live_route_rejects_non_single_dispatch_result_and_pauses(
         permit_id=PERMIT_ID,
         publication_fingerprint=PUB_FP,
         request_fingerprint=REQ_FP,
+        buffer_organization_id=ORG_ID,
+        buffer_pinterest_channel_id=CHANNEL_ID,
+        pinterest_board_id=BOARD_ID,
     )
 
     with pytest.raises(HTTPException) as raised:
