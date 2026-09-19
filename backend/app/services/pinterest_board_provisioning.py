@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import Settings, get_settings
@@ -182,6 +182,8 @@ async def execute_board_provisioning_attempt(
         raise BoardProvisioningError(f"BOARD_PROVISIONING_ATTEMPT_{attempt.status}")
     if attempt.completed_at is not None or attempt.provider_board_id is not None:
         raise BoardProvisioningError("BOARD_PROVISIONING_ATTEMPT_DRIFT")
+    if attempt.provider_mutation_started_at is not None:
+        raise BoardProvisioningError("BOARD_PROVISIONING_MUTATION_ALREADY_STARTED")
 
     connection = db.get(PinterestConnection, attempt.connection_id)
     if (
@@ -208,6 +210,27 @@ async def execute_board_provisioning_attempt(
         }
         db.commit()
         return attempt
+
+    # Persist the exact one-shot provider mutation boundary before making the
+    # network call. If this process dies after this commit, the request is never
+    # automatically replayed because a later executor sees the boundary.
+    claimed = db.execute(
+        update(PinterestBoardProvisioningAttempt)
+        .execution_options(synchronize_session=False)
+        .where(
+            PinterestBoardProvisioningAttempt.id == attempt.id,
+            PinterestBoardProvisioningAttempt.status == "STARTED",
+            PinterestBoardProvisioningAttempt.provider_mutation_started_at.is_(None),
+            PinterestBoardProvisioningAttempt.completed_at.is_(None),
+            PinterestBoardProvisioningAttempt.provider_board_id.is_(None),
+        )
+        .values(provider_mutation_started_at=now)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        raise BoardProvisioningError("BOARD_PROVISIONING_MUTATION_ALREADY_STARTED")
+    db.commit()
+    attempt = _load_exact_attempt(db, attempt_id)
 
     payload = {
         "name": attempt.desired_name,
