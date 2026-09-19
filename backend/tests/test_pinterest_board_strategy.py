@@ -376,6 +376,7 @@ def test_confirmed_success_records_provider_id_without_creating_local_board(monk
 
     assert result.status == "SUCCEEDED"
     assert result.provider_board_id == "provider-board-1"
+    assert result.provider_mutation_started_at is not None
     assert result.safe_metadata == {
         "strategy_version": strategy.BOARD_STRATEGY_VERSION,
         "provider_called": True,
@@ -598,4 +599,43 @@ def test_read_only_strategy_never_mutates_attempts_or_provider_state():
     assert before == after
     assert result["provider_called"] is False
     assert result["state_mutated"] is False
+    db.close()
+
+
+def test_claimed_mutation_boundary_prevents_second_provider_call(monkeypatch):
+    db = _db()
+    _provisionable(db)
+    attempt = provisioning.start_board_provisioning(
+        db,
+        canonical_key="arabian-fragrance",
+        settings=_enabled_settings(),
+        now=NOW,
+    )
+    attempt.provider_mutation_started_at = NOW + timedelta(seconds=1)
+    db.commit()
+    monkeypatch.setattr(provisioning, "decrypt_token", lambda _: "token")
+    client = _FakeCreateClient(status_code=201)
+
+    with pytest.raises(
+        provisioning.BoardProvisioningError,
+        match="BOARD_PROVISIONING_MUTATION_ALREADY_STARTED",
+    ):
+        asyncio.run(
+            provisioning.execute_board_provisioning_attempt(
+                db,
+                attempt.id,
+                settings=_enabled_settings(),
+                client=client,
+                now=NOW + timedelta(seconds=2),
+            )
+        )
+
+    assert client.calls == []
+    plan = strategy.board_strategy(
+        db,
+        canonical_key="arabian-fragrance",
+        settings=_enabled_settings(),
+    )
+    assert plan["status"] == "BLOCKED"
+    assert plan["blockers"] == ["PROVISIONING_MUTATION_ALREADY_STARTED"]
     db.close()
