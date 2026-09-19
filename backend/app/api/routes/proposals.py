@@ -23,6 +23,7 @@ from app.services.ai_creative_generation import (
 )
 from app.services.creative_rendering import CreativeRenderError, CreativeRenderService, CreativeStorage
 from app.services.pin_proposals import PinProposalService
+from app.services.routine_autonomous_authorization import autonomous_authorization_status
 
 
 router = APIRouter(prefix="/pins", tags=["pin-proposals"])
@@ -113,6 +114,11 @@ def render_creatives(body: CreativeRenderBatchRequest):
 @router.get("/creatives/qa")
 def creative_qa():
     return CreativeRenderService().qa_report()
+
+
+@router.get("/proposals/{draft_id}/autonomous-readiness")
+def autonomous_readiness(draft_id: str, db=Depends(get_db)):
+    return autonomous_authorization_status(db, draft_id)
 
 
 @router.get("/proposals/{draft_id}/versions")
