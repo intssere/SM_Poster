@@ -12,7 +12,6 @@ from app.db.session import get_db
 from app.models.domain import PinPublication
 from app.models.routine_publishing import RoutineDispatchPermit
 from app.services.routine_dispatch_authorization import RoutinePermitError, active_permit, create_permit, revoke_permit
-from app.services.publication_scheduler import due_publications
 from app.services.routine_pinterest_worker import run_once as run_routine_worker_once
 from app.services.routine_publishing_control import (
     RoutineControlError,
@@ -107,14 +106,22 @@ async def run_once_dry_run(
     except RoutineControlError as exc:
         raise HTTPException(409, str(exc)) from None
     now = datetime.now(timezone.utc)
-    candidates = due_publications(db, now=now, limit=1)
-    if not candidates or candidates[0].id != publication_id:
-        raise HTTPException(409, "ROUTINE_DRY_RUN_QUEUE_HEAD_MISMATCH")
-    result = await run_routine_worker_once(db, settings=effective_settings, now=now)
+    result = await run_routine_worker_once(
+        db,
+        settings=effective_settings,
+        now=now,
+        target_publication_id=publication_id,
+    )
     if result.get("status") != "SUCCEEDED" or result.get("mode") != "DRY_RUN":
         raise HTTPException(409, "ROUTINE_DRY_RUN_DID_NOT_COMPLETE")
     if any(int(result.get(key, 0) or 0) != 0 for key in ("claimed", "dispatched", "published", "failed", "unknown")):
         raise HTTPException(500, "ROUTINE_DRY_RUN_MUTATION_INVARIANT_FAILED")
+    if (
+        int(result.get("scanned", 0) or 0) != 1
+        or int(result.get("eligible", 0) or 0) != 1
+        or int(result.get("skipped", 0) or 0) != 0
+    ):
+        raise HTTPException(409, "ROUTINE_DRY_RUN_TARGET_NOT_ELIGIBLE")
     return result
 
 
