@@ -136,6 +136,7 @@ def start_board_provisioning(
         },
     )
     db.add(attempt)
+    db.flush()
     db.add(AuditLog(
         actor=BOARD_PROVISIONING_ACTOR,
         action="PINTEREST_BOARD_PROVISIONING_STARTED",
