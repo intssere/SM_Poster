@@ -371,7 +371,7 @@ def test_db_backed_publish_classifies_definitive_provider_rejection(monkeypatch)
         calls = 0
         async def create_pin(self, payload):
             self.calls += 1
-            raise PinterestDefinitiveRejection(code="PROVIDER_REJECTED", status_code=400)
+            raise PinterestDefinitiveRejection(code="PINTEREST_BAD_REQUEST", status_code=400)
     gateway = FakeGateway()
     with pytest.raises(RuntimeError, match="^PROVIDER_REJECTED$"):
         asyncio.run(__import__("app.services.pinterest_publisher", fromlist=["publish_once"]).publish_once(db, publication, gateway, attempt))
@@ -382,7 +382,7 @@ def test_db_backed_publish_classifies_definitive_provider_rejection(monkeypatch)
     assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None
     assert persisted_attempt.safe_response_metadata == {
         "http_status": 400,
-        "provider_error_code": "PROVIDER_REJECTED",
+        "provider_error_code": "PINTEREST_BAD_REQUEST",
     }
     db.close()
 
@@ -424,7 +424,7 @@ def test_db_backed_publish_classifies_http_429_as_definitive_without_retry(monke
     assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None
     assert persisted_attempt.safe_response_metadata == {
         "http_status": 429,
-        "provider_error_code": "PROVIDER_REJECTED",
+        "provider_error_code": "PINTEREST_RATE_LIMITED",
     }
     assert "RAW_RATE_LIMIT_BODY_DO_NOT_PERSIST" not in str(persisted_attempt.safe_response_metadata)
     assert "mock-token" not in str(persisted_attempt.safe_response_metadata)
@@ -459,7 +459,7 @@ def test_db_backed_publish_classifies_ambiguous_provider_failure(monkeypatch):
         calls = 0
         async def create_pin(self, payload):
             self.calls += 1
-            raise PinterestAmbiguousFailure(code="PROVIDER_SERVER_ERROR", status_code=503)
+            raise PinterestAmbiguousFailure(code="PINTEREST_PROVIDER_5XX", status_code=503)
     gateway = FakeGateway()
     with pytest.raises(RuntimeError, match="^PUBLISH_UNKNOWN$"):
         asyncio.run(__import__("app.services.pinterest_publisher", fromlist=["publish_once"]).publish_once(db, publication, gateway, attempt))
@@ -470,7 +470,7 @@ def test_db_backed_publish_classifies_ambiguous_provider_failure(monkeypatch):
     assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None
     assert persisted_attempt.safe_response_metadata == {
         "http_status": 503,
-        "provider_error_code": "PROVIDER_SERVER_ERROR",
+        "provider_error_code": "PINTEREST_PROVIDER_5XX",
     }
     db.close()
 
@@ -503,7 +503,7 @@ def test_db_backed_publish_classifies_timeout_as_unknown(monkeypatch):
         calls = 0
         async def create_pin(self, payload):
             self.calls += 1
-            raise PinterestAmbiguousFailure(code="PROVIDER_TIMEOUT")
+            raise PinterestAmbiguousFailure(code="PINTEREST_TIMEOUT")
     gateway = FakeGateway()
     with pytest.raises(RuntimeError, match="^PUBLISH_UNKNOWN$"):
         asyncio.run(__import__("app.services.pinterest_publisher", fromlist=["publish_once"]).publish_once(db, publication, gateway, attempt))
@@ -513,7 +513,7 @@ def test_db_backed_publish_classifies_timeout_as_unknown(monkeypatch):
     assert persisted.error_code == persisted_attempt.error_code == "PUBLISH_UNKNOWN"
     assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None
     assert persisted_attempt.safe_response_metadata == {
-        "provider_error_code": "PROVIDER_TIMEOUT",
+        "provider_error_code": "PINTEREST_TIMEOUT",
     }
     db.close()
 
@@ -546,7 +546,7 @@ def test_db_backed_publish_classifies_connection_reset_as_unknown(monkeypatch):
         calls = 0
         async def create_pin(self, payload):
             self.calls += 1
-            raise PinterestAmbiguousFailure(code="PROVIDER_TRANSPORT_ERROR")
+            raise PinterestAmbiguousFailure(code="PINTEREST_TRANSPORT_ERROR")
     gateway = FakeGateway()
     with pytest.raises(RuntimeError, match="^PUBLISH_UNKNOWN$"):
         asyncio.run(__import__("app.services.pinterest_publisher", fromlist=["publish_once"]).publish_once(db, publication, gateway, attempt))
@@ -556,7 +556,7 @@ def test_db_backed_publish_classifies_connection_reset_as_unknown(monkeypatch):
     assert persisted.error_code == persisted_attempt.error_code == "PUBLISH_UNKNOWN"
     assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None
     assert persisted_attempt.safe_response_metadata == {
-        "provider_error_code": "PROVIDER_TRANSPORT_ERROR",
+        "provider_error_code": "PINTEREST_TRANSPORT_ERROR",
     }
     db.close()
 
@@ -600,7 +600,7 @@ def test_db_backed_publish_classifies_empty_success_body_as_unknown(monkeypatch)
     assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None
     assert persisted.published_at is None
     assert persisted_attempt.safe_response_metadata == {
-        "provider_error_code": "PROVIDER_INCOMPLETE_SUCCESS",
+        "provider_error_code": "PINTEREST_MISSING_PIN_ID",
     }
     db.close()
 
@@ -645,7 +645,7 @@ def test_db_backed_publish_classifies_oversized_non_pin_id_as_unknown(monkeypatc
     assert persisted.pinterest_pin_id is None and persisted_attempt.provider_pin_id is None
     assert persisted.published_at is None
     assert persisted_attempt.safe_response_metadata == {
-        "provider_error_code": "PROVIDER_INCOMPLETE_SUCCESS",
+        "provider_error_code": "PINTEREST_MISSING_PIN_ID",
     }
     assert "sensitive-token-material" not in str(persisted_attempt.safe_response_metadata)
     db.close()
@@ -791,7 +791,7 @@ def test_db_backed_definitive_rejection_reconciliation_commit_failure_raises_rec
         calls = 0
         async def create_pin(self, payload):
             self.calls += 1
-            raise PinterestDefinitiveRejection(code="PROVIDER_REJECTED", status_code=400)
+            raise PinterestDefinitiveRejection(code="PINTEREST_BAD_REQUEST", status_code=400)
     gateway = FakeGateway()
     real_commit = db.commit
     commit_calls = 0
