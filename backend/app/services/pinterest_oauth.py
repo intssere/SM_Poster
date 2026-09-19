@@ -12,7 +12,25 @@ SCOPES = READ_SCOPES
 
 def requested_scopes(settings=None) -> tuple[str, ...]:
     settings = settings or get_settings()
-    return READ_SCOPES + (("pins:write",) if settings.pinterest_write_scope_enabled else ())
+    scopes = list(READ_SCOPES)
+    if settings.pinterest_write_scope_enabled:
+        scopes.append("pins:write")
+    if settings.pinterest_board_write_scope_enabled:
+        scopes.append("boards:write")
+    return tuple(scopes)
+
+
+def granted_scopes_valid(scopes, settings=None) -> bool:
+    settings = settings or get_settings()
+    normalized = set(scopes or [])
+    required = set(requested_scopes(settings))
+    if not required.issubset(normalized):
+        return False
+    # Preserve the historical read-only contract: an unsolicited board-write
+    # grant is rejected unless board provisioning was explicitly configured.
+    if "boards:write" in normalized and not settings.pinterest_board_write_scope_enabled:
+        return False
+    return True
 
 def _fernet() -> Fernet:
     key = get_settings().pinterest_token_encryption_key
@@ -74,7 +92,7 @@ async def refresh_connection(db, connection: PinterestConnection, client: Pinter
         payload = await (client or PinterestClient()).refresh_token(current_refresh)
         scopes = payload.get("scope", connection.granted_scopes)
         scopes = scopes.split() if isinstance(scopes, str) else list(scopes or [])
-        if "boards:write" in scopes or not payload.get("access_token") or not set(READ_SCOPES).issubset(scopes): raise RuntimeError("Pinterest token refresh did not grant required access")
+        if not payload.get("access_token") or not granted_scopes_valid(scopes, get_settings()): raise RuntimeError("Pinterest token refresh did not grant required access")
         now = datetime.now(timezone.utc)
         new_access = encrypt_token(payload["access_token"])
         new_refresh = encrypt_token(payload["refresh_token"]) if payload.get("refresh_token") else old["refresh_token_ciphertext"]
