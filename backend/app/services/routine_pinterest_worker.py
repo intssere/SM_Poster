@@ -30,6 +30,8 @@ async def run_once(
     resolver=None,
     now=None,
     target_publication_id: str | None = None,
+    target_permit_id: str | None = None,
+    allow_targeted_live: bool = False,
 ):
     settings = settings or get_settings()
     now = now or datetime.now(timezone.utc)
@@ -39,8 +41,10 @@ async def run_once(
     if control.state == "PAUSED":
         return {"status": "PAUSED", "dispatched": 0, "reason": control.pause_reason}
     mode = "DRY_RUN" if settings.routine_pinterest_dry_run or control.state == "DRY_RUN" else "LIVE"
-    if target_publication_id is not None and mode != "DRY_RUN":
+    if target_publication_id is not None and mode != "DRY_RUN" and not allow_targeted_live:
         return {"status": "ROUTINE_TARGETED_RUN_DRY_RUN_ONLY", "dispatched": 0}
+    if allow_targeted_live and (target_publication_id is None or mode != "LIVE"):
+        return {"status": "ROUTINE_TARGETED_LIVE_INVALID_CONTEXT", "dispatched": 0}
     try:
         run = start_run(
             db,
@@ -70,9 +74,14 @@ async def run_once(
             heartbeat_run(db, run)
             db.refresh(publication)
             permit = active_permit(db, publication.id)
+            if target_permit_id is not None and (permit is None or permit.id != target_permit_id):
+                run.skipped += 1
+                run.error_code = "ROUTINE_PERMIT_ID_MISMATCH"
+                continue
             validated = validate_permit(db, publication, permit, now=now, require_due=True)
             if not validated["valid"]:
                 run.skipped += 1
+                run.error_code = validated["status"]
                 continue
             run.eligible += 1
             try:
@@ -80,8 +89,9 @@ async def run_once(
                     db, publication, settings=settings, gateway=gateway,
                     media_client=media_client, resolver=resolver, now=now,
                 )
-            except BufferPreflightError:
+            except BufferPreflightError as exc:
                 run.skipped += 1
+                run.error_code = str(exc)
                 continue
             if mode == "DRY_RUN":
                 continue
