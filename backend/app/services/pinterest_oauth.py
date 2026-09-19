@@ -13,9 +13,9 @@ SCOPES = READ_SCOPES
 def requested_scopes(settings=None) -> tuple[str, ...]:
     settings = settings or get_settings()
     scopes = list(READ_SCOPES)
-    if settings.pinterest_write_scope_enabled:
+    if getattr(settings, "pinterest_write_scope_enabled", False):
         scopes.append("pins:write")
-    if settings.pinterest_board_write_scope_enabled:
+    if getattr(settings, "pinterest_board_write_scope_enabled", False):
         scopes.append("boards:write")
     return tuple(scopes)
 
@@ -28,7 +28,7 @@ def granted_scopes_valid(scopes, settings=None) -> bool:
         return False
     # Preserve the historical read-only contract: an unsolicited board-write
     # grant is rejected unless board provisioning was explicitly configured.
-    if "boards:write" in normalized and not settings.pinterest_board_write_scope_enabled:
+    if "boards:write" in normalized and not getattr(settings, "pinterest_board_write_scope_enabled", False):
         return False
     return True
 
