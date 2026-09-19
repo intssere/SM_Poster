@@ -673,7 +673,7 @@ class PinterestBoardProvisioningAttempt(Base):
     provider_board_id: Mapped[str | None] = mapped_column(String(255), index=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     provider_mutation_started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), index=True
+        DateTime(timezone=True)
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_code: Mapped[str | None] = mapped_column(String(120))
@@ -690,6 +690,10 @@ class PinterestBoardProvisioningAttempt(Base):
             "ix_pinterest_board_provisioning_connection_key",
             "connection_id",
             "canonical_key",
+        ),
+        Index(
+            "ix_board_provisioning_mutation_started",
+            "provider_mutation_started_at",
         ),
     )
 
