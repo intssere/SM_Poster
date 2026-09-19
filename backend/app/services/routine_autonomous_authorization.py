@@ -153,10 +153,40 @@ def autonomous_content_policy(db, draft_id: str) -> dict:
         version_id = existing_machine.approved_version_id or ("original" if revision is None else revision.id)
         note = existing_machine.note or ""
         fingerprint = note[len(AUTONOMOUS_NOTE_PREFIX):] if note.startswith(AUTONOMOUS_NOTE_PREFIX) else None
-        identity_ok = bool(
-            draft.status == DraftStatus.APPROVED
-            and creative
+        concept = db.get(PinConcept, draft.concept_id)
+        source = revision if revision is not None else draft
+        unsupported_claims = (
+            list(revision.unsupported_claims or [])
+            if revision is not None
+            else list((concept.rationale or {}).get("unsupported_claims") or []) if concept else []
+        )
+        creative_complete = bool(
+            creative
             and creative.draft_id == draft.id
+            and creative.render_status == "RENDERED"
+            and creative.rendered_url
+            and creative.sha256
+            and creative.creative_fingerprint
+            and creative.source_image_id
+            and creative.template_id
+            and creative.width == 1000
+            and creative.height == 1500
+        )
+        content_complete = bool(
+            concept
+            and source
+            and source.title
+            and source.description
+            and source.alt_text
+            and source.destination_url
+            and source.utm_url
+            and source.text_fingerprint
+        )
+        binding_ok = bool(
+            draft.status == DraftStatus.APPROVED
+            and creative_complete
+            and content_complete
+            and len(unsupported_claims) == 0
             and (
                 (revision is None and existing_machine.revision_id is None and version_id == "original")
                 or (
@@ -164,11 +194,27 @@ def autonomous_content_policy(db, draft_id: str) -> dict:
                     and revision.draft_id == draft.id
                     and existing_machine.revision_id == revision.id
                     and version_id == revision.id
-                    and (not revision.creative_id or revision.creative_id == creative.id)
+                    and revision.status == "REVIEW"
+                    and revision.creative_id == creative.id
                 )
             )
-            and fingerprint
         )
+        expected_payload = {
+            "policy_version": AUTONOMOUS_POLICY_VERSION,
+            "draft_id": draft.id,
+            "concept_id": draft.concept_id,
+            "revision_id": revision.id if revision else None,
+            "creative_id": creative.id if creative else None,
+            "approved_version_id": version_id,
+            "text_fingerprint": source.text_fingerprint if source else None,
+            "creative_fingerprint": creative.creative_fingerprint if creative else None,
+            "creative_sha256": creative.sha256 if creative else None,
+            "source_image_id": creative.source_image_id if creative else None,
+            "template_id": creative.template_id if creative else None,
+            "unsupported_claims": sorted(str(item) for item in unsupported_claims),
+        }
+        expected_fingerprint = _policy_fingerprint(expected_payload) if binding_ok else None
+        identity_ok = bool(binding_ok and fingerprint and fingerprint == expected_fingerprint)
         return {
             "policy_version": AUTONOMOUS_POLICY_VERSION,
             "ready": identity_ok,
@@ -179,7 +225,7 @@ def autonomous_content_policy(db, draft_id: str) -> dict:
                 _check(
                     "AUTONOMOUS_APPROVAL_STILL_BOUND",
                     identity_ok,
-                    "Existing autonomous approval must remain bound to the same immutable identity.",
+                    "Existing autonomous approval must remain bound to the same immutable content and creative identity.",
                 )
             ],
             "policy_fingerprint": fingerprint,
@@ -440,10 +486,18 @@ def auto_permit_publication(
     ):
         raise AutonomousAuthorizationError("AUTONOMOUS_APPROVAL_REQUIRED")
 
+    policy = autonomous_content_policy(db, publication.draft_id)
+    if (
+        policy.get("ready") is not True
+        or policy.get("already_authorized") is not True
+        or policy.get("selected_identity", {}).get("approval_id") != approval.id
+    ):
+        raise AutonomousAuthorizationError("AUTONOMOUS_APPROVAL_DRIFT")
+
     now = now or _now()
     permit = active_permit(db, publication.id)
     if permit is not None:
-        validated = validate_permit(db, publication, permit, now=now, require_due=True)
+        validated = validate_permit(db, publication, permit, now=now, require_due=False)
         if validated.get("valid") is not True:
             raise AutonomousAuthorizationError(
                 f"AUTONOMOUS_ACTIVE_PERMIT_INVALID:{validated.get('status') or 'UNKNOWN'}"
