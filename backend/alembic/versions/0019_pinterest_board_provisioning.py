@@ -30,6 +30,7 @@ def upgrade():
         sa.Column("status", sa.String(20), nullable=False, server_default="STARTED"),
         sa.Column("provider_board_id", sa.String(255)),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("provider_mutation_started_at", sa.DateTime(timezone=True)),
         sa.Column("completed_at", sa.DateTime(timezone=True)),
         sa.Column("error_code", sa.String(120)),
         sa.Column("safe_metadata", sa.JSON(), nullable=False),
@@ -62,6 +63,11 @@ def upgrade():
         "ix_pinterest_board_provisioning_attempts_status",
         "pinterest_board_provisioning_attempts",
         ["status"],
+    )
+    op.create_index(
+        "ix_pinterest_board_provisioning_attempts_provider_mutation_started_at",
+        "pinterest_board_provisioning_attempts",
+        ["provider_mutation_started_at"],
     )
     op.create_index(
         "ix_pinterest_board_provisioning_attempts_provider_board_id",
