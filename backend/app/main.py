@@ -1,8 +1,11 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
 from app.middleware import AdminAuthMiddleware
 from app.services.multichannel_generation_contract import install_multichannel_generation_contract
+from app.services.routine_pinterest_scheduler import start_scheduler, stop_scheduler
 
 install_multichannel_generation_contract()
 
@@ -21,7 +24,18 @@ from app.api.routes.routine_publishing import router as routine_publishing_route
 
 cors_origins = get_settings().allowed_origins
 
-app = FastAPI(title="Diamond Shelf Social Studio", version="0.1.0-phase0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    await start_scheduler(settings=settings)
+    try:
+        yield
+    finally:
+        await stop_scheduler()
+
+
+app = FastAPI(title="Diamond Shelf Social Studio", version="0.1.0-phase0", lifespan=lifespan)
 app.add_middleware(AdminAuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
