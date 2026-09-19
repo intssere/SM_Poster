@@ -484,3 +484,74 @@ async def test_worker_targeted_live_preserves_run_lock_and_unknown_circuit_break
     assert result["unknown"] == 1
     assert result["error_code"] == "PUBLISH_UNKNOWN_CIRCUIT_BREAKER"
     assert calls == [1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("worker_result", "expected_status", "expected_detail"),
+    [
+        (
+            {
+                "status": "SUCCEEDED", "mode": "LIVE", "run_id": "run-zero",
+                "scanned": 1, "eligible": 1, "skipped": 1,
+                "claimed": 0, "dispatched": 0, "published": 0, "failed": 0, "unknown": 0,
+                "error_code": "ROUTINE_PROVIDER_BOUNDARY_CONFLICT",
+            },
+            409,
+            "ROUTINE_PROVIDER_BOUNDARY_CONFLICT",
+        ),
+        (
+            {
+                "status": "SUCCEEDED", "mode": "LIVE", "run_id": "run-many",
+                "scanned": 1, "eligible": 1, "skipped": 0,
+                "claimed": 2, "dispatched": 2, "published": 2, "failed": 0, "unknown": 0,
+                "error_code": None,
+            },
+            500,
+            "ROUTINE_LIVE_SINGLE_TARGET_INVARIANT_FAILED",
+        ),
+    ],
+)
+async def test_live_route_rejects_non_single_dispatch_result_and_pauses(
+    monkeypatch, worker_result, expected_status, expected_detail
+):
+    from app.api.routes import routine_publishing as route
+
+    publication = _publication()
+    db = FakeDB(publication)
+    permit = SimpleNamespace(id=PERMIT_ID)
+    states = []
+
+    monkeypatch.setattr(route, "_actor", lambda request: "operator")
+    monkeypatch.setattr(route, "get_settings", lambda: _persistent_settings())
+    monkeypatch.setattr(route, "get_control", lambda db_, create=False: SimpleNamespace(state="PAUSED"))
+    monkeypatch.setattr(route, "request_fingerprint_for", lambda publication_: REQ_FP)
+    monkeypatch.setattr(route, "active_permit", lambda db_, publication_id: permit)
+    monkeypatch.setattr(route, "validate_permit", lambda *a, **k: {"valid": True, "status": "ACTIVE"})
+    monkeypatch.setattr(route, "_active_running_run", lambda db_: None)
+    monkeypatch.setattr(route, "daily_provider_write_count", lambda db_, day_start: 0)
+    monkeypatch.setattr(
+        route,
+        "set_control",
+        lambda db_, *, state, actor, reason=None: states.append((state, reason)) or SimpleNamespace(state=state),
+    )
+
+    async def fake_run_once(*args, **kwargs):
+        return worker_result
+
+    monkeypatch.setattr(route, "run_routine_worker_once", fake_run_once)
+    payload = route.RunOnceLiveRequest(
+        confirmed=True,
+        confirmation_text_version="ROUTINE_LIVE_ONCE_V1",
+        permit_id=PERMIT_ID,
+        publication_fingerprint=PUB_FP,
+        request_fingerprint=REQ_FP,
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        await route.run_once_live(PUB_ID, object(), payload, db)
+
+    assert raised.value.status_code == expected_status
+    assert raised.value.detail == expected_detail
+    assert states[0][0] == "LIVE"
+    assert states[-1][0] == "PAUSED"
