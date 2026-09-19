@@ -5,13 +5,18 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from app.core.config import Settings, get_settings
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, engine
 from app.services.routine_pinterest_worker import run_once as run_routine_worker_once
+from app.services.routine_scheduler_lease import (
+    LEASE_BACKEND,
+    PostgresSchedulerLeaderLease,
+)
 
 SleepFn = Callable[[float], Awaitable[Any]]
 
 _task: asyncio.Task | None = None
 _tick_lock: asyncio.Lock | None = None
+_leader_lease = None
 _state = {
     "started": False,
     "tick_running": False,
@@ -19,6 +24,13 @@ _state = {
     "last_tick_completed_at": None,
     "last_result": None,
     "last_error": None,
+    "lease_supported": engine.dialect.name == "postgresql",
+    "lease_role": "disabled",
+    "lease_held": False,
+    "last_lease_status": "NOT_ATTEMPTED",
+    "last_lease_acquired_at": None,
+    "last_lease_lost_at": None,
+    "last_lease_error": None,
 }
 
 
@@ -33,9 +45,42 @@ def _get_tick_lock() -> asyncio.Lock:
     return _tick_lock
 
 
+def _default_lease_factory():
+    return PostgresSchedulerLeaderLease(engine)
+
+
+def _record_lease(lease, *, role: str | None = None):
+    _state["lease_supported"] = bool(getattr(lease, "supported", False))
+    _state["lease_held"] = bool(getattr(lease, "held", False))
+    status = getattr(lease, "last_status", "ERROR")
+    _state["last_lease_status"] = status
+    _state["last_lease_error"] = getattr(lease, "last_error", None)
+    acquired_at = getattr(lease, "acquired_at", None)
+    lost_at = getattr(lease, "lost_at", None)
+    if acquired_at is not None:
+        _state["last_lease_acquired_at"] = acquired_at
+    if lost_at is not None:
+        _state["last_lease_lost_at"] = lost_at
+    if role is not None:
+        _state["lease_role"] = role
+    elif _state["lease_held"]:
+        _state["lease_role"] = "leader"
+    elif status == "STANDBY":
+        _state["lease_role"] = "standby"
+    elif status in {"ERROR", "UNSUPPORTED_BACKEND", "LOST"}:
+        _state["lease_role"] = "error"
+    else:
+        _state["lease_role"] = "waiting"
+
+
 def scheduler_status(settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
     task_running = bool(_task and not _task.done())
+    role = _state["lease_role"]
+    if settings.routine_pinterest_scheduler_enabled is not True:
+        role = "disabled" if not _state["lease_held"] else role
+    elif role == "disabled":
+        role = "waiting"
     return {
         "enabled": settings.routine_pinterest_scheduler_enabled,
         "interval_seconds": settings.routine_pinterest_scheduler_interval_seconds,
@@ -46,6 +91,15 @@ def scheduler_status(settings: Settings | None = None) -> dict:
         "last_tick_completed_at": _state["last_tick_completed_at"],
         "last_result": _state["last_result"],
         "last_error": _state["last_error"],
+        "lease_required": settings.routine_pinterest_scheduler_enabled is True,
+        "lease_backend": LEASE_BACKEND,
+        "lease_supported": bool(_state["lease_supported"]),
+        "lease_role": role,
+        "lease_held": bool(_state["lease_held"]),
+        "last_lease_status": _state["last_lease_status"],
+        "last_lease_acquired_at": _state["last_lease_acquired_at"],
+        "last_lease_lost_at": _state["last_lease_lost_at"],
+        "last_lease_error": _state["last_lease_error"],
     }
 
 
@@ -54,6 +108,7 @@ async def scheduler_tick(
     settings: Settings | None = None,
     session_factory=SessionLocal,
     runner=run_routine_worker_once,
+    leader_lease=None,
 ) -> dict:
     settings = settings or get_settings()
     if settings.routine_pinterest_scheduler_enabled is not True:
@@ -64,6 +119,18 @@ async def scheduler_tick(
         return {"status": "SCHEDULER_TICK_ALREADY_RUNNING", "dispatched": 0}
 
     async with lock:
+        if leader_lease is None or not bool(getattr(leader_lease, "held", False)):
+            result = {"status": "SCHEDULER_LEASE_NOT_HELD", "dispatched": 0}
+            _state["last_result"] = result
+            return result
+        if not leader_lease.validate():
+            _record_lease(leader_lease, role="error")
+            result = {"status": "SCHEDULER_LEASE_LOST", "dispatched": 0}
+            _state["last_result"] = result
+            _state["last_error"] = "SCHEDULER_LEASE_LOST"
+            return result
+
+        _record_lease(leader_lease, role="leader")
         _state["tick_running"] = True
         _state["last_tick_started_at"] = _utcnow()
         _state["last_error"] = None
@@ -88,19 +155,44 @@ async def _scheduler_loop(
     session_factory=SessionLocal,
     runner=run_routine_worker_once,
     sleep_fn: SleepFn = asyncio.sleep,
+    lease_factory=_default_lease_factory,
 ):
+    global _leader_lease
+    lease = None
     try:
         while True:
-            # Intentionally delay the first tick. Enabling the scheduler should
-            # never cause an immediate provider-facing action at process start.
+            # Preserve Task #44 semantics: enabling the scheduler never causes an
+            # immediate lease attempt or provider-facing worker action at startup.
             await sleep_fn(settings.routine_pinterest_scheduler_interval_seconds)
-            await scheduler_tick(
+
+            if lease is None or not bool(getattr(lease, "held", False)):
+                candidate = lease_factory()
+                status = candidate.acquire()
+                _record_lease(candidate)
+                if status != "ACQUIRED":
+                    # STANDBY and error/unsupported states are fail-closed: no
+                    # worker session is opened and no routine run is started.
+                    continue
+                lease = candidate
+                _leader_lease = lease
+                _record_lease(lease, role="leader")
+
+            result = await scheduler_tick(
                 settings=settings,
                 session_factory=session_factory,
                 runner=runner,
+                leader_lease=lease,
             )
+            if result.get("status") == "SCHEDULER_LEASE_LOST" or not lease.held:
+                _leader_lease = None
+                lease = None
     except asyncio.CancelledError:
         raise
+    finally:
+        if lease is not None:
+            lease.release()
+            _record_lease(lease, role="stopped")
+        _leader_lease = None
 
 
 async def start_scheduler(
@@ -109,11 +201,14 @@ async def start_scheduler(
     session_factory=SessionLocal,
     runner=run_routine_worker_once,
     sleep_fn: SleepFn = asyncio.sleep,
+    lease_factory=_default_lease_factory,
 ):
     global _task
     settings = settings or get_settings()
     if settings.routine_pinterest_scheduler_enabled is not True:
         _state["started"] = False
+        _state["lease_role"] = "disabled"
+        _state["lease_held"] = False
         return None
     if _task and not _task.done():
         return _task
@@ -123,10 +218,12 @@ async def start_scheduler(
             session_factory=session_factory,
             runner=runner,
             sleep_fn=sleep_fn,
+            lease_factory=lease_factory,
         ),
         name="routine-pinterest-scheduler",
     )
     _state["started"] = True
+    _state["lease_role"] = "waiting"
     return _task
 
 
@@ -143,14 +240,24 @@ async def stop_scheduler():
         await task
     except asyncio.CancelledError:
         pass
+    except Exception:
+        # Scheduler failures are already captured in observable state. Shutdown
+        # must still complete so the loop's finally block releases leadership.
+        pass
 
 
 def reset_scheduler_state_for_tests():
-    global _task, _tick_lock
+    global _task, _tick_lock, _leader_lease
     if _task and not _task.done():
         _task.cancel()
     _task = None
     _tick_lock = None
+    if _leader_lease is not None:
+        try:
+            _leader_lease.release()
+        except Exception:
+            pass
+    _leader_lease = None
     _state.update({
         "started": False,
         "tick_running": False,
@@ -158,4 +265,11 @@ def reset_scheduler_state_for_tests():
         "last_tick_completed_at": None,
         "last_result": None,
         "last_error": None,
+        "lease_supported": engine.dialect.name == "postgresql",
+        "lease_role": "disabled",
+        "lease_held": False,
+        "last_lease_status": "NOT_ATTEMPTED",
+        "last_lease_acquired_at": None,
+        "last_lease_lost_at": None,
+        "last_lease_error": None,
     })
