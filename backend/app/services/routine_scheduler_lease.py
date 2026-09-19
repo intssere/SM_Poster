@@ -65,6 +65,12 @@ class PostgresSchedulerLeaderLease:
                 self.last_error = None
                 return self.last_status
 
+            # Detach the leader connection from SQLAlchemy's pool. A session
+            # advisory lock must never survive by being returned to the pool.
+            # Closing this detached connection physically ends the PostgreSQL
+            # session and therefore releases the lock even if explicit unlock
+            # cannot run during a failure path.
+            connection.detach()
             self.connection = connection
             self.backend_pid = backend_pid
             self.acquired_at = _utcnow()
