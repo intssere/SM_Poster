@@ -512,3 +512,18 @@ def test_existing_machine_approval_fails_closed_on_creative_drift():
             now=NOW,
         )
     db.close()
+
+
+def test_existing_machine_approval_fails_closed_on_publish_content_drift():
+    db = _db()
+    draft, creatives = _seed_original(db)
+    _machine_approval(db, draft, creatives[0])
+
+    draft.destination_url = "https://diamondshelf.us/products/changed"
+    db.commit()
+
+    result = autonomous.autonomous_content_policy(db, draft.id)
+    assert result["already_authorized"] is True
+    assert result["ready"] is False
+    assert result["blockers"] == ["AUTONOMOUS_APPROVAL_DRIFT"]
+    db.close()
