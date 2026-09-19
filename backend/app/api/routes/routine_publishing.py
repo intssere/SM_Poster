@@ -232,6 +232,20 @@ async def run_once_live(
             pause_reason = "PUBLISH_UNKNOWN_CIRCUIT_BREAKER"
         if result.get("status") != "SUCCEEDED" or result.get("mode") != "LIVE":
             raise HTTPException(409, result.get("status") or "ROUTINE_LIVE_DID_NOT_COMPLETE")
+        counts = {
+            key: int(result.get(key, 0) or 0)
+            for key in ("scanned", "eligible", "claimed", "dispatched", "published", "failed", "unknown")
+        }
+        if any(value > 1 for value in counts.values()):
+            raise HTTPException(500, "ROUTINE_LIVE_SINGLE_TARGET_INVARIANT_FAILED")
+        if (
+            counts["scanned"] != 1
+            or counts["eligible"] != 1
+            or counts["claimed"] != 1
+            or counts["dispatched"] != 1
+            or counts["published"] + counts["failed"] + counts["unknown"] != 1
+        ):
+            raise HTTPException(409, result.get("error_code") or "ROUTINE_LIVE_TARGET_NOT_DISPATCHED")
         return result
     except Exception:
         if result is None:
