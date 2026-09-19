@@ -21,6 +21,7 @@ from app.services.routine_dispatch_authorization import (
     validate_permit,
 )
 from app.services.routine_pinterest_worker import run_once as run_routine_worker_once
+from app.services.routine_pinterest_scheduler import scheduler_status
 from app.services.routine_publishing_control import (
     RoutineControlError,
     daily_provider_write_count,
@@ -136,6 +137,7 @@ def status(db: Session = Depends(get_db)):
         "dry_run": settings.routine_pinterest_dry_run,
         "batch_size": settings.routine_pinterest_batch_size,
         "daily_write_limit": settings.routine_pinterest_daily_write_limit,
+        "scheduler": scheduler_status(settings),
         **snapshot,
     }
 
