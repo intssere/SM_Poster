@@ -64,6 +64,9 @@ class RunOnceLiveRequest(BaseModel):
     permit_id: str = Field(min_length=1, max_length=64)
     publication_fingerprint: str = Field(min_length=64, max_length=64)
     request_fingerprint: str = Field(min_length=64, max_length=64)
+    buffer_organization_id: str = Field(min_length=1, max_length=255)
+    buffer_pinterest_channel_id: str = Field(min_length=1, max_length=255)
+    pinterest_board_id: str = Field(min_length=1, max_length=255)
 
 
 def _one_shot_dry_run_settings(settings, control):
@@ -199,6 +202,12 @@ async def run_once_live(
         raise HTTPException(409, "ROUTINE_PUBLICATION_FINGERPRINT_MISMATCH")
     if current_request_fingerprint != payload.request_fingerprint:
         raise HTTPException(409, "ROUTINE_REQUEST_FINGERPRINT_MISMATCH")
+    if settings.buffer_organization_id != payload.buffer_organization_id:
+        raise HTTPException(409, "ROUTINE_BUFFER_ORGANIZATION_MISMATCH")
+    if settings.buffer_pinterest_channel_id != payload.buffer_pinterest_channel_id:
+        raise HTTPException(409, "ROUTINE_BUFFER_CHANNEL_MISMATCH")
+    if publication.pinterest_board_id_snapshot != payload.pinterest_board_id:
+        raise HTTPException(409, "ROUTINE_PINTEREST_BOARD_MISMATCH")
 
     now = datetime.now(timezone.utc)
     permit = active_permit(db, publication_id)
