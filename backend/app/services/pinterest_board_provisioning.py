@@ -92,7 +92,9 @@ def start_board_provisioning(
         settings=settings,
     )
     if plan["status"] != "PROVISION_REQUIRED":
-        raise BoardProvisioningError(plan["status"])
+        raise BoardProvisioningError(
+            (plan.get("blockers") or [plan["status"]])[0]
+        )
     if plan["provisioning_ready"] is not True:
         raise BoardProvisioningError((plan["blockers"] or ["BOARD_PROVISIONING_NOT_READY"])[0])
 
