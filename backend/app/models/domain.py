@@ -672,6 +672,9 @@ class PinterestBoardProvisioningAttempt(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="STARTED", index=True)
     provider_board_id: Mapped[str | None] = mapped_column(String(255), index=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    provider_mutation_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_code: Mapped[str | None] = mapped_column(String(120))
     safe_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
