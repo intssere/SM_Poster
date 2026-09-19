@@ -167,6 +167,10 @@ class PublicationIdentityService:
             ):
                 raise PublicationIdentityError("An identical publication snapshot already exists.")
 
+            media_url = snapshot_media_url(creative, settings=get_settings())
+            if not media_url:
+                raise PublicationIdentityError("Provider-safe public creative media is unavailable.")
+
             scheduled_for = normalize_user_schedule(scheduled_for)
             publication = PinPublication(
                 draft_id=draft.id,
@@ -187,7 +191,7 @@ class PublicationIdentityService:
                 title_snapshot=revision.title if revision else draft.title,
                 description_snapshot=revision.description if revision else draft.description,
                 alt_text_snapshot=revision.alt_text if revision else draft.alt_text,
-                media_url_snapshot=snapshot_media_url(creative, settings=get_settings()),
+                media_url_snapshot=media_url,
                 integration_account_id=account.id if account else None,
                 destination_url=destination,
                 utm_url=utm_url,
