@@ -235,10 +235,15 @@ def board_strategy(
             "id": attempt.id,
             "status": attempt.status,
             "provider_board_id": attempt.provider_board_id,
+            "provider_mutation_started_at": attempt.provider_mutation_started_at,
             "error_code": attempt.error_code,
         }
         base["blockers"] = [{
-            "STARTED": "PROVISIONING_IN_PROGRESS",
+            "STARTED": (
+                "PROVISIONING_MUTATION_ALREADY_STARTED"
+                if attempt.provider_mutation_started_at
+                else "PROVISIONING_IN_PROGRESS"
+            ),
             "SUCCEEDED": "PROVISIONING_SUCCEEDED_SYNC_REQUIRED",
             "FAILED": "PROVISIONING_FAILED_RETRY_NOT_AUTHORIZED",
             "UNKNOWN": "PROVISIONING_UNKNOWN_RECONCILIATION_REQUIRED",
