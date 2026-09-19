@@ -1,0 +1,51 @@
+name: Task 46 branch certification
+
+on:
+  push:
+    branches:
+      - task-46-postgres-scheduler-leader-lease-v2
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: sm_poster_task46
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d sm_poster_task46"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      PYTHONPATH: ${{ github.workspace }}/backend
+      DATABASE_URL: "sqlite:///:memory:"
+      TASK46_POSTGRES_URL: "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/sm_poster_task46"
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile backend
+        run: python -m compileall -q app tests
+      - name: Focused Task 46 tests
+        run: pytest -q tests/test_routine_pinterest_scheduler.py tests/test_routine_operational_readiness.py tests/test_routine_pinterest_publishing_foundation.py tests/test_routine_one_shot_live.py
+      - name: PostgreSQL distributed lease integration
+        run: pytest -q tests/test_routine_scheduler_postgres_lease.py
+      - name: Full backend tests
+        run: pytest -q
