@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     routine_pinterest_batch_size: int = Field(default=1, ge=1, le=25)
     routine_pinterest_daily_write_limit: int = Field(default=1, ge=1, le=25)
     routine_claim_stale_seconds: int = Field(default=900, ge=60, le=86400)
+    routine_pinterest_scheduler_enabled: bool = False
+    routine_pinterest_scheduler_interval_seconds: int = Field(default=300, ge=60, le=86400)
     pinterest_write_scope_enabled: bool = False
     pinterest_single_pin_pilot_enabled: bool = False
     pinterest_single_pin_pilot_publication_id: str = ""
