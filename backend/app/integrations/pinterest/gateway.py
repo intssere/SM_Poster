@@ -33,6 +33,18 @@ class PinterestGateway(ABC):
     async def create_pin(self, payload: PinterestPinPayload) -> dict[str, Any]: ...
 
 
+def _pin_error_code_for_status(status_code: int) -> str:
+    return {
+        400: "PINTEREST_BAD_REQUEST",
+        401: "PINTEREST_UNAUTHORIZED",
+        403: "PINTEREST_FORBIDDEN",
+        404: "PINTEREST_NOT_FOUND",
+        409: "PINTEREST_CONFLICT",
+        422: "PINTEREST_UNPROCESSABLE",
+        429: "PINTEREST_RATE_LIMITED",
+    }.get(status_code, "PINTEREST_CLIENT_REJECTED")
+
+
 class PinterestV5Gateway(PinterestGateway):
     """Official API v5 boundary. Keep all provider semantics inside this adapter."""
 
@@ -77,16 +89,16 @@ class PinterestV5Gateway(PinterestGateway):
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(f"{self.api_base}/pins", headers=self.headers, json=body)
         except httpx.TimeoutException:
-            raise PinterestAmbiguousFailure("PROVIDER_TIMEOUT") from None
+            raise PinterestAmbiguousFailure("PINTEREST_TIMEOUT") from None
         except httpx.TransportError:
-            raise PinterestAmbiguousFailure("PROVIDER_TRANSPORT_ERROR") from None
+            raise PinterestAmbiguousFailure("PINTEREST_TRANSPORT_ERROR") from None
         if response.status_code >= 400:
-            if response.status_code < 500: raise PinterestDefinitiveRejection(status_code=response.status_code)
-            raise PinterestAmbiguousFailure("PROVIDER_SERVER_ERROR", status_code=response.status_code)
+            if response.status_code < 500: raise PinterestDefinitiveRejection(_pin_error_code_for_status(response.status_code), status_code=response.status_code)
+            raise PinterestAmbiguousFailure("PINTEREST_PROVIDER_5XX", status_code=response.status_code)
         try:
             result = response.json()
         except Exception:
-            raise PinterestAmbiguousFailure("PROVIDER_INVALID_RESPONSE", status_code=response.status_code) from None
+            raise PinterestAmbiguousFailure("PINTEREST_INVALID_RESPONSE", status_code=response.status_code) from None
         if not isinstance(result, dict):
-            raise PinterestAmbiguousFailure("PROVIDER_INVALID_RESPONSE", status_code=response.status_code)
+            raise PinterestAmbiguousFailure("PINTEREST_INVALID_RESPONSE", status_code=response.status_code)
         return result

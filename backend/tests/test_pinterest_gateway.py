@@ -81,9 +81,9 @@ def test_create_pin_http_4xx_is_definitive_rejection_without_leaks(monkeypatch):
     with pytest.raises(PinterestDefinitiveRejection) as raised:
         asyncio.run(gateway.create_pin(payload))
 
-    assert raised.value.code == "PROVIDER_REJECTED"
+    assert raised.value.code == "PINTEREST_BAD_REQUEST"
     assert raised.value.status_code == 400
-    assert str(raised.value) == "PROVIDER_REJECTED"
+    assert str(raised.value) == "PINTEREST_BAD_REQUEST"
     assert len(http_client_constructions) == 1
     assert len(post_calls) == 1
     request = post_calls[0]
@@ -107,6 +107,126 @@ def test_create_pin_http_4xx_is_definitive_rejection_without_leaks(monkeypatch):
     assert "test-secret-token" not in exception_text
     assert "RAW_PROVIDER_BODY_DO_NOT_LEAK" not in exception_text
     assert "provider-body-token" not in exception_text
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_code"),
+    [
+        (400, "PINTEREST_BAD_REQUEST"),
+        (401, "PINTEREST_UNAUTHORIZED"),
+        (403, "PINTEREST_FORBIDDEN"),
+        (404, "PINTEREST_NOT_FOUND"),
+        (409, "PINTEREST_CONFLICT"),
+        (422, "PINTEREST_UNPROCESSABLE"),
+        (429, "PINTEREST_RATE_LIMITED"),
+        (418, "PINTEREST_CLIENT_REJECTED"),
+    ],
+)
+def test_create_pin_http_4xx_has_deterministic_safe_classification(
+    monkeypatch, status_code, expected_code
+):
+    calls = []
+
+    class FakeResponse:
+        text = "RAW_PROVIDER_BODY_DO_NOT_LEAK"
+
+        def json(self):
+            return {"message": "RAW_PROVIDER_BODY_DO_NOT_LEAK"}
+
+    FakeResponse.status_code = status_code
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def post(self, url, *, headers, json):
+            calls.append((url, headers, json))
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        gateway_module.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: FakeAsyncClient(),
+    )
+    gateway = PinterestV5Gateway(
+        access_token="test-secret-token",
+        publishing_enabled=True,
+    )
+    payload = PinterestPinPayload(
+        board_id="board123",
+        title="Test Pin",
+        description="Test description",
+        link="https://diamondshelf.us/products/example",
+        image_url="https://cdn.example.test/example.jpg",
+        alt_text="Example product image",
+    )
+
+    with pytest.raises(PinterestDefinitiveRejection) as raised:
+        asyncio.run(gateway.create_pin(payload))
+
+    assert raised.value.code == expected_code
+    assert raised.value.status_code == status_code
+    assert str(raised.value) == expected_code
+    assert len(calls) == 1
+    assert "RAW_PROVIDER_BODY_DO_NOT_LEAK" not in str(raised.value)
+    assert "test-secret-token" not in str(raised.value)
+
+
+@pytest.mark.parametrize("status_code", [500, 502, 503, 504])
+def test_create_pin_http_5xx_has_deterministic_safe_classification(
+    monkeypatch, status_code
+):
+    calls = []
+
+    class FakeResponse:
+        text = "RAW_PROVIDER_BODY_DO_NOT_LEAK"
+
+        def json(self):
+            return {"message": "RAW_PROVIDER_BODY_DO_NOT_LEAK"}
+
+    FakeResponse.status_code = status_code
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def post(self, url, *, headers, json):
+            calls.append((url, headers, json))
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        gateway_module.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: FakeAsyncClient(),
+    )
+    gateway = PinterestV5Gateway(
+        access_token="test-secret-token",
+        publishing_enabled=True,
+    )
+    payload = PinterestPinPayload(
+        board_id="board123",
+        title="Test Pin",
+        description="Test description",
+        link="https://diamondshelf.us/products/example",
+        image_url="https://cdn.example.test/example.jpg",
+        alt_text="Example product image",
+    )
+
+    with pytest.raises(PinterestAmbiguousFailure) as raised:
+        asyncio.run(gateway.create_pin(payload))
+
+    assert raised.value.code == "PINTEREST_PROVIDER_5XX"
+    assert raised.value.status_code == status_code
+    assert str(raised.value) == "PINTEREST_PROVIDER_5XX"
+    assert len(calls) == 1
+    assert "RAW_PROVIDER_BODY_DO_NOT_LEAK" not in str(raised.value)
+    assert "test-secret-token" not in str(raised.value)
 
 
 def test_create_pin_http_5xx_is_ambiguous_failure_without_leaks(monkeypatch):
@@ -155,9 +275,9 @@ def test_create_pin_http_5xx_is_ambiguous_failure_without_leaks(monkeypatch):
     with pytest.raises(PinterestAmbiguousFailure) as raised:
         asyncio.run(gateway.create_pin(payload))
 
-    assert raised.value.code == "PROVIDER_SERVER_ERROR"
+    assert raised.value.code == "PINTEREST_PROVIDER_5XX"
     assert raised.value.status_code == 503
-    assert str(raised.value) == "PROVIDER_SERVER_ERROR"
+    assert str(raised.value) == "PINTEREST_PROVIDER_5XX"
     assert len(http_client_constructions) == 1
     assert len(post_calls) == 1
     request = post_calls[0]
@@ -224,9 +344,9 @@ def test_create_pin_timeout_is_ambiguous_failure_without_retry_or_leaks(monkeypa
     with pytest.raises(PinterestAmbiguousFailure) as raised:
         asyncio.run(gateway.create_pin(payload))
 
-    assert raised.value.code == "PROVIDER_TIMEOUT"
+    assert raised.value.code == "PINTEREST_TIMEOUT"
     assert raised.value.status_code is None
-    assert str(raised.value) == "PROVIDER_TIMEOUT"
+    assert str(raised.value) == "PINTEREST_TIMEOUT"
     assert len(http_client_constructions) == 1
     assert len(post_calls) == 1
     request = post_calls[0]
@@ -298,9 +418,9 @@ def test_create_pin_transport_error_is_ambiguous_without_retry_or_leaks(monkeypa
     with pytest.raises(PinterestAmbiguousFailure) as raised:
         asyncio.run(gateway.create_pin(payload))
 
-    assert raised.value.code == "PROVIDER_TRANSPORT_ERROR"
+    assert raised.value.code == "PINTEREST_TRANSPORT_ERROR"
     assert raised.value.status_code is None
-    assert str(raised.value) == "PROVIDER_TRANSPORT_ERROR"
+    assert str(raised.value) == "PINTEREST_TRANSPORT_ERROR"
     assert len(http_client_constructions) == 1
     assert len(post_calls) == 1
     request = post_calls[0]
@@ -373,9 +493,9 @@ def test_create_pin_success_with_malformed_json_is_ambiguous_without_retry_or_le
     with pytest.raises(PinterestAmbiguousFailure) as raised:
         asyncio.run(gateway.create_pin(payload))
 
-    assert raised.value.code == "PROVIDER_INVALID_RESPONSE"
+    assert raised.value.code == "PINTEREST_INVALID_RESPONSE"
     assert raised.value.status_code == 201
-    assert str(raised.value) == "PROVIDER_INVALID_RESPONSE"
+    assert str(raised.value) == "PINTEREST_INVALID_RESPONSE"
     assert len(http_client_constructions) == 1
     assert len(post_calls) == 1
     assert json_call_count == 1
@@ -438,9 +558,9 @@ def test_create_pin_success_with_non_object_json_is_ambiguous_without_retry(monk
     with pytest.raises(PinterestAmbiguousFailure) as raised:
         asyncio.run(gateway.create_pin(payload))
 
-    assert raised.value.code == "PROVIDER_INVALID_RESPONSE"
+    assert raised.value.code == "PINTEREST_INVALID_RESPONSE"
     assert raised.value.status_code == 201
-    assert str(raised.value) == "PROVIDER_INVALID_RESPONSE"
+    assert str(raised.value) == "PINTEREST_INVALID_RESPONSE"
     assert len(post_calls) == 1
     assert "RAW_NON_OBJECT_PROVIDER_BODY_DO_NOT_LEAK" not in str(raised.value)
     assert "test-secret-token" not in str(raised.value)
