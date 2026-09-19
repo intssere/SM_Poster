@@ -18,6 +18,7 @@ def normalize_persisted_utc(value):
 
 SAFE_METADATA_KEYS = {"validated_pin_id", "http_status", "provider_error_code"}
 SAFE_PROVIDER_ERROR_CODES = {
+    # Legacy bounded codes remain accepted for historical records.
     "PROVIDER_REJECTED",
     "PROVIDER_SERVER_ERROR",
     "PROVIDER_TIMEOUT",
@@ -25,6 +26,20 @@ SAFE_PROVIDER_ERROR_CODES = {
     "PROVIDER_INVALID_RESPONSE",
     "PROVIDER_INCOMPLETE_SUCCESS",
     "PROVIDER_AMBIGUOUS",
+    # Current deterministic Pinterest classifications.
+    "PINTEREST_BAD_REQUEST",
+    "PINTEREST_UNAUTHORIZED",
+    "PINTEREST_FORBIDDEN",
+    "PINTEREST_NOT_FOUND",
+    "PINTEREST_CONFLICT",
+    "PINTEREST_UNPROCESSABLE",
+    "PINTEREST_RATE_LIMITED",
+    "PINTEREST_CLIENT_REJECTED",
+    "PINTEREST_PROVIDER_5XX",
+    "PINTEREST_TIMEOUT",
+    "PINTEREST_TRANSPORT_ERROR",
+    "PINTEREST_INVALID_RESPONSE",
+    "PINTEREST_MISSING_PIN_ID",
 }
 
 def sanitize_metadata(value):
@@ -172,7 +187,7 @@ async def publish_once(db, publication, gateway, attempt=None):
         result = await gateway.create_pin(payload)
         pin_id = result.get("id") if isinstance(result, dict) else None
         if not isinstance(pin_id, str) or not re.fullmatch(r"[0-9]{1,80}", pin_id):
-            raise PinterestAmbiguousFailure("PROVIDER_INCOMPLETE_SUCCESS")
+            raise PinterestAmbiguousFailure("PINTEREST_MISSING_PIN_ID")
         attempt.status = "SUCCEEDED"; attempt.provider_pin_id = pin_id; attempt.safe_response_metadata = sanitize_metadata({"validated_pin_id": pin_id}); attempt.completed_at = datetime.now(timezone.utc)
         publication.status = PublicationStatus.PUBLISHED; publication.pinterest_pin_id = pin_id; publication.published_at = datetime.now(timezone.utc)
         try:
