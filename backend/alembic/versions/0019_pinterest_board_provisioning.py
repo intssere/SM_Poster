@@ -65,7 +65,7 @@ def upgrade():
         ["status"],
     )
     op.create_index(
-        "ix_pinterest_board_provisioning_attempts_provider_mutation_started_at",
+        "ix_board_provisioning_mutation_started",
         "pinterest_board_provisioning_attempts",
         ["provider_mutation_started_at"],
     )
