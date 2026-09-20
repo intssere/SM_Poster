@@ -6,6 +6,8 @@ Revises: 0019
 from alembic import op
 import sqlalchemy as sa
 
+from app.db.preapplied_schema_adoption import adopt_preapplied_revision
+
 revision = "0020"
 down_revision = "0019"
 branch_labels = None
@@ -13,6 +15,8 @@ depends_on = None
 
 
 def upgrade():
+    if adopt_preapplied_revision(op.get_bind(), "0020"):
+        return
     op.create_table(
         "pinterest_portfolio_plans",
         sa.Column("id", sa.String(36), primary_key=True),
