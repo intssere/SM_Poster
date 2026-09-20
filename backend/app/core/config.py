@@ -1,5 +1,5 @@
 from functools import lru_cache
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     pinterest_optimizer_enabled: bool = False
     pinterest_portfolio_activation_enabled: bool = False
     pinterest_optimizer_apply_enabled: bool = False
+    pinterest_autonomous_execution_enabled: bool = False
+    pinterest_autonomous_schedule_start_minute_utc: int = Field(default=840, ge=0, le=1438)
+    pinterest_autonomous_schedule_end_minute_utc: int = Field(default=1320, ge=1, le=1439)
     pinterest_optimizer_exploit_share: float = Field(default=0.70, ge=0.0, le=1.0)
     pinterest_write_scope_enabled: bool = False
     pinterest_board_write_scope_enabled: bool = False
@@ -88,6 +91,12 @@ class Settings(BaseSettings):
 
     ai_provider: str = "none"
     openai_api_key: str | None = None
+
+    @model_validator(mode="after")
+    def validate_autonomous_schedule_window(self):
+        if self.pinterest_autonomous_schedule_start_minute_utc >= self.pinterest_autonomous_schedule_end_minute_utc:
+            raise ValueError("pinterest autonomous schedule start must be before end")
+        return self
 
     @property
     def is_exposed(self) -> bool:
