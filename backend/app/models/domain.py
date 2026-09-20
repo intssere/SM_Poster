@@ -6,7 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean, CheckConstraint, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text,
+    Boolean, CheckConstraint, Date, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text,
     UniqueConstraint, func, text
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -209,6 +209,90 @@ class Campaign(Base):
     utm_campaign: Mapped[str] = mapped_column(String(255), nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     __table_args__ = (UniqueConstraint("store_id", "slug", name="uq_campaign_slug"),)
+
+
+class PinterestPortfolioPlan(Base):
+    __tablename__ = "pinterest_portfolio_plans"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    store_id: Mapped[str] = mapped_column(
+        ForeignKey("stores.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    month_start: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
+    month_end: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    target_pins: Mapped[int] = mapped_column(Integer, nullable=False)
+    existing_commitments: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    planned_active_slots: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reserve_slots: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    plan_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="DRAFT", index=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('DRAFT','ACTIVE','COMPLETED','CANCELLED')",
+            name="ck_pinterest_portfolio_plan_status",
+        ),
+        Index(
+            "uq_pinterest_portfolio_active_month",
+            "store_id",
+            "month_start",
+            unique=True,
+            postgresql_where=text("status IN ('DRAFT','ACTIVE')"),
+            sqlite_where=text("status IN ('DRAFT','ACTIVE')"),
+        ),
+    )
+
+
+class PinterestPortfolioPlanItem(Base):
+    __tablename__ = "pinterest_portfolio_plan_items"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    plan_id: Mapped[str] = mapped_column(
+        ForeignKey("pinterest_portfolio_plans.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    slot_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_reserve: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    planned_date: Mapped[datetime.date | None] = mapped_column(Date, index=True)
+    product_id: Mapped[str] = mapped_column(
+        ForeignKey("products.id", ondelete="RESTRICT"), index=True, nullable=False
+    )
+    local_board_id: Mapped[str] = mapped_column(
+        ForeignKey("boards.id", ondelete="RESTRICT"), index=True, nullable=False
+    )
+    board_key_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_angle_id: Mapped[str] = mapped_column(
+        ForeignKey("content_angles.id", ondelete="RESTRICT"), index=True, nullable=False
+    )
+    angle_key_snapshot: Mapped[str] = mapped_column(String(100), nullable=False)
+    seed_keywords: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    selection_score: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+    selection_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    item_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="PLANNED", index=True)
+    publication_id: Mapped[str | None] = mapped_column(
+        ForeignKey("pin_publications.id", ondelete="SET NULL"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    __table_args__ = (
+        UniqueConstraint("plan_id", "slot_index", name="uq_pinterest_portfolio_plan_item_slot"),
+        CheckConstraint(
+            "status IN ('PLANNED','PROMOTED','GENERATED','SCHEDULED','PUBLISHED','FAILED','SKIPPED')",
+            name="ck_pinterest_portfolio_plan_item_status",
+        ),
+    )
 
 
 class PinConcept(Base):
