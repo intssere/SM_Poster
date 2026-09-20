@@ -22,6 +22,7 @@ from app.api.routes.buffer_reconciliation_discovery import router as buffer_reco
 from app.api.routes.buffer_reconciliation import router as buffer_reconciliation_router
 from app.api.routes.routine_publishing import router as routine_publishing_router
 from app.api.routes.portfolio import router as portfolio_router
+from app.api.routes.analytics import router as analytics_router
 
 cors_origins = get_settings().allowed_origins
 
@@ -58,6 +59,7 @@ app.include_router(buffer_reconciliation_discovery_router, prefix="/api")
 app.include_router(buffer_reconciliation_router, prefix="/api")
 app.include_router(routine_publishing_router, prefix="/api")
 app.include_router(portfolio_router, prefix="/api")
+app.include_router(analytics_router, prefix="/api")
 
 
 @app.get("/")
