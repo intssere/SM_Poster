@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     pinterest_portfolio_reserve_percentage: float = Field(default=0.10, ge=0.0, le=1.0)
     pinterest_seo_brief_persistence_enabled: bool = False
     pinterest_seo_max_secondary_keywords: int = Field(default=5, ge=1, le=12)
+    pinterest_autonomous_generation_enabled: bool = False
     pinterest_write_scope_enabled: bool = False
     pinterest_board_write_scope_enabled: bool = False
     pinterest_board_provisioning_enabled: bool = False

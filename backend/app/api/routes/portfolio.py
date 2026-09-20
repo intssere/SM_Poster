@@ -11,6 +11,10 @@ from app.services.pinterest_seo_intelligence import (
     PinterestSeoError,
     seo_brief_preview,
 )
+from app.services.pinterest_autonomous_generation import (
+    AutonomousGenerationError,
+    autonomous_generation_readiness,
+)
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
@@ -46,4 +50,19 @@ def preview_portfolio_item_seo(
             settings=get_settings(),
         )
     except PinterestSeoError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.get("/items/{portfolio_item_id}/generation-readiness")
+def preview_autonomous_generation(
+    portfolio_item_id: str,
+    db: Session = Depends(get_db),
+):
+    try:
+        return autonomous_generation_readiness(
+            db,
+            portfolio_item_id,
+            settings=get_settings(),
+        )
+    except AutonomousGenerationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
