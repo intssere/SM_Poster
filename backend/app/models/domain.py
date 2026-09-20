@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
@@ -217,8 +217,8 @@ class PinterestPortfolioPlan(Base):
     store_id: Mapped[str] = mapped_column(
         ForeignKey("stores.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    month_start: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
-    month_end: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    month_start: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    month_end: Mapped[date] = mapped_column(Date, nullable=False)
     target_pins: Mapped[int] = mapped_column(Integer, nullable=False)
     existing_commitments: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     planned_active_slots: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -260,7 +260,7 @@ class PinterestPortfolioPlanItem(Base):
     )
     slot_index: Mapped[int] = mapped_column(Integer, nullable=False)
     is_reserve: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    planned_date: Mapped[datetime.date | None] = mapped_column(Date, index=True)
+    planned_date: Mapped[date | None] = mapped_column(Date, index=True)
     product_id: Mapped[str] = mapped_column(
         ForeignKey("products.id", ondelete="RESTRICT"), index=True, nullable=False
     )
