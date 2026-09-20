@@ -1,0 +1,57 @@
+name: Task 56 branch certification
+
+on:
+  push:
+    branches:
+      - task-56-portfolio-activation-optimizer-apply
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: sm_poster_task56
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d sm_poster_task56"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      PYTHONPATH: ${{ github.workspace }}/backend
+      DATABASE_URL: "sqlite:///:memory:"
+      TASK46_POSTGRES_URL: "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/sm_poster_task56"
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile backend
+        run: python -m compileall -q app tests
+      - name: PostgreSQL Alembic 0025 upgrade
+        env:
+          DATABASE_URL: "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/sm_poster_task56"
+        run: |
+          alembic upgrade head
+          alembic current | grep 0025
+      - name: Focused Task 56 tests
+        run: pytest -q tests/test_pinterest_optimizer_apply.py tests/test_pinterest_adaptive_optimizer.py tests/test_pinterest_learning_ranking.py tests/test_pinterest_performance_analytics.py tests/test_pinterest_autonomous_generation.py tests/test_pinterest_seo_intelligence.py tests/test_pinterest_portfolio_planner.py tests/test_pinterest_board_strategy.py tests/test_routine_autonomous_authorization.py tests/test_routine_activation_readiness.py tests/test_routine_operational_readiness.py tests/test_routine_pinterest_scheduler.py tests/test_routine_pinterest_publishing_foundation.py tests/test_routine_one_shot_live.py
+      - name: PostgreSQL distributed lease integration
+        run: pytest -q tests/test_routine_scheduler_postgres_lease.py
+      - name: Full backend tests
+        run: pytest -q
