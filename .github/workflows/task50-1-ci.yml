@@ -1,0 +1,58 @@
+name: Task 50.1 production Alembic 0020 reconciliation
+
+on:
+  push:
+    branches:
+      - task-50-1-production-alembic-0020-reconcile
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: sm_poster_task501
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d sm_poster_task501"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      PYTHONPATH: ${{ github.workspace }}/backend
+      DATABASE_URL: "sqlite:///:memory:"
+      TASK501_POSTGRES_URL: "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/sm_poster_task501"
+      TASK46_POSTGRES_URL: "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/sm_poster_task501"
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile backend and production scripts
+        run: |
+          python -m compileall -q app tests scripts
+          python -m py_compile ../scripts/start_production.py
+      - name: Focused Task 50.1 reconciler tests
+        env:
+          TASK501_POSTGRES_URL: ${{ env.TASK501_POSTGRES_URL }}
+        run: pytest -q tests/test_production_alembic_0020_reconciler.py
+      - name: Task 50 and startup regression
+        run: pytest -q tests/test_pinterest_portfolio_planner.py tests/test_start_production.py tests/test_production_startup_readiness.py tests/test_production_migration_lock.py
+      - name: PostgreSQL distributed lease integration
+        run: pytest -q tests/test_routine_scheduler_postgres_lease.py
+      - name: Full backend tests
+        run: pytest -q
