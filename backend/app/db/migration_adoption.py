@@ -168,7 +168,11 @@ def adopt_preapplied_revision(connection: Any, revision: str) -> bool:
     else:
         # SQLite and other backends retain the canonical fresh-create path,
         # but never silently accept a pre-applied schema.
-        present = [table for table in owned if sa.inspect(connection).has_table(table)]
+        present = [
+            table
+            for table in owned
+            if connection.dialect.has_table(connection, table)
+        ]
         if present:
             _refuse("pre-applied adoption requires PostgreSQL")
     if not present:
