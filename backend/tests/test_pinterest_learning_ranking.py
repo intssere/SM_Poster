@@ -22,6 +22,7 @@ from app.models.domain import (
     PinterestPortfolioPlanItem,
     PinterestSeoBrief,
     Product,
+    ProductImage,
     PublicationStatus,
     Store,
 )
@@ -119,6 +120,19 @@ def _seed_identity(
         ))
         db.flush()
 
+    image = ProductImage(
+        id=f"image-{suffix}",
+        product_id=product_id,
+        source_url=f"https://cdn.example.com/{suffix}.jpg",
+        width=1000,
+        height=1500,
+        source_sha256=(f"{suffix}m" + "9" * 64)[:64],
+        is_primary=True,
+        editorial_eligible=True,
+    )
+    db.add(image)
+    db.flush()
+
     concept = PinConcept(
         id=f"concept-{suffix}",
         store_id=store_id,
@@ -143,6 +157,7 @@ def _seed_identity(
         id=f"creative-{suffix}",
         draft_id=draft.id,
         template_id=template_id,
+        source_image_id=image.id,
         creative_fingerprint=(f"{suffix}e" + "2" * 64)[:64],
         render_status="RENDERED",
         width=1000,
