@@ -255,7 +255,7 @@ def test_real_postgres_structural_0020_bookkeeping_0019_reconciles_only_revision
     env = dict(os.environ)
     env["DATABASE_URL"] = POSTGRES_URL
     subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        [sys.executable, "-m", "alembic", "upgrade", "0020"],
         cwd=backend_dir,
         env=env,
         check=True,
