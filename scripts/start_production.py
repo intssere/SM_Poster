@@ -47,6 +47,37 @@ def log_lifecycle_event(
     print(f"{LOG_PREFIX} event={event} elapsed_ms={elapsed_ms}", flush=True)
 
 
+def migration_command() -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "alembic",
+        "upgrade",
+        "head",
+    ]
+
+
+def run_database_migrations(
+    *,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> None:
+    """Upgrade the production database to this repository's Alembic head.
+
+    The command is executed without a shell and no environment or database URL
+    is logged by this wrapper. Any non-zero exit refuses production startup
+    before the backend or frontend process is launched.
+    """
+    result = runner(
+        migration_command(),
+        cwd=BACKEND_DIR,
+        check=False,
+    )
+    if int(result.returncode) != 0:
+        raise StartupError(
+            f"database migration failed with status {int(result.returncode)}"
+        )
+
+
 def backend_command() -> list[str]:
     return [
         sys.executable,
@@ -197,6 +228,9 @@ def run() -> int:
 
     try:
         lifecycle("wrapper_start")
+        lifecycle("database_migration_started")
+        run_database_migrations()
+        lifecycle("database_migration_succeeded")
         backend = start_backend()
         lifecycle("backend_process_started")
         wait_for_backend_ready(
