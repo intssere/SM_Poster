@@ -7,6 +7,10 @@ from app.services.pinterest_portfolio_planner import (
     PortfolioPlanningError,
     portfolio_preview,
 )
+from app.services.pinterest_seo_intelligence import (
+    PinterestSeoError,
+    seo_brief_preview,
+)
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
@@ -27,4 +31,19 @@ def preview_monthly_portfolio(
             settings=get_settings(),
         )
     except PortfolioPlanningError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.get("/items/{portfolio_item_id}/seo-preview")
+def preview_portfolio_item_seo(
+    portfolio_item_id: str,
+    db: Session = Depends(get_db),
+):
+    try:
+        return seo_brief_preview(
+            db,
+            portfolio_item_id,
+            settings=get_settings(),
+        )
+    except PinterestSeoError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
