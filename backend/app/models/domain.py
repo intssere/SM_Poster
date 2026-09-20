@@ -333,6 +333,65 @@ class PinterestOptimizerApplication(Base):
     )
 
 
+class PinterestAutonomousExecutionRun(Base):
+    __tablename__ = "pinterest_autonomous_execution_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    portfolio_item_id: Mapped[str] = mapped_column(
+        ForeignKey("pinterest_portfolio_plan_items.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    plan_id: Mapped[str] = mapped_column(
+        ForeignKey("pinterest_portfolio_plans.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    optimizer_application_id: Mapped[str] = mapped_column(
+        ForeignKey("pinterest_optimizer_applications.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="STARTED", index=True)
+    stage: Mapped[str] = mapped_column(String(40), nullable=False, default="STARTED", index=True)
+    seo_brief_id: Mapped[str | None] = mapped_column(
+        ForeignKey("pinterest_seo_briefs.id", ondelete="SET NULL"), index=True
+    )
+    generation_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("pinterest_autonomous_generation_runs.id", ondelete="SET NULL"), index=True
+    )
+    approval_id: Mapped[str | None] = mapped_column(
+        ForeignKey("pin_approvals.id", ondelete="SET NULL"), index=True
+    )
+    publication_id: Mapped[str | None] = mapped_column(
+        ForeignKey("pin_publications.id", ondelete="SET NULL"), index=True
+    )
+    routine_permit_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    safe_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('STARTED','SUCCEEDED','FAILED')",
+            name="ck_pinterest_autonomous_execution_run_status",
+        ),
+        CheckConstraint(
+            "stage IN ('STARTED','SEO_READY','GENERATED','AUTHORIZED','PUBLICATION_CREATED','PERMITTED')",
+            name="ck_pinterest_autonomous_execution_run_stage",
+        ),
+        Index(
+            "ix_pinterest_autonomous_execution_plan_stage",
+            "plan_id",
+            "stage",
+        ),
+    )
+
+
 class PinterestSeoBrief(Base):
     __tablename__ = "pinterest_seo_briefs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
