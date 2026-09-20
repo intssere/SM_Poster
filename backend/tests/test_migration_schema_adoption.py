@@ -27,7 +27,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 
 def _admin_url(url: str) -> str:
     parsed = make_url(url)
-    return str(parsed.set(database="postgres"))
+    return parsed.set(database="postgres").render_as_string(hide_password=False)
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def isolated_database() -> Iterator[str]:
         with admin.connect() as connection:
             connection.execute(sa.text(f'CREATE DATABASE "{name}"'))
         parsed = make_url(POSTGRES_URL)
-        yield str(parsed.set(database=name))
+        yield parsed.set(database=name).render_as_string(hide_password=False)
     finally:
         with admin.connect() as connection:
             connection.execute(sa.text(
@@ -392,6 +392,13 @@ def test_non_postgres_fresh_path_is_not_adoption() -> None:
             assert adopt_preapplied_revision(connection, "0020") is False
     finally:
         engine.dispose()
+
+
+def test_database_url_rewrite_preserves_credentials() -> None:
+    url = "postgresql+psycopg://user:password@127.0.0.1:5432/source"
+    assert _admin_url(url) == (
+        "postgresql+psycopg://user:password@127.0.0.1:5432/postgres"
+    )
 
 
 def test_non_postgres_preapplied_schema_is_rejected() -> None:
