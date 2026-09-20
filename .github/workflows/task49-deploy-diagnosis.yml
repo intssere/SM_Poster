@@ -1,0 +1,94 @@
+name: Task 49 deployment diagnosis
+
+on:
+  push:
+    branches:
+      - task-49-deploy-diagnosis
+
+permissions:
+  contents: read
+
+jobs:
+  production-startup:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: sm_poster_deploy_diag
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d sm_poster_deploy_diag"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      PYTHONPATH: ${{ github.workspace }}/backend
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/sm_poster_deploy_diag
+      APP_ENV: development
+      AUTH_DISABLED: "true"
+      ROUTINE_PINTEREST_SCHEDULER_ENABLED: "false"
+      ROUTINE_PINTEREST_WORKER_ENABLED: "false"
+      ROUTINE_BUFFER_DISPATCH_ENABLED: "false"
+      ROUTINE_AUTONOMOUS_AUTHORIZATION_ENABLED: "false"
+      PINTEREST_BOARD_WRITE_SCOPE_ENABLED: "false"
+      PINTEREST_BOARD_PROVISIONING_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install backend
+        working-directory: backend
+        run: python -m pip install -r requirements.txt
+      - name: Install frontend
+        run: npm --prefix frontend ci
+      - name: Frontend production build
+        run: npm --prefix frontend run build
+      - name: Boot Task49 code on production-like 0018 schema
+        working-directory: backend
+        run: |
+          alembic upgrade 0018
+          python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/backend-0018.log 2>&1 &
+          PID=$!
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:8000/api/health > /tmp/health-0018.json; then break; fi
+            if ! kill -0 $PID 2>/dev/null; then cat /tmp/backend-0018.log; exit 1; fi
+            sleep 1
+          done
+          cat /tmp/health-0018.json
+          python - <<'PY'
+          import json
+          p=json.load(open("/tmp/health-0018.json"))
+          assert p["status"]=="ok" and p["database_connected"] is True, p
+          PY
+          kill $PID
+          wait $PID || true
+      - name: Upgrade to 0019 and boot again
+        working-directory: backend
+        run: |
+          alembic upgrade 0019
+          alembic current | grep 0019
+          python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/backend-0019.log 2>&1 &
+          PID=$!
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:8000/api/health > /tmp/health-0019.json; then break; fi
+            if ! kill -0 $PID 2>/dev/null; then cat /tmp/backend-0019.log; exit 1; fi
+            sleep 1
+          done
+          cat /tmp/health-0019.json
+          python - <<'PY'
+          import json
+          p=json.load(open("/tmp/health-0019.json"))
+          assert p["status"]=="ok" and p["database_connected"] is True, p
+          PY
+          kill $PID
+          wait $PID || true
