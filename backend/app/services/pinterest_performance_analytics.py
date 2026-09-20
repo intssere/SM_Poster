@@ -55,6 +55,9 @@ class AnalyticsError(RuntimeError):
 
 
 class PinterestAnalyticsClient:
+    def __init__(self, client: httpx.AsyncClient | None = None):
+        self.client = client
+
     async def fetch_pin_analytics(
         self,
         *,
@@ -72,18 +75,22 @@ class PinterestAnalyticsClient:
             "app_types": "ALL",
             "split_field": "NO_SPLIT",
         }
+        owned = self.client is None
+        client = self.client or httpx.AsyncClient(
+            timeout=httpx.Timeout(10.0, connect=5.0),
+            follow_redirects=False,
+        )
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(10.0, connect=5.0),
-                follow_redirects=False,
-            ) as client:
-                response = await client.get(
-                    url,
-                    params=params,
-                    headers={"Authorization": f"Bearer {access_token}"},
-                )
+            response = await client.get(
+                url,
+                params=params,
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
         except (httpx.HTTPError, OSError) as exc:
             raise AnalyticsError("PROVIDER_REQUEST_FAILED") from exc
+        finally:
+            if owned:
+                await client.aclose()
 
         if not 200 <= response.status_code < 300:
             raise AnalyticsError(f"PROVIDER_HTTP_{response.status_code}")
