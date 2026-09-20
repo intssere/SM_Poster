@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import calendar
 import hashlib
 import json
 import math
@@ -175,7 +174,10 @@ def _existing_history(
 ):
     publications = list(db.scalars(
         select(PinPublication)
+        .join(PinDraft, PinDraft.id == PinPublication.draft_id)
+        .join(PinConcept, PinConcept.id == PinDraft.concept_id)
         .where(
+            PinConcept.store_id == store_id,
             PinPublication.scheduled_for.is_not(None),
             PinPublication.scheduled_for >= start_utc,
             PinPublication.scheduled_for < end_utc,
@@ -489,7 +491,11 @@ def portfolio_preview(
 
     store = _resolve_store(db, store_id)
     month_start, month_end = _month_bounds(month_key, zone)
-    target = int(target_count or settings.pinterest_monthly_pin_target)
+    target = int(
+        settings.pinterest_monthly_pin_target
+        if target_count is None
+        else target_count
+    )
     if target <= 0:
         raise PortfolioPlanningError("INVALID_MONTHLY_TARGET")
 
