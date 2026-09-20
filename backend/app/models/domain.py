@@ -211,6 +211,79 @@ class Campaign(Base):
     __table_args__ = (UniqueConstraint("store_id", "slug", name="uq_campaign_slug"),)
 
 
+class PinterestPortfolioPlan(Base):
+    __tablename__ = "pinterest_portfolio_plans"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    store_id: Mapped[str] = mapped_column(
+        ForeignKey("stores.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    month_key: Mapped[str] = mapped_column(String(7), nullable=False, index=True)
+    timezone: Mapped[str] = mapped_column(String(80), nullable=False)
+    target_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    existing_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    planned_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reserve_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    plan_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="DRAFT")
+    summary: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        UniqueConstraint("store_id", "month_key", name="uq_pinterest_portfolio_store_month"),
+        CheckConstraint(
+            "status IN ('DRAFT','ACTIVE','COMPLETED','CANCELLED')",
+            name="ck_pinterest_portfolio_plan_status",
+        ),
+    )
+
+
+class PinterestPortfolioSlot(Base):
+    __tablename__ = "pinterest_portfolio_slots"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    plan_id: Mapped[str] = mapped_column(
+        ForeignKey("pinterest_portfolio_plans.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    slot_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    product_id: Mapped[str] = mapped_column(
+        ForeignKey("products.id", ondelete="RESTRICT"), index=True, nullable=False
+    )
+    board_id: Mapped[str] = mapped_column(
+        ForeignKey("boards.id", ondelete="RESTRICT"), index=True, nullable=False
+    )
+    content_angle_id: Mapped[str] = mapped_column(
+        ForeignKey("content_angles.id", ondelete="RESTRICT"), index=True, nullable=False
+    )
+    keyword_cluster_id: Mapped[str | None] = mapped_column(
+        ForeignKey("keyword_clusters.id", ondelete="RESTRICT"), index=True
+    )
+    candidate_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    slot_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    brand_key: Mapped[str | None] = mapped_column(String(255))
+    rationale: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        UniqueConstraint("plan_id", "sequence_no", name="uq_pinterest_portfolio_slot_sequence"),
+        UniqueConstraint(
+            "plan_id",
+            "candidate_fingerprint",
+            name="uq_pinterest_portfolio_candidate",
+        ),
+        CheckConstraint(
+            "slot_kind IN ('PLANNED','RESERVE')",
+            name="ck_pinterest_portfolio_slot_kind",
+        ),
+    )
+
+
 class PinConcept(Base):
     __tablename__ = "pin_concepts"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
