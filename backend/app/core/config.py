@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     routine_pinterest_scheduler_enabled: bool = False
     routine_pinterest_scheduler_interval_seconds: int = Field(default=300, ge=60, le=86400)
     routine_autonomous_authorization_enabled: bool = False
+    pinterest_portfolio_planning_enabled: bool = False
+    pinterest_monthly_pin_target: int = Field(default=150, ge=1, le=10000)
+    pinterest_portfolio_timezone: str = "America/Chicago"
+    pinterest_portfolio_window_start_hour: int = Field(default=8, ge=0, le=22)
+    pinterest_portfolio_window_end_hour: int = Field(default=22, ge=1, le=23)
+    pinterest_product_monthly_cap: int = Field(default=3, ge=1, le=100)
+    pinterest_portfolio_reserve_percentage: float = Field(default=0.10, ge=0.0, le=1.0)
     pinterest_write_scope_enabled: bool = False
     pinterest_board_write_scope_enabled: bool = False
     pinterest_board_provisioning_enabled: bool = False
