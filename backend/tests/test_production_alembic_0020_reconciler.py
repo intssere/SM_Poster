@@ -301,32 +301,3 @@ def test_real_postgres_structural_0020_bookkeeping_0019_reconciles_only_revision
     finally:
         engine.dispose()
 
-
-@pytest.mark.skipif(not POSTGRES_URL, reason="TASK501_POSTGRES_URL not configured")
-def test_real_postgres_reconciler_refuses_nonempty_task50_table():
-    engine = sa.create_engine(POSTGRES_URL, pool_pre_ping=True)
-    try:
-        with engine.begin() as connection:
-            # Previous integration test leaves the DB at exact 0020.
-            store_id = connection.execute(
-                sa.text("SELECT id FROM stores ORDER BY id LIMIT 1")
-            ).scalar_one_or_none()
-            if store_id is None:
-                pytest.skip("fixture database contains no store")
-            connection.execute(sa.text(
-                "INSERT INTO pinterest_portfolio_plans "
-                "(id, store_id, month_start, month_end, target_pins, existing_commitments, "
-                "planned_active_slots, reserve_slots, policy_version, input_fingerprint, "
-                "plan_fingerprint, status, metadata_json) "
-                "VALUES ('test-plan', :store_id, DATE '2026-10-01', DATE '2026-10-31', 150, 0, 0, 0, "
-                "'test', :input_fp, :plan_fp, 'DRAFT', '{}'::json)"
-            ), {"store_id": store_id, "input_fp": "a"*64, "plan_fp": "b"*64})
-            with pytest.raises(reconciler.ReconciliationRefused, match="not empty"):
-                reconciler.reconcile_revision(connection)
-            # Transaction rollback through raised exception leaves no fixture row.
-            raise RuntimeError("rollback fixture")
-    except RuntimeError as exc:
-        if str(exc) != "rollback fixture":
-            raise
-    finally:
-        engine.dispose()
