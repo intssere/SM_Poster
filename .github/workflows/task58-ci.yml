@@ -12,6 +12,7 @@ jobs:
   backend:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         postgres: ["16", "17"]
     services:
@@ -40,6 +41,8 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Exact canonical ancestry guard
         run: |
           test "$(git rev-parse HEAD)" != "dbf020080c26ab3a149298604243cda7c91e09c8"
