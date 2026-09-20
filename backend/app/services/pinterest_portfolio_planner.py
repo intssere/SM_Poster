@@ -260,7 +260,10 @@ def _candidate_pool(
     for product, intelligence in products:
         facts = _facts(product, intelligence, now=now)
         brand_key = (intelligence.brand or product.vendor or product.title or product.id).strip().casefold()
-        for proposal in propose_content(facts, limit=5):
+        # Portfolio planning needs the full bounded set of deterministic angles;
+        # the UI-oriented default limit can otherwise hide valid diversification
+        # opportunities later in the proposal order.
+        for proposal in propose_content(facts, limit=10):
             board = boards.get(proposal.board_key)
             if board is None:
                 missing_boards[proposal.board_key] += 1
