@@ -51,7 +51,7 @@ jobs:
           TASK501_POSTGRES_URL: ${{ env.TASK501_POSTGRES_URL }}
         run: pytest -q tests/test_production_alembic_0020_reconciler.py
       - name: Task 50 and startup regression
-        run: pytest -q tests/test_pinterest_portfolio_planner.py tests/test_start_production.py tests/test_production_startup_readiness.py tests/test_production_migration_lock.py
+        run: pytest -q tests/test_pinterest_portfolio_planner.py tests/test_start_production.py tests/test_production_startup_readiness.py
       - name: PostgreSQL distributed lease integration
         run: pytest -q tests/test_routine_scheduler_postgres_lease.py
       - name: Full backend tests
