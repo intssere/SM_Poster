@@ -621,7 +621,7 @@ class PinterestAnalyticsSnapshot(Base):
     pinterest_pin_id: Mapped[str] = mapped_column(String(80), nullable=False)
     metric_policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
     observation_window: Mapped[str] = mapped_column(String(4), nullable=False)
-    range_start: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    range_start: Mapped[date] = mapped_column(Date, nullable=False)
     range_end: Mapped[datetime.date] = mapped_column(Date, nullable=False)
     provider_payload_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     impressions: Mapped[int] = mapped_column(Integer, nullable=False)
