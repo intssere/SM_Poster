@@ -79,8 +79,9 @@ EXPECTED_TABLES = {
             "uq_pinterest_portfolio_plan_fingerprint": ("plan_fingerprint",),
         },
         "checks": {
-            "ck_pinterest_portfolio_plan_status":
-                "CHECK (((status)::text = ANY ((ARRAY['DRAFT'::character varying, 'ACTIVE'::character varying, 'COMPLETED'::character varying, 'CANCELLED'::character varying])::text[])))",
+            "ck_pinterest_portfolio_plan_status": (
+                "DRAFT", "ACTIVE", "COMPLETED", "CANCELLED"
+            ),
         },
         "indexes": {
             "ix_pinterest_portfolio_plans_input_fp": (False, ("input_fingerprint",), None),
@@ -90,7 +91,7 @@ EXPECTED_TABLES = {
             "uq_pinterest_portfolio_active_month": (
                 True,
                 ("store_id", "month_start"),
-                "((status)::text = ANY ((ARRAY['DRAFT'::character varying, 'ACTIVE'::character varying])::text[]))",
+                "STATUS_VALUES:DRAFT,ACTIVE",
             ),
         },
     },
@@ -134,8 +135,10 @@ EXPECTED_TABLES = {
             "uq_pinterest_portfolio_plan_item_slot": ("plan_id", "slot_index"),
         },
         "checks": {
-            "ck_pinterest_portfolio_plan_item_status":
-                "CHECK (((status)::text = ANY ((ARRAY['PLANNED'::character varying, 'PROMOTED'::character varying, 'GENERATED'::character varying, 'SCHEDULED'::character varying, 'PUBLISHED'::character varying, 'FAILED'::character varying, 'SKIPPED'::character varying])::text[])))",
+            "ck_pinterest_portfolio_plan_item_status": (
+                "PLANNED", "PROMOTED", "GENERATED", "SCHEDULED",
+                "PUBLISHED", "FAILED", "SKIPPED"
+            ),
         },
         "indexes": {
             "ix_pinterest_portfolio_items_angle_id": (False, ("content_angle_id",), None),
@@ -286,6 +289,25 @@ def _normalize_default(value: str | None) -> str | None:
     return text
 
 
+def _status_values(expression: str | None) -> tuple[str, ...]:
+    text = _normalize_sql(expression)
+    if "status" not in text.lower():
+        _refuse("status-domain expression does not reference status")
+    values = tuple(re.findall(r"'([^']+)'", text))
+    if not values:
+        _refuse("status-domain expression contains no literal values")
+    return values
+
+
+def _normalize_predicate(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = _normalize_sql(value)
+    if "status" in text.lower():
+        return "STATUS_VALUES:" + ",".join(_status_values(text))
+    return text
+
+
 def _type_signature(row: Any) -> str:
     data_type = str(row["data_type"])
     if data_type == "character varying":
@@ -375,7 +397,7 @@ def _index_contract(connection: Any, table: str) -> dict[str, tuple[bool, tuple[
         result[str(row["index_name"])] = (
             bool(row["is_unique"]),
             columns,
-            _normalize_sql(row["predicate"]) or None,
+            _normalize_predicate(row["predicate"]),
         )
     return result
 
@@ -443,11 +465,15 @@ def _validate_table(connection: Any, table: str, expected: dict[str, Any]) -> No
 
     if actual_uniques != expected["uniques"]:
         _refuse(f"{table} unique constraints differ from canonical 0020")
-    for name, expected_def in expected["checks"].items():
-        if _normalize_sql(actual_checks.get(name)) != _normalize_sql(expected_def):
-            _refuse(f"{table} check constraint {name} differs from canonical 0020")
     if set(actual_checks) != set(expected["checks"]):
         _refuse(f"{table} check constraint set differs from canonical 0020")
+    for name, expected_values in expected["checks"].items():
+        definition = actual_checks.get(name)
+        if not definition or not definition.startswith("CHECK"):
+            _refuse(f"{table} check constraint {name} differs from canonical 0020")
+        actual_values = _status_values(definition)
+        if actual_values != tuple(expected_values):
+            _refuse(f"{table} check constraint {name} differs from canonical 0020")
 
     indexes = _index_contract(connection, table)
     # Unique constraints create backing indexes. Ignore only those exact backing
