@@ -612,6 +612,86 @@ class PinPublication(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class PinterestAnalyticsSnapshot(Base):
+    __tablename__ = "pinterest_analytics_snapshots"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    publication_id: Mapped[str] = mapped_column(
+        ForeignKey("pin_publications.id", ondelete="RESTRICT"), index=True, nullable=False
+    )
+    pinterest_pin_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    metric_policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    observation_window: Mapped[str] = mapped_column(String(4), nullable=False)
+    range_start: Mapped[date] = mapped_column(Date, nullable=False)
+    range_end: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    provider_payload_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    impressions: Mapped[int] = mapped_column(Integer, nullable=False)
+    saves: Mapped[int] = mapped_column(Integer, nullable=False)
+    pin_clicks: Mapped[int] = mapped_column(Integer, nullable=False)
+    outbound_clicks: Mapped[int] = mapped_column(Integer, nullable=False)
+    engagements: Mapped[int] = mapped_column(Integer, nullable=False)
+    save_rate: Mapped[Decimal] = mapped_column(Numeric(24, 12), nullable=False)
+    pin_click_rate: Mapped[Decimal] = mapped_column(Numeric(24, 12), nullable=False)
+    outbound_click_rate: Mapped[Decimal] = mapped_column(Numeric(24, 12), nullable=False)
+    engagement_rate: Mapped[Decimal] = mapped_column(Numeric(24, 12), nullable=False)
+    safe_metric_map: Mapped[dict] = mapped_column(JSON, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finalized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        UniqueConstraint(
+            "publication_id",
+            "observation_window",
+            "metric_policy_version",
+            name="uq_pinterest_analytics_observation",
+        ),
+        CheckConstraint(
+            "observation_window IN ('D1','D7','D30','D90')",
+            name="ck_pinterest_analytics_window",
+        ),
+        CheckConstraint(
+            "impressions >= 0 AND saves >= 0 AND pin_clicks >= 0 "
+            "AND outbound_clicks >= 0 AND engagements >= 0",
+            name="ck_pinterest_analytics_counts_nonnegative",
+        ),
+    )
+
+
+class PinterestAnalyticsIngestionRun(Base):
+    __tablename__ = "pinterest_analytics_ingestion_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    publication_id: Mapped[str] = mapped_column(
+        ForeignKey("pin_publications.id", ondelete="RESTRICT"), index=True, nullable=False
+    )
+    observation_window: Mapped[str] = mapped_column(String(4), nullable=False)
+    pinterest_pin_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    range_start: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    range_end: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="STARTED", index=True)
+    provider_payload_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
+    snapshot_id: Mapped[str | None] = mapped_column(
+        ForeignKey("pinterest_analytics_snapshots.id", ondelete="SET NULL"), index=True
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    safe_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "observation_window IN ('D1','D7','D30','D90')",
+            name="ck_pinterest_analytics_run_window",
+        ),
+        CheckConstraint(
+            "status IN ('STARTED','SUCCEEDED','FAILED')",
+            name="ck_pinterest_analytics_run_status",
+        ),
+    )
+
+
 class PublicationAttempt(Base):
     __tablename__ = "publication_attempts"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)

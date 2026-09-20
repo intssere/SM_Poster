@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     pinterest_seo_brief_persistence_enabled: bool = False
     pinterest_seo_max_secondary_keywords: int = Field(default=5, ge=1, le=12)
     pinterest_autonomous_generation_enabled: bool = False
+    pinterest_analytics_ingestion_enabled: bool = False
     pinterest_write_scope_enabled: bool = False
     pinterest_board_write_scope_enabled: bool = False
     pinterest_board_provisioning_enabled: bool = False
