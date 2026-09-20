@@ -295,6 +295,44 @@ class PinterestPortfolioPlanItem(Base):
     )
 
 
+class PinterestOptimizerApplication(Base):
+    __tablename__ = "pinterest_optimizer_applications"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    plan_id: Mapped[str] = mapped_column(
+        ForeignKey("pinterest_portfolio_plans.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    plan_fingerprint_snapshot: Mapped[str] = mapped_column(String(64), nullable=False)
+    optimizer_policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    optimizer_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    learning_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    input_state_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    frozen_item_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    optimizable_item_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    exploit_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    explore_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    recommendation_snapshot: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="APPLIED", index=True)
+    applied_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "status = 'APPLIED'",
+            name="ck_pinterest_optimizer_application_status",
+        ),
+        CheckConstraint(
+            "frozen_item_count >= 0 AND optimizable_item_count >= 0 "
+            "AND exploit_count >= 0 AND explore_count >= 0",
+            name="ck_pinterest_optimizer_application_counts",
+        ),
+    )
+
+
 class PinterestSeoBrief(Base):
     __tablename__ = "pinterest_seo_briefs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
