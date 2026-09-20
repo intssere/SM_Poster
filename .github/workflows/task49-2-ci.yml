@@ -1,0 +1,72 @@
+name: Task 49.2 branch certification
+
+on:
+  push:
+    branches:
+      - task-49-2-serialize-production-alembic
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: sm_poster_task492
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d sm_poster_task492"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      PYTHONPATH: ${{ github.workspace }}/backend
+      DATABASE_URL: "sqlite:///:memory:"
+      TASK492_POSTGRES_URL: "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/sm_poster_task492"
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile backend and production launcher
+        run: |
+          python -m compileall -q app tests alembic
+          python -m py_compile ../scripts/start_production.py
+      - name: Production startup gate tests
+        run: pytest -q tests/test_start_production.py tests/test_production_startup_readiness.py
+      - name: Concurrent PostgreSQL Alembic upgrades serialize through 0019
+        env:
+          DATABASE_URL: ${{ env.TASK492_POSTGRES_URL }}
+        run: |
+          set +e
+          alembic upgrade head > /tmp/alembic-a.log 2>&1 &
+          p1=$!
+          alembic upgrade head > /tmp/alembic-b.log 2>&1 &
+          p2=$!
+          wait $p1
+          s1=$?
+          wait $p2
+          s2=$?
+          set -e
+          cat /tmp/alembic-a.log
+          cat /tmp/alembic-b.log
+          test "$s1" -eq 0
+          test "$s2" -eq 0
+          alembic current | grep 0019
+      - name: Task 49 board regression
+        run: pytest -q tests/test_pinterest_board_strategy.py tests/test_pinterest_oauth.py tests/test_pinterest_boards.py
+      - name: Full backend tests
+        run: pytest -q
