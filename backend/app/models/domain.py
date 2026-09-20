@@ -295,6 +295,38 @@ class PinterestPortfolioPlanItem(Base):
     )
 
 
+class PinterestSeoBrief(Base):
+    __tablename__ = "pinterest_seo_briefs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    portfolio_item_id: Mapped[str] = mapped_column(
+        ForeignKey("pinterest_portfolio_plan_items.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    seo_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    primary_keyword: Mapped[str] = mapped_column(String(255), nullable=False)
+    secondary_keywords: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    intent: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_evidence: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    dimension_scores: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    coverage_targets: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    guidance: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    cannibalization_warnings: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="CURRENT", index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('CURRENT','SUPERSEDED')",
+            name="ck_pinterest_seo_brief_status",
+        ),
+    )
+
+
 class PinConcept(Base):
     __tablename__ = "pin_concepts"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
