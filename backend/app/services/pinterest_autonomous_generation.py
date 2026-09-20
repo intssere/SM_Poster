@@ -166,7 +166,7 @@ def autonomous_generation_readiness(
     blockers: list[str] = []
     if item.is_reserve:
         blockers.append("RESERVE_ITEM_NOT_PROMOTED")
-    if item.status != "PLANNED":
+    if item.status not in {"PLANNED", "GENERATED"}:
         blockers.append("PORTFOLIO_ITEM_NOT_PLANNED")
 
     seo = db.scalar(
@@ -264,6 +264,8 @@ def autonomous_generation_readiness(
     if existing is not None:
         if input_fingerprint and existing.input_fingerprint == input_fingerprint and existing.status == "SUCCEEDED":
             already_generated = True
+            if item.status != "GENERATED":
+                blockers.append("GENERATION_RUN_DRIFT")
             if not (existing.concept_id and existing.draft_id and existing.creative_id):
                 blockers.append("GENERATION_RUN_DRIFT")
         elif existing.status == "STARTED":
