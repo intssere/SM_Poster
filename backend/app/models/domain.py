@@ -622,7 +622,7 @@ class PinterestAnalyticsSnapshot(Base):
     metric_policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
     observation_window: Mapped[str] = mapped_column(String(4), nullable=False)
     range_start: Mapped[date] = mapped_column(Date, nullable=False)
-    range_end: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    range_end: Mapped[date] = mapped_column(Date, nullable=False)
     provider_payload_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     impressions: Mapped[int] = mapped_column(Integer, nullable=False)
     saves: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -666,8 +666,8 @@ class PinterestAnalyticsIngestionRun(Base):
     )
     observation_window: Mapped[str] = mapped_column(String(4), nullable=False)
     pinterest_pin_id: Mapped[str] = mapped_column(String(80), nullable=False)
-    range_start: Mapped[datetime.date] = mapped_column(Date, nullable=False)
-    range_end: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    range_start: Mapped[date] = mapped_column(Date, nullable=False)
+    range_end: Mapped[date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="STARTED", index=True)
     provider_payload_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     snapshot_id: Mapped[str | None] = mapped_column(
@@ -688,6 +688,38 @@ class PinterestAnalyticsIngestionRun(Base):
         CheckConstraint(
             "status IN ('STARTED','SUCCEEDED','FAILED')",
             name="ck_pinterest_analytics_run_status",
+        ),
+    )
+
+
+class PinterestLearningSnapshot(Base):
+    __tablename__ = "pinterest_learning_snapshots"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    store_id: Mapped[str] = mapped_column(
+        ForeignKey("stores.id", ondelete="RESTRICT"), index=True, nullable=False
+    )
+    policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    as_of_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    input_fingerprint: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    learning_fingerprint: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    publication_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    global_priors: Mapped[dict] = mapped_column(JSON, nullable=False)
+    rankings: Mapped[dict] = mapped_column(JSON, nullable=False)
+    optimizer_ready: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        UniqueConstraint(
+            "store_id",
+            "policy_version",
+            "input_fingerprint",
+            name="uq_pinterest_learning_input",
+        ),
+        CheckConstraint(
+            "publication_count >= 0 AND snapshot_count >= 0",
+            name="ck_pinterest_learning_counts_nonnegative",
         ),
     )
 
