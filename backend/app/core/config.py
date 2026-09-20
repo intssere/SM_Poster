@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     pinterest_learning_prior_impressions: int = Field(default=500, ge=1, le=1000000)
     pinterest_learning_min_total_publications: int = Field(default=10, ge=1, le=100000)
     pinterest_learning_min_dimension_samples: int = Field(default=3, ge=1, le=10000)
+    pinterest_optimizer_enabled: bool = False
+    pinterest_optimizer_exploit_share: float = Field(default=0.70, ge=0.0, le=1.0)
     pinterest_write_scope_enabled: bool = False
     pinterest_board_write_scope_enabled: bool = False
     pinterest_board_provisioning_enabled: bool = False
