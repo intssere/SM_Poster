@@ -442,7 +442,9 @@ def test_exact_fingerprint_and_state_binding_are_required(monkeypatch):
         )
 
     item = db.get(PinterestPortfolioPlanItem, "item-a")
-    item.selection_metadata = {"source": "changed"}
+    changed_metadata = dict(item.selection_metadata)
+    changed_metadata["non_cap_state_marker"] = "changed"
+    item.selection_metadata = changed_metadata
     db.commit()
     with pytest.raises(applysvc.OptimizerApplyError, match="OPTIMIZER_INPUT_STATE_DRIFT"):
         applysvc.apply_optimizer(
@@ -546,3 +548,96 @@ def test_readiness_is_read_only_and_provider_ai_free(monkeypatch):
     assert db.query(PinterestOptimizerApplication).count() == 0
     assert len(db.new) == len(db.dirty) == len(db.deleted) == 0
     db.close(); engine.dispose()
+
+def test_valid_relaxed_board_plan_can_apply_and_become_active(monkeypatch):
+    engine, db = _db()
+    plan = _seed_plan(
+        db,
+        cap_metadata=_cap_metadata(
+            target_pins=3,
+            max_board_share=0.33,
+            board_cap_relaxed=True,
+        ),
+    )
+    a = db.get(PinterestPortfolioPlanItem, "item-a")
+    b = db.get(PinterestPortfolioPlanItem, "item-b")
+    reserve = db.get(PinterestPortfolioPlanItem, "item-r")
+    b.local_board_id = a.local_board_id
+    reserve.local_board_id = a.local_board_id
+    b_metadata = dict(b.selection_metadata)
+    b_metadata["selection_stage"] = "RELAXED"
+    b_metadata["relaxed_board_cap"] = True
+    b.selection_metadata = b_metadata
+    db.commit()
+
+    _patch_preview(monkeypatch)
+    settings = _enabled_settings(
+        pinterest_portfolio_max_board_share=0.01,
+    )
+    ready = applysvc.optimizer_apply_readiness(
+        db,
+        plan.id,
+        settings=settings,
+        as_of_at=AS_OF,
+    )
+
+    assert ready["ready"] is True
+    assert ready["planner_cap_contract_fingerprint"]
+    application = applysvc.apply_optimizer(
+        db,
+        plan.id,
+        expected_optimizer_fingerprint=ready["optimizer_fingerprint"],
+        expected_input_state_fingerprint=ready["input_state_fingerprint"],
+        settings=settings,
+        as_of_at=AS_OF,
+        now=AS_OF,
+    )
+
+    assert db.get(PinterestPortfolioPlan, plan.id).status == "ACTIVE"
+    assert application.status == "APPLIED"
+    assert (
+        application.recommendation_snapshot[
+            "planner_cap_contract_fingerprint"
+        ]
+        == ready["planner_cap_contract_fingerprint"]
+    )
+    db.close(); engine.dispose()
+
+
+def test_valid_cap_metadata_drift_invalidates_apply_input_binding(monkeypatch):
+    engine, db = _db()
+    plan = _seed_plan(db)
+    _patch_preview(monkeypatch)
+    settings = _enabled_settings()
+    ready = applysvc.optimizer_apply_readiness(
+        db,
+        plan.id,
+        settings=settings,
+        as_of_at=AS_OF,
+    )
+
+    changed = dict(plan.metadata_json)
+    changed["cap_policy"] = dict(changed["cap_policy"])
+    changed["cap_relaxation"] = dict(changed["cap_relaxation"])
+    changed["cap_policy"]["max_vendor_share"] = 0.50
+    changed["cap_policy"]["vendor_limit"] = 2
+    changed["cap_relaxation"]["vendor_limit"] = 2
+    plan.metadata_json = changed
+    db.commit()
+
+    with pytest.raises(
+        applysvc.OptimizerApplyError,
+        match="OPTIMIZER_INPUT_STATE_DRIFT",
+    ):
+        applysvc.apply_optimizer(
+            db,
+            plan.id,
+            expected_optimizer_fingerprint=ready["optimizer_fingerprint"],
+            expected_input_state_fingerprint=ready["input_state_fingerprint"],
+            settings=settings,
+            as_of_at=AS_OF,
+        )
+    assert db.query(PinterestOptimizerApplication).count() == 0
+    assert db.get(PinterestPortfolioPlan, plan.id).status == "DRAFT"
+    db.close(); engine.dispose()
+
