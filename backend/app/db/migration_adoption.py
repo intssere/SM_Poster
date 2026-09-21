@@ -22,6 +22,7 @@ OWNED_TABLES: dict[str, tuple[str, ...]] = {
     "0024": ("pinterest_learning_snapshots",),
     "0025": ("pinterest_optimizer_applications",),
     "0026": ("pinterest_autonomous_execution_runs",),
+    "0027": ("pinterest_autonomous_destination_runs",),
 }
 
 # SHA-256(json.dumps(catalog_contract, sort_keys=True)) for the canonical
