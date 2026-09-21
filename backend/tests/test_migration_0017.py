@@ -148,17 +148,23 @@ def test_0017_rejects_adversarial_partial_predicates(tmp_path, predicate):
             module.upgrade()
 
 
-def test_0017_index_predicate_unit_postgresql_shape_is_fail_closed():
+def test_0017_index_predicate_unit_postgresql_shape_is_fail_closed(monkeypatch):
     module = _migration_module()
     class FakeBind:
         dialect = type("Dialect", (), {"name": "postgresql"})()
     for predicate in ("status != 'ACTIVE'", "status = 'ACTIVE' OR 1=1"):
-        module.sa.inspect = lambda bind, predicate=predicate: type(
-            "Inspector", (), {"get_indexes": lambda self, table: [{
-                "name": "uq_buffer_pilot_activation_active", "column_names": ["status"],
-                "unique": True, "dialect_options": {"postgresql_where": predicate},
-            }]}
-        )()
+        monkeypatch.setattr(
+            module.sa,
+            "inspect",
+            lambda bind, predicate=predicate: type(
+                "Inspector", (), {"get_indexes": lambda self, table: [{
+                    "name": "uq_buffer_pilot_activation_active",
+                    "column_names": ["status"],
+                    "unique": True,
+                    "dialect_options": {"postgresql_where": predicate},
+                }]}
+            )(),
+        )
         with pytest.raises(RuntimeError, match="partial-index predicate"):
             module._index_contract(FakeBind(), "buffer_pilot_activations",
                                    "uq_buffer_pilot_activation_active", ["status"],
