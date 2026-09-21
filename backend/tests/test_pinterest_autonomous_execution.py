@@ -1452,7 +1452,7 @@ def test_destination_detects_input_drift_before_sync_resume():
         id="destination-drift",
         portfolio_item_id=seeded["item1"].id,
         plan_id=seeded["plan"].id,
-        input_fingerprint=ready["input_fingerprint"],
+        input_fingerprint="x" * 64,
         status="STARTED",
         stage="BOARD_SYNC_PENDING",
         safe_metadata={
@@ -1465,8 +1465,6 @@ def test_destination_detects_input_drift_before_sync_resume():
         },
         started_at=NOW,
     ))
-    db.commit()
-    seeded["plan"].plan_fingerprint = "z" * 64
     db.commit()
 
     with pytest.raises(
