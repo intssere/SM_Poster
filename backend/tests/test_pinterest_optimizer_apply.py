@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
+import math
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -56,7 +57,42 @@ def _enabled_settings(**overrides):
     )
 
 
-def _seed_plan(db, *, status="DRAFT", frozen=False):
+def _cap_metadata(
+    *,
+    target_pins: int = 3,
+    max_pins_per_product: int = 5,
+    max_vendor_share: float = 1.0,
+    max_board_share: float = 1.0,
+    vendor_cap_relaxed: bool = False,
+    board_cap_relaxed: bool = False,
+):
+    vendor_limit = max(1, math.ceil(target_pins * max_vendor_share))
+    board_limit = max(1, math.ceil(target_pins * max_board_share))
+    return {
+        "cap_policy": {
+            "max_pins_per_product": max_pins_per_product,
+            "max_vendor_share": max_vendor_share,
+            "max_board_share": max_board_share,
+            "vendor_limit": vendor_limit,
+            "board_limit": board_limit,
+        },
+        "cap_relaxation": {
+            "used": bool(vendor_cap_relaxed or board_cap_relaxed),
+            "vendor_cap_relaxed": vendor_cap_relaxed,
+            "board_cap_relaxed": board_cap_relaxed,
+            "vendor_limit": vendor_limit,
+            "board_limit": board_limit,
+        },
+    }
+
+
+def _seed_plan(
+    db,
+    *,
+    status="DRAFT",
+    frozen=False,
+    cap_metadata=None,
+):
     db.add(Store(id="store-1", name="Diamond Shelf", shop_domain="diamondshelf.us"))
     for index in range(1, 5):
         db.add(Product(
@@ -97,7 +133,10 @@ def _seed_plan(db, *, status="DRAFT", frozen=False):
         input_fingerprint="a" * 64,
         plan_fingerprint="b" * 64,
         status=status,
-        metadata_json={"existing": "keep"},
+        metadata_json={
+            "existing": "keep",
+            **(cap_metadata or _cap_metadata()),
+        },
     )
     db.add(plan)
     db.flush()
@@ -116,7 +155,14 @@ def _seed_plan(db, *, status="DRAFT", frozen=False):
             angle_key_snapshot="angle-1",
             seed_keywords=["alpha"],
             selection_score=Decimal("10.000000"),
-            selection_metadata={"source": "planner"},
+            selection_metadata={
+                "source": "planner",
+                "candidate_fingerprint": "a" * 64,
+                "vendor_key": "vendor-default",
+                "selection_stage": "STRICT",
+                "relaxed_vendor_cap": False,
+                "relaxed_board_cap": False,
+            },
             item_fingerprint="1" * 64,
             status="PLANNED",
         ),
@@ -133,7 +179,14 @@ def _seed_plan(db, *, status="DRAFT", frozen=False):
             angle_key_snapshot="angle-2",
             seed_keywords=["beta"],
             selection_score=Decimal("9.000000"),
-            selection_metadata={"source": "planner"},
+            selection_metadata={
+                "source": "planner",
+                "candidate_fingerprint": "b" * 64,
+                "vendor_key": "vendor-default",
+                "selection_stage": "STRICT",
+                "relaxed_vendor_cap": False,
+                "relaxed_board_cap": False,
+            },
             item_fingerprint="2" * 64,
             status="PLANNED",
         ),
@@ -150,7 +203,15 @@ def _seed_plan(db, *, status="DRAFT", frozen=False):
             angle_key_snapshot="angle-3",
             seed_keywords=["reserve"],
             selection_score=Decimal("8.000000"),
-            selection_metadata={"source": "planner", "retain": {"x": 1}},
+            selection_metadata={
+                "source": "planner",
+                "retain": {"x": 1},
+                "candidate_fingerprint": "c" * 64,
+                "vendor_key": "vendor-default",
+                "selection_stage": "RESERVE",
+                "relaxed_vendor_cap": False,
+                "relaxed_board_cap": False,
+            },
             item_fingerprint="3" * 64,
             status="PLANNED",
         ),
@@ -169,7 +230,14 @@ def _seed_plan(db, *, status="DRAFT", frozen=False):
             angle_key_snapshot="angle-4",
             seed_keywords=["frozen"],
             selection_score=Decimal("7.000000"),
-            selection_metadata={"frozen": True},
+            selection_metadata={
+                "frozen": True,
+                "candidate_fingerprint": "d" * 64,
+                "vendor_key": "vendor-default",
+                "selection_stage": "STRICT",
+                "relaxed_vendor_cap": False,
+                "relaxed_board_cap": False,
+            },
             item_fingerprint="4" * 64,
             status="GENERATED",
         ))
@@ -374,7 +442,9 @@ def test_exact_fingerprint_and_state_binding_are_required(monkeypatch):
         )
 
     item = db.get(PinterestPortfolioPlanItem, "item-a")
-    item.selection_metadata = {"source": "changed"}
+    changed_metadata = dict(item.selection_metadata)
+    changed_metadata["non_cap_state_marker"] = "changed"
+    item.selection_metadata = changed_metadata
     db.commit()
     with pytest.raises(applysvc.OptimizerApplyError, match="OPTIMIZER_INPUT_STATE_DRIFT"):
         applysvc.apply_optimizer(
@@ -478,3 +548,96 @@ def test_readiness_is_read_only_and_provider_ai_free(monkeypatch):
     assert db.query(PinterestOptimizerApplication).count() == 0
     assert len(db.new) == len(db.dirty) == len(db.deleted) == 0
     db.close(); engine.dispose()
+
+def test_valid_relaxed_board_plan_can_apply_and_become_active(monkeypatch):
+    engine, db = _db()
+    plan = _seed_plan(
+        db,
+        cap_metadata=_cap_metadata(
+            target_pins=3,
+            max_board_share=0.33,
+            board_cap_relaxed=True,
+        ),
+    )
+    a = db.get(PinterestPortfolioPlanItem, "item-a")
+    b = db.get(PinterestPortfolioPlanItem, "item-b")
+    reserve = db.get(PinterestPortfolioPlanItem, "item-r")
+    b.local_board_id = a.local_board_id
+    reserve.local_board_id = a.local_board_id
+    b_metadata = dict(b.selection_metadata)
+    b_metadata["selection_stage"] = "RELAXED"
+    b_metadata["relaxed_board_cap"] = True
+    b.selection_metadata = b_metadata
+    db.commit()
+
+    _patch_preview(monkeypatch)
+    settings = _enabled_settings(
+        pinterest_portfolio_max_board_share=0.01,
+    )
+    ready = applysvc.optimizer_apply_readiness(
+        db,
+        plan.id,
+        settings=settings,
+        as_of_at=AS_OF,
+    )
+
+    assert ready["ready"] is True
+    assert ready["planner_cap_contract_fingerprint"]
+    application = applysvc.apply_optimizer(
+        db,
+        plan.id,
+        expected_optimizer_fingerprint=ready["optimizer_fingerprint"],
+        expected_input_state_fingerprint=ready["input_state_fingerprint"],
+        settings=settings,
+        as_of_at=AS_OF,
+        now=AS_OF,
+    )
+
+    assert db.get(PinterestPortfolioPlan, plan.id).status == "ACTIVE"
+    assert application.status == "APPLIED"
+    assert (
+        application.recommendation_snapshot[
+            "planner_cap_contract_fingerprint"
+        ]
+        == ready["planner_cap_contract_fingerprint"]
+    )
+    db.close(); engine.dispose()
+
+
+def test_valid_cap_metadata_drift_invalidates_apply_input_binding(monkeypatch):
+    engine, db = _db()
+    plan = _seed_plan(db)
+    _patch_preview(monkeypatch)
+    settings = _enabled_settings()
+    ready = applysvc.optimizer_apply_readiness(
+        db,
+        plan.id,
+        settings=settings,
+        as_of_at=AS_OF,
+    )
+
+    changed = dict(plan.metadata_json)
+    changed["cap_policy"] = dict(changed["cap_policy"])
+    changed["cap_relaxation"] = dict(changed["cap_relaxation"])
+    changed["cap_policy"]["max_vendor_share"] = 0.50
+    changed["cap_policy"]["vendor_limit"] = 2
+    changed["cap_relaxation"]["vendor_limit"] = 2
+    plan.metadata_json = changed
+    db.commit()
+
+    with pytest.raises(
+        applysvc.OptimizerApplyError,
+        match="OPTIMIZER_INPUT_STATE_DRIFT",
+    ):
+        applysvc.apply_optimizer(
+            db,
+            plan.id,
+            expected_optimizer_fingerprint=ready["optimizer_fingerprint"],
+            expected_input_state_fingerprint=ready["input_state_fingerprint"],
+            settings=settings,
+            as_of_at=AS_OF,
+        )
+    assert db.query(PinterestOptimizerApplication).count() == 0
+    assert db.get(PinterestPortfolioPlan, plan.id).status == "DRAFT"
+    db.close(); engine.dispose()
+

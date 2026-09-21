@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timezone
-from decimal import Decimal
 import hashlib
 import json
 from typing import Any
@@ -23,6 +21,11 @@ from app.services.pinterest_adaptive_optimizer import (
     OPTIMIZER_POLICY_VERSION,
     OptimizerError,
     optimizer_preview,
+)
+from app.services.pinterest_portfolio_cap_contract import (
+    PlannerCapContractError,
+    cap_blockers,
+    validate_planner_cap_contract,
 )
 
 OPTIMIZER_APPLY_ACTOR = "adaptive-optimizer-v1"
@@ -71,11 +74,14 @@ def _item_state(item: PinterestPortfolioPlanItem) -> dict[str, Any]:
 def _input_state_fingerprint(
     plan: PinterestPortfolioPlan,
     items: list[PinterestPortfolioPlanItem],
+    *,
+    planner_cap_contract_fingerprint: str,
 ) -> str:
     return _hash({
         "plan_id": plan.id,
         "plan_fingerprint": plan.plan_fingerprint,
         "plan_status": plan.status,
+        "planner_cap_contract_fingerprint": planner_cap_contract_fingerprint,
         "items": [_item_state(item) for item in items],
     })
 
@@ -103,33 +109,6 @@ def _frozen_snapshot(items: list[PinterestPortfolioPlanItem]) -> dict[str, dict[
     }
 
 
-def _distribution_blockers(
-    items: list[PinterestPortfolioPlanItem],
-    settings: Settings,
-) -> list[str]:
-    blockers: list[str] = []
-    identities = [
-        (item.product_id, item.local_board_id, item.content_angle_id)
-        for item in items
-    ]
-    if len(identities) != len(set(identities)):
-        blockers.append("DUPLICATE_PLAN_ITEM_IDENTITY")
-
-    product_counts = Counter(item.product_id for item in items)
-    if product_counts and max(product_counts.values()) > settings.pinterest_portfolio_max_pins_per_product:
-        blockers.append("PRODUCT_CAP_EXCEEDED")
-
-    if items:
-        board_counts = Counter(item.local_board_id for item in items)
-        max_share = max(
-            Decimal(count) / Decimal(len(items))
-            for count in board_counts.values()
-        )
-        if max_share > Decimal(str(settings.pinterest_portfolio_max_board_share)):
-            blockers.append("BOARD_SHARE_CAP_EXCEEDED")
-    return blockers
-
-
 def optimizer_apply_readiness(
     db,
     plan_id: str,
@@ -143,10 +122,25 @@ def optimizer_apply_readiness(
         raise OptimizerApplyError("PORTFOLIO_PLAN_NOT_FOUND")
 
     items = _items(db, plan.id)
-    input_state_fingerprint = _input_state_fingerprint(plan, items)
+    try:
+        cap_contract = validate_planner_cap_contract(plan, items)
+    except PlannerCapContractError as exc:
+        raise OptimizerApplyError(exc.code) from None
+    input_state_fingerprint = _input_state_fingerprint(
+        plan,
+        items,
+        planner_cap_contract_fingerprint=cap_contract.fingerprint,
+    )
     existing = _existing_application(db, plan.id)
 
     if existing is not None:
+        stored_contract_fingerprint = (
+            (existing.recommendation_snapshot or {}).get(
+                "planner_cap_contract_fingerprint"
+            )
+        )
+        if stored_contract_fingerprint != cap_contract.fingerprint:
+            raise OptimizerApplyError("PLANNER_CAP_POLICY_MISMATCH")
         return {
             "policy_version": "PINTEREST_OPTIMIZER_APPLY_V1",
             "enabled": bool(
@@ -161,6 +155,7 @@ def optimizer_apply_readiness(
             "blockers": [] if plan.status == "ACTIVE" else ["APPLIED_PLAN_NOT_ACTIVE"],
             "optimizer_fingerprint": existing.optimizer_fingerprint,
             "input_state_fingerprint": existing.input_state_fingerprint,
+            "planner_cap_contract_fingerprint": cap_contract.fingerprint,
             "application_id": existing.id,
             "optimizable_item_count": existing.optimizable_item_count,
             "frozen_item_count": existing.frozen_item_count,
@@ -223,6 +218,7 @@ def optimizer_apply_readiness(
         "blockers": blockers,
         "optimizer_fingerprint": preview.get("optimizer_fingerprint"),
         "input_state_fingerprint": input_state_fingerprint,
+        "planner_cap_contract_fingerprint": cap_contract.fingerprint,
         "learning_fingerprint": preview.get("learning_fingerprint"),
         "optimizer_ready": preview.get("optimizer_ready"),
         "optimizable_item_count": len(optimizable),
@@ -251,8 +247,23 @@ def apply_optimizer(
     if plan is None:
         raise OptimizerApplyError("PORTFOLIO_PLAN_NOT_FOUND")
 
+    current_items = _items(db, plan.id)
+    try:
+        current_cap_contract = validate_planner_cap_contract(
+            plan,
+            current_items,
+        )
+    except PlannerCapContractError as exc:
+        raise OptimizerApplyError(exc.code) from None
     existing = _existing_application(db, plan.id)
     if existing is not None:
+        stored_contract_fingerprint = (
+            (existing.recommendation_snapshot or {}).get(
+                "planner_cap_contract_fingerprint"
+            )
+        )
+        if stored_contract_fingerprint != current_cap_contract.fingerprint:
+            raise OptimizerApplyError("PLANNER_CAP_POLICY_MISMATCH")
         if (
             plan.status == "ACTIVE"
             and existing.optimizer_fingerprint == expected_optimizer_fingerprint
@@ -356,7 +367,17 @@ def apply_optimizer(
         db.rollback()
         raise OptimizerApplyError("FROZEN_ITEM_MUTATION_DETECTED")
 
-    distribution_blockers = _distribution_blockers(after_items, settings)
+    try:
+        after_cap_contract = validate_planner_cap_contract(plan, after_items)
+    except PlannerCapContractError as exc:
+        db.rollback()
+        raise OptimizerApplyError(exc.code) from None
+    if after_cap_contract.fingerprint != readiness.get(
+        "planner_cap_contract_fingerprint"
+    ):
+        db.rollback()
+        raise OptimizerApplyError("PLANNER_CAP_POLICY_MISMATCH")
+    distribution_blockers = cap_blockers(after_items, after_cap_contract)
     if distribution_blockers:
         db.rollback()
         raise OptimizerApplyError(distribution_blockers[0])
@@ -380,6 +401,9 @@ def apply_optimizer(
         explore_count=int(readiness["explore_count"]),
         recommendation_snapshot={
             "recommendations": deepcopy(recommendations),
+            "planner_cap_contract_fingerprint": (
+                readiness.get("planner_cap_contract_fingerprint")
+            ),
         },
         status="APPLIED",
         applied_by=OPTIMIZER_APPLY_ACTOR,
