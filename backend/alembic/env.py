@@ -6,10 +6,7 @@ from sqlalchemy import engine_from_config, pool, text
 from app.db.base import Base
 from app.core.config import get_settings
 from app.db.session import sqlalchemy_database_url
-from app.db.migration_adoption import (
-    reconcile_preapplied_bundle,
-    verify_reconciled_bundle,
-)
+from app.db.migration_adoption import verify_reconciled_bundle
 from app.models import domain  # noqa: F401
 
 
@@ -35,10 +32,12 @@ def run_migrations_offline():
 def _run_online_migrations(connection):
     context.configure(connection=connection, target_metadata=target_metadata)
     with context.begin_transaction():
-        reconciled_bundle = reconcile_preapplied_bundle(connection, "0020")
         context.run_migrations()
-        if reconciled_bundle:
-            verify_reconciled_bundle(connection, "0027")
+        # Revision 0020 marks an exact Issue #117 bundle reconciliation on the
+        # migration connection. Revision 0027 verifies and clears that marker.
+        # If a migration command stops short of 0027, this outer check refuses
+        # the incomplete rebuild before the surrounding transaction can commit.
+        verify_reconciled_bundle(connection, "0027")
 
 
 def run_migrations_online():
