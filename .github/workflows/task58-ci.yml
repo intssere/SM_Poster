@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - task-58-autonomous-board-ensure-v3
+      - task-58-1-exact-0020-repair-v2
   pull_request:
     branches:
       - main
@@ -83,6 +84,7 @@ jobs:
         run: >-
           pytest -q
           tests/test_migration_schema_adoption.py
+          tests/test_migration_schema_repair_0020.py
           tests/test_production_alembic_0020_reconciler.py
           tests/test_start_production.py
           tests/test_production_startup_readiness.py
