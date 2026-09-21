@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
+import math
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -47,7 +48,44 @@ def _settings(**overrides):
     return Settings(**values)
 
 
-def _seed_plan(db, *, store_id="store-1", plan_id="plan-1", item_specs=None):
+def _cap_metadata(
+    *,
+    target_pins: int,
+    max_pins_per_product: int = 3,
+    max_vendor_share: float = 1.0,
+    max_board_share: float = 1.0,
+    vendor_cap_relaxed: bool = False,
+    board_cap_relaxed: bool = False,
+):
+    vendor_limit = max(1, math.ceil(target_pins * max_vendor_share))
+    board_limit = max(1, math.ceil(target_pins * max_board_share))
+    return {
+        "cap_policy": {
+            "max_pins_per_product": max_pins_per_product,
+            "max_vendor_share": max_vendor_share,
+            "max_board_share": max_board_share,
+            "vendor_limit": vendor_limit,
+            "board_limit": board_limit,
+        },
+        "cap_relaxation": {
+            "used": bool(vendor_cap_relaxed or board_cap_relaxed),
+            "vendor_cap_relaxed": vendor_cap_relaxed,
+            "board_cap_relaxed": board_cap_relaxed,
+            "vendor_limit": vendor_limit,
+            "board_limit": board_limit,
+        },
+    }
+
+
+def _seed_plan(
+    db,
+    *,
+    store_id="store-1",
+    plan_id="plan-1",
+    item_specs=None,
+    target_pins=150,
+    cap_metadata=None,
+):
     db.add(Store(id=store_id, name=store_id, shop_domain=f"{store_id}.example"))
     db.flush()
 
@@ -56,7 +94,7 @@ def _seed_plan(db, *, store_id="store-1", plan_id="plan-1", item_specs=None):
         store_id=store_id,
         month_start=date(2026, 9, 1),
         month_end=date(2026, 9, 30),
-        target_pins=150,
+        target_pins=target_pins,
         existing_commitments=0,
         planned_active_slots=0,
         reserve_slots=0,
@@ -64,7 +102,7 @@ def _seed_plan(db, *, store_id="store-1", plan_id="plan-1", item_specs=None):
         input_fingerprint=(plan_id.replace("-", "") + "a" * 64)[:64],
         plan_fingerprint=(plan_id.replace("-", "") + "b" * 64)[:64],
         status="DRAFT",
-        metadata_json={},
+        metadata_json=cap_metadata or _cap_metadata(target_pins=target_pins),
     )
     db.add(plan)
     db.flush()
@@ -102,12 +140,30 @@ def _seed_plan(db, *, store_id="store-1", plan_id="plan-1", item_specs=None):
             ))
         db.flush()
 
+        is_reserve = bool(spec.get("is_reserve", False))
+        selection_metadata = {
+            "candidate_fingerprint": spec.get(
+                "candidate_fingerprint",
+                (f"candidate-{plan_id}-{i}" + "d" * 64)[:64],
+            ),
+            "vendor_key": spec.get("vendor_key", "vendor-default"),
+            "selection_stage": spec.get(
+                "selection_stage",
+                "RESERVE" if is_reserve else "STRICT",
+            ),
+            "relaxed_vendor_cap": bool(spec.get("relaxed_vendor_cap", False)),
+            "relaxed_board_cap": bool(spec.get("relaxed_board_cap", False)),
+            **spec.get("selection_metadata", {}),
+        }
         db.add(PinterestPortfolioPlanItem(
             id=spec.get("id", f"item-{i}"),
             plan_id=plan.id,
             slot_index=spec.get("slot_index", i),
-            is_reserve=False,
-            planned_date=spec.get("planned_date", date(2026, 9, i)),
+            is_reserve=is_reserve,
+            planned_date=spec.get(
+                "planned_date",
+                None if is_reserve else date(2026, 9, i),
+            ),
             product_id=product_id,
             local_board_id=board_id,
             board_key_snapshot=board_id,
@@ -115,7 +171,7 @@ def _seed_plan(db, *, store_id="store-1", plan_id="plan-1", item_specs=None):
             angle_key_snapshot=angle_id,
             seed_keywords=[],
             selection_score=Decimal(str(spec.get("selection_score", "1.0"))),
-            selection_metadata={},
+            selection_metadata=selection_metadata,
             item_fingerprint=(f"{plan_id}-{i}" + "c" * 64)[:64],
             status=spec.get("status", "PLANNED"),
             publication_id=spec.get("publication_id"),
