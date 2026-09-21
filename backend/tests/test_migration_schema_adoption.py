@@ -72,7 +72,7 @@ def _current(url: str) -> str:
         check=True,
     )
     lines = [line.strip() for line in (result.stdout + result.stderr).splitlines()]
-    return next(line for line in lines if line == "0026 (head)")
+    return next(line for line in lines if line == "0027 (head)")
 
 
 def _set_bookkeeping(url: str, revision: str) -> None:
@@ -113,7 +113,7 @@ def _assert_frozen_owned_tables(url: str) -> None:
     engine = sa.create_engine(url)
     try:
         with engine.begin() as connection:
-            for revision in ("0020", "0021", "0022", "0023", "0024", "0025", "0026"):
+            for revision in ("0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027"):
                 assert adopt_preapplied_revision(connection, revision) is True
     finally:
         engine.dispose()
@@ -121,7 +121,7 @@ def _assert_frozen_owned_tables(url: str) -> None:
 
 def test_fresh_postgresql_upgrade_reaches_exact_head(isolated_database: str) -> None:
     _alembic(isolated_database, "head")
-    assert _current(isolated_database) == "0026 (head)"
+    assert _current(isolated_database) == "0027 (head)"
     _assert_frozen_owned_tables(isolated_database)
 
 
@@ -130,7 +130,7 @@ def test_simulated_production_0020_is_adopted(isolated_database: str) -> None:
     _alembic(isolated_database, "0020")
     _set_bookkeeping(isolated_database, "0019")
     _alembic(isolated_database, "head")
-    assert _current(isolated_database) == "0026 (head)"
+    assert _current(isolated_database) == "0027 (head)"
     _assert_frozen_owned_tables(isolated_database)
 
 
@@ -141,9 +141,9 @@ def test_full_preapply_adopts_each_revision_sequentially(
     _alembic(isolated_database, "head")
     _set_bookkeeping(isolated_database, "0019")
     output = _alembic(isolated_database, "head")
-    assert _current(isolated_database) == "0026 (head)"
+    assert _current(isolated_database) == "0027 (head)"
     _assert_frozen_owned_tables(isolated_database)
-    for revision in ("0020", "0021", "0022", "0023", "0024", "0025", "0026"):
+    for revision in ("0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027"):
         assert f"Running upgrade" in output
         assert revision in output
 
@@ -174,6 +174,7 @@ REVISION_TABLES = (
     ("0024", "pinterest_learning_snapshots"),
     ("0025", "pinterest_optimizer_applications"),
     ("0026", "pinterest_autonomous_execution_runs"),
+    ("0027", "pinterest_autonomous_destination_runs"),
 )
 
 
@@ -181,7 +182,7 @@ def test_canonical_tables_are_adoptable_and_empty() -> None:
     engine = sa.create_engine(POSTGRES_URL)
     try:
         with engine.begin() as connection:
-            for revision in ("0020", "0021", "0022", "0023", "0024", "0025", "0026"):
+            for revision in ("0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027"):
                 assert adopt_preapplied_revision(connection, revision) is True
     finally:
         engine.dispose()

@@ -19,6 +19,10 @@ from app.services.pinterest_autonomous_execution import (
     AutonomousExecutionError,
     execution_readiness,
 )
+from app.services.pinterest_autonomous_destination import (
+    AutonomousDestinationError,
+    destination_readiness,
+)
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
@@ -84,4 +88,19 @@ def preview_autonomous_execution(
             settings=get_settings(),
         )
     except AutonomousExecutionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.get("/items/{portfolio_item_id}/destination-readiness")
+def preview_autonomous_destination(
+    portfolio_item_id: str,
+    db: Session = Depends(get_db),
+):
+    try:
+        return destination_readiness(
+            db,
+            portfolio_item_id,
+            settings=get_settings(),
+        )
+    except AutonomousDestinationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None

@@ -1,7 +1,7 @@
 """Fail-closed adoption of Replit pre-applied migration tables.
 
 This module is intentionally migration-only.  The fingerprints are frozen from
-the canonical 0020-0026 PostgreSQL catalog and must not be derived from ORM
+the canonical 0020-0027 PostgreSQL catalog and must not be derived from ORM
 metadata at runtime.
 """
 from __future__ import annotations
@@ -22,6 +22,7 @@ OWNED_TABLES: dict[str, tuple[str, ...]] = {
     "0024": ("pinterest_learning_snapshots",),
     "0025": ("pinterest_optimizer_applications",),
     "0026": ("pinterest_autonomous_execution_runs",),
+    "0027": ("pinterest_autonomous_destination_runs",),
 }
 
 # SHA-256(json.dumps(catalog_contract, sort_keys=True)) for the canonical
@@ -37,6 +38,7 @@ FROZEN_FINGERPRINTS = {
     "pinterest_learning_snapshots": "1867887b11234216ad1bddf85a213a8d8d8a2eb6ddb33f9a3bf84e86ded7d6a3",
     "pinterest_optimizer_applications": "ddd9179f9e304a7fb5a5791d0201955a5d9944c33127f6ae225e461dbbfd9f81",
     "pinterest_autonomous_execution_runs": "ca54c18e8a5be6c46c5420446e267dfe5fa987dd1900ffd025170bdf74dd1ff5",
+    "pinterest_autonomous_destination_runs": "4a9acf5c2acd1cf24a6e937edb4cc8d429aaabd7731acb3673e29246305b4c44",
 }
 
 
