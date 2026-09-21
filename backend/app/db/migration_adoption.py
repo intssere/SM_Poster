@@ -545,7 +545,6 @@ def reconcile_post_publish_drift(connection: Any, revision: str) -> bool:
 
     _require_exact_alembic_revision(connection, "0027")
     _require_canonical_tables(connection, POST_PUBLISH_PRESERVED_TABLES)
-    _require_empty_tables(connection, POST_PUBLISH_PRESERVED_TABLES)
 
     present = _present_postgresql_tables(connection, POST_PUBLISH_DRIFT_TABLES)
     if tuple(present) != POST_PUBLISH_DRIFT_TABLES:
