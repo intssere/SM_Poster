@@ -19,7 +19,7 @@ from app.services.pinterest_autonomous_execution import (
     AutonomousExecutionError,
     execution_readiness,
 )
-from app.services.pinterest_autonomous_destination_readiness import (
+from app.services.pinterest_autonomous_destination import (
     AutonomousDestinationError,
     destination_readiness,
 )
