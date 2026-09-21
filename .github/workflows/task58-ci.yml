@@ -9,6 +9,7 @@ on:
       - task-58-2-preapplied-bundle-reconciliation-v3
       - task-58-3-post-publish-schema-canonicality
       - task-58-3-post-publish-schema-canonicality-v2
+      - task-58-4-frozen-planner-cap-contract
   pull_request:
     branches:
       - main
@@ -57,8 +58,8 @@ jobs:
 
       - name: Exact canonical ancestry guard
         run: |
-          test "$(git rev-parse HEAD)" != "dbb9b244b1884349efd637565b1e3bd6a4287776"
-          git merge-base --is-ancestor dbb9b244b1884349efd637565b1e3bd6a4287776 HEAD
+          test "$(git rev-parse HEAD)" != "a8537de348002de595c7b90bfdf18239617b7dd1"
+          git merge-base --is-ancestor a8537de348002de595c7b90bfdf18239617b7dd1 HEAD
 
       - uses: actions/setup-python@v5
         with:
@@ -99,6 +100,7 @@ jobs:
           tests/test_pinterest_autonomous_execution.py
           tests/test_pinterest_optimizer_apply.py
           tests/test_pinterest_adaptive_optimizer.py
+          tests/test_pinterest_optimizer_cap_contract_postgres.py
           tests/test_pinterest_learning_ranking.py
           tests/test_pinterest_performance_analytics.py
           tests/test_pinterest_autonomous_generation.py
