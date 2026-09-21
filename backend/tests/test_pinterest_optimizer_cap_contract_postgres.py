@@ -118,6 +118,7 @@ def test_postgres_relaxed_board_contract_persists_and_applies(
                 shop_domain="diamondshelf.us",
             )
         )
+        db.flush()
         for index in range(1, 4):
             db.add(
                 Product(
