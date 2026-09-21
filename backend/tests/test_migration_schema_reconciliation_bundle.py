@@ -531,3 +531,22 @@ def test_non_postgresql_refuses_preapplied_bundle() -> None:
                 reconcile_preapplied_bundle(connection, "0020")
     finally:
         engine.dispose()
+
+def test_partial_target_rolls_back_entire_bundle(
+    isolated_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A repaired bundle may not commit unless the full 0027 contract exists."""
+    _upgrade(isolated_database, "0019")
+    proxy = _create_proxy_bundle(isolated_database)
+    _alias_proxy_to_production_bundle(proxy, monkeypatch)
+
+    with pytest.raises(
+        SchemaAdoptionRefused,
+        match="reconciled bundle was not fully recreated",
+    ):
+        _upgrade(isolated_database, "0025")
+
+    assert _revision(isolated_database) == "0019"
+    _assert_proxy_bundle(isolated_database, proxy)
+
