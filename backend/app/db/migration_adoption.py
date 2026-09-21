@@ -41,6 +41,14 @@ FROZEN_FINGERPRINTS = {
     "pinterest_autonomous_destination_runs": "4a9acf5c2acd1cf24a6e937edb4cc8d429aaabd7731acb3673e29246305b4c44",
 }
 
+# Exact fingerprints observed on the empty production tables that were
+# pre-applied by the ORM before Alembic bookkeeping reached revision 0020.
+# These are the only non-canonical fingerprints eligible for repair.
+LEGACY_0020_FINGERPRINTS = {
+    "pinterest_portfolio_plans": "9a91ae0ff2d722c7e12c23e236698cfd71259308e1ef3a42e4782075754129bf",
+    "pinterest_portfolio_plan_items": "3085a01cf1385f9ed5cab605f236c7eceba49fab8f7ae4d6eac5e63e63f61274",
+}
+
 
 class SchemaAdoptionRefused(RuntimeError):
     """Raised when a pre-applied table is not exactly canonical and empty."""
@@ -151,6 +159,108 @@ def _lock_owned_tables(connection: Any, owned: tuple[str, ...]) -> None:
         connection.execute(sa.text(
             f'LOCK TABLE "public"."{table}" IN ACCESS EXCLUSIVE MODE'
         ))
+
+
+
+def repair_known_legacy_preapplied_revision(connection: Any, revision: str) -> bool:
+    """Drop only the exact known empty legacy 0020 pair so Alembic can recreate it.
+
+    PostgreSQL DDL is transactional, so any later failure in revision 0020
+    restores the original legacy tables together with the Alembic transaction.
+    Every state other than the exact production-observed pair fails closed.
+    """
+    if revision != "0020":
+        return False
+    if getattr(connection.dialect, "name", None) != "postgresql":
+        return False
+
+    owned = OWNED_TABLES[revision]
+    present = [
+        table for table in owned
+        if connection.execute(
+            sa.text("SELECT to_regclass(:qualified)"),
+            {"qualified": f"public.{table}"},
+        ).scalar_one() is not None
+    ]
+    if not present:
+        return False
+    if len(present) != len(owned):
+        _refuse(f"revision {revision} has partial table presence: {present}")
+
+    _lock_owned_tables(connection, owned)
+    locked_present = [
+        table for table in owned
+        if connection.execute(
+            sa.text("SELECT to_regclass(:qualified)"),
+            {"qualified": f"public.{table}"},
+        ).scalar_one() is not None
+    ]
+    if tuple(locked_present) != tuple(owned):
+        _refuse(f"revision {revision} table presence changed while locking")
+
+    actual_fingerprints = {
+        table: _fingerprint(_catalog_contract(connection, table))
+        for table in owned
+    }
+    canonical_fingerprints = {
+        table: FROZEN_FINGERPRINTS[table]
+        for table in owned
+    }
+    if actual_fingerprints == canonical_fingerprints:
+        return False
+    if actual_fingerprints != LEGACY_0020_FINGERPRINTS:
+        _refuse("revision 0020 pre-applied schema is not the known legacy repair contract")
+
+    for table in owned:
+        count = connection.execute(
+            sa.text(f'SELECT count(*) FROM "public"."{table}"')
+        ).scalar_one()
+        if int(count) != 0:
+            _refuse(f"{table} is not empty")
+
+    dependencies = connection.execute(sa.text(
+        """SELECT child.relname AS child_table, c.conname AS constraint_name
+        FROM pg_constraint c
+        JOIN pg_class child ON child.oid = c.conrelid
+        JOIN pg_namespace child_ns ON child_ns.oid = child.relnamespace
+        JOIN pg_class parent ON parent.oid = c.confrelid
+        JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
+        WHERE c.contype = 'f'
+          AND child_ns.nspname = 'public'
+          AND parent_ns.nspname = 'public'
+          AND parent.relname = ANY(:owned)
+          AND NOT (child.relname = ANY(:owned))
+        ORDER BY child.relname, c.conname"""
+    ), {"owned": list(owned)}).mappings().all()
+    if dependencies:
+        names = [
+            f"{row['child_table']}.{row['constraint_name']}"
+            for row in dependencies
+        ]
+        _refuse(
+            "revision 0020 legacy tables have unexpected external dependencies: "
+            + ", ".join(names)
+        )
+
+    # Child first, then parent.  No CASCADE: an unexpected dependency must fail
+    # instead of being silently removed.
+    connection.execute(sa.text(
+        'DROP TABLE "public"."pinterest_portfolio_plan_items"'
+    ))
+    connection.execute(sa.text(
+        'DROP TABLE "public"."pinterest_portfolio_plans"'
+    ))
+
+    remaining = [
+        table for table in owned
+        if connection.execute(
+            sa.text("SELECT to_regclass(:qualified)"),
+            {"qualified": f"public.{table}"},
+        ).scalar_one() is not None
+    ]
+    if remaining:
+        _refuse(f"revision {revision} legacy repair did not remove all owned tables")
+    return True
 
 
 def adopt_preapplied_revision(connection: Any, revision: str) -> bool:
