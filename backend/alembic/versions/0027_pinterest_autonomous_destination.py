@@ -1,11 +1,13 @@
-"""Durable autonomous destination/board-ensure coordinator.
+"""Durable autonomous destination ensure state.
 
 Revision ID: 0027
 Revises: 0026
 """
 from alembic import op
 import sqlalchemy as sa
+
 from app.db.migration_adoption import adopt_preapplied_revision
+
 
 revision = "0027"
 down_revision = "0026"
@@ -37,17 +39,17 @@ def upgrade():
         sa.Column(
             "board_provisioning_attempt_id",
             sa.String(36),
-            sa.ForeignKey("pinterest_board_provisioning_attempts.id", ondelete="SET NULL"),
+            sa.ForeignKey("pinterest_board_provisioning_attempts.id", ondelete="RESTRICT"),
         ),
         sa.Column(
             "pinterest_board_record_id",
             sa.String(36),
-            sa.ForeignKey("pinterest_boards.id", ondelete="SET NULL"),
+            sa.ForeignKey("pinterest_boards.id", ondelete="RESTRICT"),
         ),
         sa.Column(
             "autonomous_execution_run_id",
             sa.String(36),
-            sa.ForeignKey("pinterest_autonomous_execution_runs.id", ondelete="SET NULL"),
+            sa.ForeignKey("pinterest_autonomous_execution_runs.id", ondelete="RESTRICT"),
         ),
         sa.Column("safe_metadata", sa.JSON(), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
@@ -64,7 +66,7 @@ def upgrade():
         ),
         sa.UniqueConstraint(
             "input_fingerprint",
-            name="uq_pinterest_auto_destination_input",
+            name="uq_pinterest_auto_destination_fingerprint",
         ),
         sa.CheckConstraint(
             "status IN ('STARTED','SUCCEEDED','FAILED','UNKNOWN')",
@@ -76,12 +78,7 @@ def upgrade():
         ),
     )
     op.create_index(
-        "ix_pinterest_auto_destination_item",
-        "pinterest_autonomous_destination_runs",
-        ["portfolio_item_id"],
-    )
-    op.create_index(
-        "ix_pinterest_auto_destination_plan",
+        "ix_pinterest_auto_destination_plan_id",
         "pinterest_autonomous_destination_runs",
         ["plan_id"],
     )
@@ -96,24 +93,29 @@ def upgrade():
         ["stage"],
     )
     op.create_index(
-        "ix_pinterest_auto_destination_attempt",
+        "ix_pinterest_auto_destination_plan_stage",
+        "pinterest_autonomous_destination_runs",
+        ["plan_id", "stage"],
+    )
+    op.create_index(
+        "ix_pinterest_auto_destination_status_stage",
+        "pinterest_autonomous_destination_runs",
+        ["status", "stage"],
+    )
+    op.create_index(
+        "ix_pinterest_auto_destination_provisioning_attempt",
         "pinterest_autonomous_destination_runs",
         ["board_provisioning_attempt_id"],
     )
     op.create_index(
-        "ix_pinterest_auto_destination_board",
+        "ix_pinterest_auto_destination_board_record",
         "pinterest_autonomous_destination_runs",
         ["pinterest_board_record_id"],
     )
     op.create_index(
-        "ix_pinterest_auto_destination_execution",
+        "ix_pinterest_auto_destination_execution_run",
         "pinterest_autonomous_destination_runs",
         ["autonomous_execution_run_id"],
-    )
-    op.create_index(
-        "ix_pinterest_auto_destination_plan_stage",
-        "pinterest_autonomous_destination_runs",
-        ["plan_id", "stage"],
     )
 
 
