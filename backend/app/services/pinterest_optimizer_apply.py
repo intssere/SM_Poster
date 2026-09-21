@@ -134,6 +134,13 @@ def optimizer_apply_readiness(
     existing = _existing_application(db, plan.id)
 
     if existing is not None:
+        stored_contract_fingerprint = (
+            (existing.recommendation_snapshot or {}).get(
+                "planner_cap_contract_fingerprint"
+            )
+        )
+        if stored_contract_fingerprint != cap_contract.fingerprint:
+            raise OptimizerApplyError("PLANNER_CAP_POLICY_MISMATCH")
         return {
             "policy_version": "PINTEREST_OPTIMIZER_APPLY_V1",
             "enabled": bool(
@@ -248,19 +255,19 @@ def apply_optimizer(
         )
     except PlannerCapContractError as exc:
         raise OptimizerApplyError(exc.code) from None
-    current_input_state_fingerprint = _input_state_fingerprint(
-        plan,
-        current_items,
-        planner_cap_contract_fingerprint=current_cap_contract.fingerprint,
-    )
-
     existing = _existing_application(db, plan.id)
     if existing is not None:
+        stored_contract_fingerprint = (
+            (existing.recommendation_snapshot or {}).get(
+                "planner_cap_contract_fingerprint"
+            )
+        )
+        if stored_contract_fingerprint != current_cap_contract.fingerprint:
+            raise OptimizerApplyError("PLANNER_CAP_POLICY_MISMATCH")
         if (
             plan.status == "ACTIVE"
             and existing.optimizer_fingerprint == expected_optimizer_fingerprint
             and existing.input_state_fingerprint == expected_input_state_fingerprint
-            and current_input_state_fingerprint == expected_input_state_fingerprint
         ):
             return existing
         raise OptimizerApplyError("OPTIMIZER_APPLICATION_CONFLICT")
