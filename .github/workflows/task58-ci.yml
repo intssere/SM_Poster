@@ -6,6 +6,7 @@ on:
       - task-58-autonomous-board-ensure-v3
       - task-58-1-exact-0020-repair-v2
       - task-58-2-preapplied-bundle-reconciliation
+      - task-58-2-preapplied-bundle-reconciliation-v3
   pull_request:
     branches:
       - main
