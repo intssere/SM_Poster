@@ -125,7 +125,46 @@ def _create_proxy_bundle(url: str) -> dict[str, str]:
                 connection,
                 tables=[Base.metadata.tables[table] for table in BUNDLE_TABLES],
             )
-            return _fingerprints(connection)
+            # Task #58.3 intentionally makes the six later ORM models exactly
+            # canonical. This older Task #58.2 fixture still needs a disposable
+            # noncanonical catalog so aliasing it to the certified Issue #117
+            # fingerprints cannot also alias freshly rebuilt canonical tables.
+            for old_name, new_name in (
+                (
+                    "ix_pinterest_analytics_snapshots_payload_fp",
+                    "proxy_582_analytics_payload",
+                ),
+                (
+                    "ix_pinterest_analytics_runs_payload_fp",
+                    "proxy_582_ingestion_payload",
+                ),
+                (
+                    "ix_pinterest_learning_snapshots_input_fp",
+                    "proxy_582_learning_input",
+                ),
+                (
+                    "ix_pinterest_optimizer_applications_input_state",
+                    "proxy_582_optimizer_input",
+                ),
+                (
+                    "ix_pinterest_auto_exec_status",
+                    "proxy_582_exec_status",
+                ),
+                (
+                    "ix_pinterest_auto_destination_status",
+                    "proxy_582_destination_status",
+                ),
+            ):
+                connection.execute(
+                    sa.text(
+                        f'ALTER INDEX "public"."{old_name}" '
+                        f'RENAME TO "{new_name}"'
+                    )
+                )
+            proxy = _fingerprints(connection)
+            for table in BUNDLE_TABLES:
+                assert proxy[table] != FROZEN_FINGERPRINTS[table]
+            return proxy
     finally:
         engine.dispose()
 
