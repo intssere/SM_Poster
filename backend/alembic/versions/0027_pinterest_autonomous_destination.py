@@ -6,10 +6,7 @@ Revises: 0026
 from alembic import op
 import sqlalchemy as sa
 
-from app.db.migration_adoption import (
-    adopt_preapplied_revision,
-    verify_reconciled_bundle,
-)
+from app.db.migration_adoption import adopt_preapplied_revision
 
 
 revision = "0027"
@@ -21,7 +18,6 @@ depends_on = None
 def upgrade():
     bind = op.get_bind()
     if adopt_preapplied_revision(bind, revision):
-        verify_reconciled_bundle(bind, revision)
         return
     op.create_table(
         "pinterest_autonomous_destination_runs",
@@ -122,7 +118,6 @@ def upgrade():
         "pinterest_autonomous_destination_runs",
         ["autonomous_execution_run_id"],
     )
-    verify_reconciled_bundle(bind, revision)
 
 
 def downgrade():

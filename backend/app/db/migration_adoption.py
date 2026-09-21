@@ -62,8 +62,6 @@ PREAPPLIED_BUNDLE_DROP_ORDER = (
     "pinterest_portfolio_plans",
 )
 
-_BUNDLE_RECONCILIATION_INFO_KEY = "issue_117_bundle_reconciliation"
-
 # SHA-256(json.dumps(catalog_contract, sort_keys=True)) for the canonical
 # migration-created PostgreSQL tables.  Keeping hashes here prevents future
 # ORM metadata changes from widening the adoption contract.
@@ -338,7 +336,6 @@ def reconcile_preapplied_bundle(connection: Any, revision: str) -> bool:
     if tuple(present) != BUNDLE_TABLES:
         _refuse(f"pre-applied bundle has partial table presence: {present}")
 
-    _require_bundle_bookkeeping_at_0019(connection)
     _lock_owned_tables(connection, BUNDLE_TABLES)
 
     locked_present = _present_postgresql_tables(connection, BUNDLE_TABLES)
@@ -352,6 +349,7 @@ def reconcile_preapplied_bundle(connection: Any, revision: str) -> bool:
     }
     if fingerprints == canonical:
         return False
+    _require_bundle_bookkeeping_at_0019(connection)
     if fingerprints != PREAPPLIED_BUNDLE_FINGERPRINTS:
         _refuse("pre-applied bundle is not the exact Issue #117 fingerprint set")
 
@@ -370,7 +368,6 @@ def reconcile_preapplied_bundle(connection: Any, revision: str) -> bool:
     if remaining:
         _refuse(f"pre-applied bundle teardown left tables present: {remaining}")
 
-    connection.info[_BUNDLE_RECONCILIATION_INFO_KEY] = True
     return True
 
 
@@ -379,12 +376,8 @@ def _drop_preapplied_bundle_tables(connection: Any) -> None:
         connection.execute(sa.text(f'DROP TABLE "public"."{table}"'))
 
 
-def verify_reconciled_bundle(connection: Any, revision: str) -> None:
-    """Require a reconciled bundle to end revision 0027 exactly canonical."""
-    if revision != "0027":
-        return
-    if not connection.info.get(_BUNDLE_RECONCILIATION_INFO_KEY):
-        return
+def verify_reconciled_bundle(connection: Any) -> None:
+    """Require an explicitly reconciled bundle to be fully canonical."""
     if getattr(connection.dialect, "name", None) != "postgresql":
         _refuse("reconciled bundle verification requires PostgreSQL")
 
@@ -400,7 +393,6 @@ def verify_reconciled_bundle(connection: Any, revision: str) -> None:
     if fingerprints != canonical:
         _refuse("reconciled bundle did not produce all frozen canonical contracts")
     _require_empty_tables(connection, BUNDLE_TABLES)
-    connection.info.pop(_BUNDLE_RECONCILIATION_INFO_KEY, None)
 
 
 def repair_known_legacy_preapplied_revision(connection: Any, revision: str) -> bool:

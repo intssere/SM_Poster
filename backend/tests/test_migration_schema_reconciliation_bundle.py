@@ -24,6 +24,7 @@ from app.db.migration_adoption import (
     SchemaAdoptionRefused,
     _catalog_contract,
     _fingerprint,
+    _require_empty_tables,
     reconcile_preapplied_bundle,
 )
 from app.models import domain  # noqa: F401
@@ -252,6 +253,30 @@ def test_exact_bundle_reconciles_and_reaches_0027(
     try:
         with engine.begin() as connection:
             assert _fingerprints(connection) == FROZEN_FINGERPRINTS
+    finally:
+        engine.dispose()
+
+
+def test_exact_bundle_upgrade_short_of_0027_rolls_back(
+    isolated_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _upgrade(isolated_database, "0019")
+    proxy = _create_proxy_bundle(isolated_database)
+    _alias_proxy_to_production_bundle(proxy, monkeypatch)
+
+    with pytest.raises(
+        SchemaAdoptionRefused,
+        match="was not fully recreated",
+    ):
+        _upgrade(isolated_database, "0025")
+
+    assert _revision(isolated_database) == "0019"
+    _assert_proxy_bundle(isolated_database, proxy)
+    engine = sa.create_engine(isolated_database)
+    try:
+        with engine.begin() as connection:
+            _require_empty_tables(connection, BUNDLE_TABLES)
     finally:
         engine.dispose()
 
