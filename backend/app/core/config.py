@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     pinterest_portfolio_activation_enabled: bool = False
     pinterest_optimizer_apply_enabled: bool = False
     pinterest_autonomous_execution_enabled: bool = False
+    pinterest_autonomous_board_ensure_enabled: bool = False
     pinterest_autonomous_schedule_start_minute_utc: int = Field(default=840, ge=0, le=1438)
     pinterest_autonomous_schedule_end_minute_utc: int = Field(default=1320, ge=1, le=1439)
     pinterest_optimizer_exploit_share: float = Field(default=0.70, ge=0.0, le=1.0)
