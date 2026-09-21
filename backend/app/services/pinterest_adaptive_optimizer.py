@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 import hashlib
@@ -13,6 +12,11 @@ from sqlalchemy import select
 from app.core.config import Settings, get_settings
 from app.models.domain import PinterestPortfolioPlan, PinterestPortfolioPlanItem
 from app.services.pinterest_learning_ranking import LearningError, learning_preview
+from app.services.pinterest_portfolio_cap_contract import (
+    PlannerCapContractError,
+    cap_blockers,
+    validate_planner_cap_contract,
+)
 
 OPTIMIZER_POLICY_VERSION = "PINTEREST_OPTIMIZER_V1"
 SCORE_QUANTUM = Decimal("0.000000000001")
@@ -99,26 +103,6 @@ def _item_evidence(item: PinterestPortfolioPlanItem, index: dict[str, dict[str, 
     }
 
 
-def _cap_blockers(items: list[PinterestPortfolioPlanItem], settings: Settings) -> list[str]:
-    if not items:
-        return []
-    blockers: list[str] = []
-    product_counts = Counter(item.product_id for item in items)
-    board_counts = Counter(item.local_board_id for item in items)
-    if product_counts and max(product_counts.values()) > settings.pinterest_portfolio_max_pins_per_product:
-        blockers.append("PRODUCT_CAP_EXCEEDED")
-    max_board_share = max(Decimal(count) / Decimal(len(items)) for count in board_counts.values())
-    if max_board_share > Decimal(str(settings.pinterest_portfolio_max_board_share)):
-        blockers.append("BOARD_SHARE_CAP_EXCEEDED")
-    identities = [
-        (item.product_id, item.local_board_id, item.content_angle_id)
-        for item in items
-    ]
-    if len(identities) != len(set(identities)):
-        blockers.append("DUPLICATE_PLAN_ITEM_IDENTITY")
-    return blockers
-
-
 def optimizer_preview(
     db,
     plan_id: str,
@@ -152,7 +136,11 @@ def optimizer_preview(
         if item.status == "PLANNED" and item.publication_id is None
     ]
     frozen = [item for item in items if item not in optimizable]
-    blockers = _cap_blockers(items, settings)
+    try:
+        cap_contract = validate_planner_cap_contract(plan, items)
+    except PlannerCapContractError as exc:
+        raise OptimizerError(exc.code) from None
+    blockers = cap_blockers(items, cap_contract)
 
     try:
         learning = learning_preview(
@@ -262,6 +250,7 @@ def optimizer_preview(
         "policy_version": OPTIMIZER_POLICY_VERSION,
         "plan_id": plan.id,
         "plan_fingerprint": plan.plan_fingerprint,
+        "planner_cap_contract_fingerprint": cap_contract.fingerprint,
         "store_id": plan.store_id,
         "learning_fingerprint": learning.get("learning_fingerprint"),
         "optimizer_ready": optimizer_ready,
@@ -277,6 +266,17 @@ def optimizer_preview(
         "enabled": settings.pinterest_optimizer_enabled,
         "plan_id": plan.id,
         "store_id": plan.store_id,
+        "planner_cap_contract_fingerprint": cap_contract.fingerprint,
+        "planner_cap_contract": {
+            "max_pins_per_product": cap_contract.max_pins_per_product,
+            "max_vendor_share": str(cap_contract.max_vendor_share),
+            "max_board_share": str(cap_contract.max_board_share),
+            "vendor_limit": cap_contract.vendor_limit,
+            "board_limit": cap_contract.board_limit,
+            "used": cap_contract.used,
+            "vendor_cap_relaxed": cap_contract.vendor_cap_relaxed,
+            "board_cap_relaxed": cap_contract.board_cap_relaxed,
+        },
         "ready": not blockers,
         "blockers": blockers,
         "optimizer_ready": optimizer_ready,
