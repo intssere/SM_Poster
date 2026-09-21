@@ -41,6 +41,13 @@ FROZEN_FINGERPRINTS = {
     "pinterest_autonomous_destination_runs": "4a9acf5c2acd1cf24a6e937edb4cc8d429aaabd7731acb3673e29246305b4c44",
 }
 
+# Exact PostgreSQL catalogs observed for the two empty legacy 0020 tables.
+# This pair is the only non-canonical schema that adoption may repair.
+LEGACY_0020_FINGERPRINTS = {
+    "pinterest_portfolio_plans": "9a91ae0ff2d722c7e12c23e236698cfd71259308e1ef3a42e4782075754129bf",
+    "pinterest_portfolio_plan_items": "3085a01cf1385f9ed5cab605f236c7eceba49fab8f7ae4d6eac5e63e63f61274",
+}
+
 
 class SchemaAdoptionRefused(RuntimeError):
     """Raised when a pre-applied table is not exactly canonical and empty."""
@@ -153,6 +160,55 @@ def _lock_owned_tables(connection: Any, owned: tuple[str, ...]) -> None:
         ))
 
 
+def _table_fingerprints(
+    connection: Any,
+    owned: tuple[str, ...],
+) -> dict[str, str]:
+    return {
+        table: _fingerprint(_catalog_contract(connection, table))
+        for table in owned
+    }
+
+
+def _require_empty_owned_tables(
+    connection: Any,
+    owned: tuple[str, ...],
+) -> None:
+    for table in owned:
+        count = connection.execute(
+            sa.text(f'SELECT count(*) FROM "public"."{table}"')
+        ).scalar_one()
+        if int(count) != 0:
+            _refuse(f"{table} is not empty")
+
+
+def _repair_legacy_0020(connection: Any) -> None:
+    """Replace only the three version-sensitive legacy expression objects."""
+    statements = (
+        """ALTER TABLE "public"."pinterest_portfolio_plans"
+        DROP CONSTRAINT "ck_pinterest_portfolio_plan_status" """,
+        """ALTER TABLE "public"."pinterest_portfolio_plans"
+        ADD CONSTRAINT "ck_pinterest_portfolio_plan_status"
+        CHECK (status IN ('DRAFT','ACTIVE','COMPLETED','CANCELLED'))""",
+        """DROP INDEX "public"."uq_pinterest_portfolio_active_month" """,
+        """CREATE UNIQUE INDEX "uq_pinterest_portfolio_active_month"
+        ON "public"."pinterest_portfolio_plans" ("store_id", "month_start")
+        WHERE status IN ('DRAFT','ACTIVE')""",
+        """ALTER TABLE "public"."pinterest_portfolio_plan_items"
+        DROP CONSTRAINT "ck_pinterest_portfolio_plan_item_status" """,
+        """ALTER TABLE "public"."pinterest_portfolio_plan_items"
+        ADD CONSTRAINT "ck_pinterest_portfolio_plan_item_status"
+        CHECK (
+          status IN (
+            'PLANNED','PROMOTED','GENERATED','SCHEDULED',
+            'PUBLISHED','FAILED','SKIPPED'
+          )
+        )""",
+    )
+    for statement in statements:
+        connection.execute(sa.text(statement))
+
+
 def adopt_preapplied_revision(connection: Any, revision: str) -> bool:
     """Validate and adopt all tables owned by *revision*, returning whether adopted."""
     owned = OWNED_TABLES.get(revision)
@@ -191,14 +247,26 @@ def adopt_preapplied_revision(connection: Any, revision: str) -> bool:
     ]
     if tuple(locked_present) != tuple(owned):
         _refuse(f"revision {revision} table presence changed while locking")
+
+    fingerprints = _table_fingerprints(connection, owned)
+    canonical = {
+        table: FROZEN_FINGERPRINTS[table]
+        for table in owned
+    }
+    if fingerprints == canonical:
+        _require_empty_owned_tables(connection, owned)
+        return True
+
+    if revision == "0020" and fingerprints == LEGACY_0020_FINGERPRINTS:
+        _require_empty_owned_tables(connection, owned)
+        _repair_legacy_0020(connection)
+        repaired = _table_fingerprints(connection, owned)
+        if repaired != canonical:
+            _refuse("revision 0020 repair did not produce its frozen contracts")
+        _require_empty_owned_tables(connection, owned)
+        return True
+
     for table in owned:
-        actual = _catalog_contract(connection, table)
-        expected = FROZEN_FINGERPRINTS[table]
-        if _fingerprint(actual) != expected:
+        if fingerprints[table] != canonical[table]:
             _refuse(f"{table} differs from its frozen revision contract")
-        count = connection.execute(
-            sa.text(f'SELECT count(*) FROM "public"."{table}"')
-        ).scalar_one()
-        if int(count) != 0:
-            _refuse(f"{table} is not empty")
     return True

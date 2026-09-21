@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - task-58-autonomous-board-ensure-v3
+      - task-58-1-exact-0020-repair
   pull_request:
     branches:
       - main
@@ -52,8 +53,8 @@ jobs:
 
       - name: Exact canonical ancestry guard
         run: |
-          test "$(git rev-parse HEAD)" != "81b2da658cdc8ea9ecd3f0730c8cbb16a2c546b7"
-          git merge-base --is-ancestor 81b2da658cdc8ea9ecd3f0730c8cbb16a2c546b7 HEAD
+          test "$(git rev-parse HEAD)" != "064ddb9d26ee5c889bf3b869eb3109874b428494"
+          git merge-base --is-ancestor 064ddb9d26ee5c889bf3b869eb3109874b428494 HEAD
 
       - uses: actions/setup-python@v5
         with:
