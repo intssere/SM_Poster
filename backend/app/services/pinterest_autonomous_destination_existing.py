@@ -40,14 +40,23 @@ def _commit(db, run):
     return run
 
 
-def _terminal(db, run, code: str, now: datetime):
+def _terminal(
+    db,
+    run,
+    code: str,
+    now: datetime,
+    *,
+    status: str = "FAILED",
+):
+    if status not in {"FAILED", "UNKNOWN"}:
+        raise AutonomousDestinationError("AUTONOMOUS_DESTINATION_TERMINAL_STATUS_INVALID")
     run = db.get(PinterestAutonomousDestinationRun, run.id)
-    run.status = "FAILED"
+    run.status = status
     run.completed_at = now
     run.safe_metadata = {**(run.safe_metadata or {}), "terminal_code": code}
     db.add(AuditLog(
         actor=DESTINATION_ACTOR,
-        action="AUTONOMOUS_DESTINATION_FAILED",
+        action=f"AUTONOMOUS_DESTINATION_{status}",
         entity_type="PinterestAutonomousDestinationRun",
         entity_id=run.id,
         metadata_json={
