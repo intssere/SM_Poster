@@ -5,6 +5,7 @@ Revises: 0020
 """
 from alembic import op
 import sqlalchemy as sa
+from app.db.migration_adoption import adopt_preapplied_revision
 
 revision = "0021"
 down_revision = "0020"
@@ -13,6 +14,8 @@ depends_on = None
 
 
 def upgrade():
+    if adopt_preapplied_revision(op.get_bind(), revision):
+        return
     op.create_table(
         "pinterest_seo_briefs",
         sa.Column("id", sa.String(36), primary_key=True),
