@@ -10,6 +10,7 @@ on:
       - task-58-3-post-publish-schema-canonicality
       - task-58-3-post-publish-schema-canonicality-v2
       - task-58-4-frozen-planner-cap-contract
+      - task-58-5-dev-schema-0023-reconciliation
   pull_request:
     branches:
       - main
@@ -58,8 +59,8 @@ jobs:
 
       - name: Exact canonical ancestry guard
         run: |
-          test "$(git rev-parse HEAD)" != "a8537de348002de595c7b90bfdf18239617b7dd1"
-          git merge-base --is-ancestor a8537de348002de595c7b90bfdf18239617b7dd1 HEAD
+          test "$(git rev-parse HEAD)" != "144458682532d18adbf0c0df63681edcaf2f5e68"
+          git merge-base --is-ancestor 144458682532d18adbf0c0df63681edcaf2f5e68 HEAD
 
       - uses: actions/setup-python@v5
         with:
@@ -92,6 +93,7 @@ jobs:
           tests/test_migration_schema_repair_0020.py
           tests/test_migration_schema_reconciliation_bundle.py
           tests/test_migration_schema_repair_0028.py
+          tests/test_migration_schema_repair_dev_0023.py
           tests/test_orm_schema_canonicality.py
           tests/test_production_alembic_0020_reconciler.py
           tests/test_start_production.py
