@@ -5,7 +5,10 @@ Revises: 0019
 """
 from alembic import op
 import sqlalchemy as sa
-from app.db.migration_adoption import adopt_preapplied_revision
+from app.db.migration_adoption import (
+    adopt_preapplied_revision,
+    repair_known_legacy_preapplied_revision,
+)
 
 revision = "0020"
 down_revision = "0019"
@@ -14,7 +17,9 @@ depends_on = None
 
 
 def upgrade():
-    if adopt_preapplied_revision(op.get_bind(), revision):
+    bind = op.get_bind()
+    repaired_legacy = repair_known_legacy_preapplied_revision(bind, revision)
+    if adopt_preapplied_revision(bind, revision):
         return
     op.create_table(
         "pinterest_portfolio_plans",
@@ -189,6 +194,14 @@ def upgrade():
         "pinterest_portfolio_plan_items",
         ["publication_id"],
     )
+
+    # A repaired legacy pair must end this same transaction as the exact frozen
+    # canonical 0020 contract. Any mismatch aborts and restores the legacy
+    # tables because PostgreSQL DDL is transactional.
+    if repaired_legacy and not adopt_preapplied_revision(bind, revision):
+        raise RuntimeError(
+            "revision 0020 legacy repair did not recreate canonical tables"
+        )
 
 
 def downgrade():
