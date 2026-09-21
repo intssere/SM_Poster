@@ -871,3 +871,546 @@ def test_past_schedule_blocks_new_execution():
     assert "SCHEDULE_TIME_NOT_FUTURE" in result["blockers"]
     assert result["ready"] is False
     db.close(); engine.dispose()
+
+
+# Task #58 — autonomous board ensure + portfolio execution coordinator.
+import asyncio
+from types import SimpleNamespace
+
+from app.models.domain import (
+    PinterestAutonomousDestinationRun,
+    PinterestBoardProvisioningAttempt,
+)
+from app.services import pinterest_autonomous_destination as destination
+
+
+def _destination_settings(**overrides):
+    values = {
+        "pinterest_autonomous_board_ensure_enabled": True,
+        "pinterest_board_write_scope_enabled": True,
+        "pinterest_board_provisioning_enabled": True,
+    }
+    values.update(overrides)
+    return _settings(**values)
+
+
+def _remove_routed_provider_board(db, seeded):
+    db.delete(db.get(PinterestBoard, seeded["provider_board"].id))
+    connection = db.get(PinterestConnection, seeded["connection"].id)
+    connection.granted_scopes = [
+        "user_accounts:read",
+        "boards:read",
+        "pins:read",
+        "boards:write",
+    ]
+    db.commit()
+
+
+def _successful_task57(*args, **kwargs):
+    return SimpleNamespace(
+        id="execution-destination-1",
+        status="SUCCEEDED",
+        stage="PERMITTED",
+    )
+
+
+def _fake_board_create_success(db, attempt_id, **kwargs):
+    attempt = db.get(PinterestBoardProvisioningAttempt, attempt_id)
+    attempt.provider_mutation_started_at = kwargs.get("now") or NOW
+    attempt.status = "SUCCEEDED"
+    attempt.provider_board_id = "created-board-1"
+    attempt.completed_at = kwargs.get("now") or NOW
+    attempt.safe_metadata = {"provider_called": True, "classification": "SUCCEEDED"}
+    db.commit()
+    db.refresh(attempt)
+    return attempt
+
+
+async def _fake_sync_created_board(db, connection, client=None):
+    synced = NOW + timedelta(minutes=1)
+    connection.boards_last_synced_at = synced
+    existing = db.scalar(
+        select(PinterestBoard).where(
+            PinterestBoard.connection_id == connection.id,
+            PinterestBoard.external_board_id == "created-board-1",
+        )
+    )
+    if existing is None:
+        existing = PinterestBoard(
+            id="created-board-row-1",
+            connection_id=connection.id,
+            external_board_id="created-board-1",
+            name="Arabian Fragrance",
+            privacy="PUBLIC",
+            is_active=True,
+            is_eligible=False,
+            routing_label=None,
+            last_seen_at=synced,
+            last_synced_at=synced,
+        )
+        db.add(existing)
+    else:
+        existing.last_synced_at = synced
+        existing.last_seen_at = synced
+        existing.is_active = True
+    db.commit()
+
+
+def test_destination_readiness_is_non_mutating_and_get_route_is_registered():
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    settings = _destination_settings()
+    before = (
+        db.query(PinterestAutonomousDestinationRun).count(),
+        db.query(PinterestBoardProvisioningAttempt).count(),
+        len(db.new),
+        len(db.dirty),
+    )
+    result = destination.destination_readiness(
+        db, seeded["item1"].id, settings=settings, now=NOW
+    )
+    after = (
+        db.query(PinterestAutonomousDestinationRun).count(),
+        db.query(PinterestBoardProvisioningAttempt).count(),
+        len(db.new),
+        len(db.dirty),
+    )
+    assert result["ready"] is True
+    assert result["state_mutated"] is False
+    assert result["provider_called"] is False
+    assert before == after
+
+    from app.api.routes import portfolio as portfolio_routes
+    assert any(
+        getattr(route, "path", "").endswith(
+            "/portfolio/items/{portfolio_item_id}/destination-readiness"
+        )
+        and "GET" in getattr(route, "methods", set())
+        for route in portfolio_routes.router.routes
+    )
+    db.close(); engine.dispose()
+
+
+def test_destination_existing_board_executes_without_board_provider_calls(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    monkeypatch.setattr(destination, "execute_autonomous_item", _successful_task57)
+    monkeypatch.setattr(
+        destination,
+        "start_board_provisioning",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("existing-board path must not provision")
+        ),
+    )
+    async def no_sync(*a, **k):
+        raise AssertionError("existing-board path must not sync")
+    monkeypatch.setattr(destination, "sync_boards", no_sync)
+
+    run = asyncio.run(destination.ensure_autonomous_destination(
+        db,
+        seeded["item1"].id,
+        settings=_destination_settings(),
+        now=NOW,
+    ))
+    assert run.status == "SUCCEEDED"
+    assert run.stage == "EXECUTION_READY"
+    assert run.pinterest_board_record_id == seeded["provider_board"].id
+    assert run.autonomous_execution_run_id == "execution-destination-1"
+    db.close(); engine.dispose()
+
+
+def test_destination_missing_board_creates_once_syncs_reconciles_and_executes(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    _remove_routed_provider_board(db, seeded)
+    calls = {"create": 0, "sync": 0, "execute": 0}
+
+    async def create(db_arg, attempt_id, **kwargs):
+        calls["create"] += 1
+        return _fake_board_create_success(db_arg, attempt_id, **kwargs)
+
+    async def sync(db_arg, connection, client=None):
+        calls["sync"] += 1
+        await _fake_sync_created_board(db_arg, connection, client=client)
+
+    def execute(*args, **kwargs):
+        calls["execute"] += 1
+        return _successful_task57()
+
+    monkeypatch.setattr(destination, "execute_board_provisioning_attempt", create)
+    monkeypatch.setattr(destination, "sync_boards", sync)
+    monkeypatch.setattr(destination, "execute_autonomous_item", execute)
+
+    run = asyncio.run(destination.ensure_autonomous_destination(
+        db,
+        seeded["item1"].id,
+        settings=_destination_settings(),
+        now=NOW,
+    ))
+    assert run.status == "SUCCEEDED"
+    assert run.stage == "EXECUTION_READY"
+    assert calls == {"create": 1, "sync": 1, "execute": 1}
+    attempt = db.get(PinterestBoardProvisioningAttempt, run.board_provisioning_attempt_id)
+    assert attempt.status == "SUCCEEDED"
+    board = db.get(PinterestBoard, run.pinterest_board_record_id)
+    assert board.routing_label == "arabian-fragrance"
+    assert board.is_eligible is True
+    db.close(); engine.dispose()
+
+
+def test_destination_resumes_sync_pending_without_replaying_create(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    _remove_routed_provider_board(db, seeded)
+    create_calls = {"n": 0}
+    sync_calls = {"n": 0}
+
+    async def create(db_arg, attempt_id, **kwargs):
+        create_calls["n"] += 1
+        return _fake_board_create_success(db_arg, attempt_id, **kwargs)
+
+    async def first_sync(*args, **kwargs):
+        sync_calls["n"] += 1
+        raise RuntimeError("board not visible yet")
+
+    monkeypatch.setattr(destination, "execute_board_provisioning_attempt", create)
+    monkeypatch.setattr(destination, "sync_boards", first_sync)
+    monkeypatch.setattr(destination, "execute_autonomous_item", _successful_task57)
+
+    first = asyncio.run(destination.ensure_autonomous_destination(
+        db, seeded["item1"].id, settings=_destination_settings(), now=NOW
+    ))
+    assert first.status == "STARTED"
+    assert first.stage == "BOARD_SYNC_PENDING"
+    assert create_calls["n"] == 1
+
+    async def second_sync(db_arg, connection, client=None):
+        sync_calls["n"] += 1
+        await _fake_sync_created_board(db_arg, connection, client=client)
+
+    monkeypatch.setattr(destination, "sync_boards", second_sync)
+    second = asyncio.run(destination.ensure_autonomous_destination(
+        db, seeded["item1"].id, settings=_destination_settings(), now=NOW
+    ))
+    assert second.status == "SUCCEEDED"
+    assert second.stage == "EXECUTION_READY"
+    assert create_calls["n"] == 1
+    assert sync_calls["n"] == 2
+    db.close(); engine.dispose()
+
+
+def test_destination_sync_exception_is_resumable_without_replaying_create(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    _remove_routed_provider_board(db, seeded)
+    create_calls = {"n": 0}
+
+    async def create(db_arg, attempt_id, **kwargs):
+        create_calls["n"] += 1
+        return _fake_board_create_success(db_arg, attempt_id, **kwargs)
+
+    async def broken_sync(*args, **kwargs):
+        raise OSError("temporary GET failure")
+
+    monkeypatch.setattr(destination, "execute_board_provisioning_attempt", create)
+    monkeypatch.setattr(destination, "sync_boards", broken_sync)
+    monkeypatch.setattr(destination, "execute_autonomous_item", _successful_task57)
+
+    first = asyncio.run(destination.ensure_autonomous_destination(
+        db, seeded["item1"].id, settings=_destination_settings(), now=NOW
+    ))
+    assert first.stage == "BOARD_SYNC_PENDING"
+
+    async def recovered_sync(db_arg, connection, client=None):
+        await _fake_sync_created_board(db_arg, connection, client=client)
+
+    monkeypatch.setattr(destination, "sync_boards", recovered_sync)
+    second = asyncio.run(destination.ensure_autonomous_destination(
+        db, seeded["item1"].id, settings=_destination_settings(), now=NOW
+    ))
+    assert second.status == "SUCCEEDED"
+    assert create_calls["n"] == 1
+    db.close(); engine.dispose()
+
+
+def test_destination_concurrent_missing_board_has_one_coordinator_owner(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    _remove_routed_provider_board(db, seeded)
+    calls = {"create": 0}
+
+    async def create(db_arg, attempt_id, **kwargs):
+        calls["create"] += 1
+        return _fake_board_create_success(db_arg, attempt_id, **kwargs)
+
+    async def sync(db_arg, connection, client=None):
+        await _fake_sync_created_board(db_arg, connection, client=client)
+
+    monkeypatch.setattr(destination, "execute_board_provisioning_attempt", create)
+    monkeypatch.setattr(destination, "sync_boards", sync)
+    monkeypatch.setattr(destination, "execute_autonomous_item", _successful_task57)
+
+    first = asyncio.run(destination.ensure_autonomous_destination(
+        db, seeded["item1"].id, settings=_destination_settings(), now=NOW
+    ))
+    second = asyncio.run(destination.ensure_autonomous_destination(
+        db, seeded["item1"].id, settings=_destination_settings(), now=NOW
+    ))
+    assert first.id == second.id
+    assert calls["create"] == 1
+    assert db.query(PinterestAutonomousDestinationRun).count() == 1
+    assert db.query(PinterestBoardProvisioningAttempt).count() == 1
+    db.close(); engine.dispose()
+
+
+def test_destination_rejects_rerouting_after_identity_is_persisted(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    settings = _destination_settings()
+    ready = destination.destination_readiness(
+        db, seeded["item1"].id, settings=settings, now=NOW
+    )
+    run = PinterestAutonomousDestinationRun(
+        id="destination-reroute",
+        portfolio_item_id=seeded["item1"].id,
+        plan_id=seeded["plan"].id,
+        input_fingerprint=ready["input_fingerprint"],
+        status="STARTED",
+        stage="BOARD_READY",
+        pinterest_board_record_id="old-board-row",
+        safe_metadata={"board_record_id": "old-board-row"},
+        started_at=NOW,
+    )
+    db.add(run); db.commit()
+
+    with pytest.raises(
+        destination.AutonomousDestinationError,
+        match="AUTONOMOUS_DESTINATION_BOARD_ROUTING_DRIFT",
+    ):
+        asyncio.run(destination.ensure_autonomous_destination(
+            db, seeded["item1"].id, settings=settings, now=NOW
+        ))
+    db.close(); engine.dispose()
+
+
+def test_destination_persists_exact_readiness_identity_before_reroute(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+
+    def inspect_then_succeed(db_arg, item_id, **kwargs):
+        run = db_arg.scalar(
+            select(PinterestAutonomousDestinationRun).where(
+                PinterestAutonomousDestinationRun.portfolio_item_id == item_id
+            )
+        )
+        assert run is not None
+        assert run.status == "STARTED"
+        assert run.stage == "BOARD_READY"
+        assert run.safe_metadata["policy_version"] == "PINTEREST_AUTONOMOUS_DESTINATION_V1"
+        assert run.safe_metadata["board_canonical_key"] == "arabian-fragrance"
+        assert run.safe_metadata["board_record_id"] == seeded["provider_board"].id
+        return _successful_task57()
+
+    monkeypatch.setattr(destination, "execute_autonomous_item", inspect_then_succeed)
+    result = asyncio.run(destination.ensure_autonomous_destination(
+        db, seeded["item1"].id, settings=_destination_settings(), now=NOW
+    ))
+    assert result.status == "SUCCEEDED"
+    db.close(); engine.dispose()
+
+
+def test_destination_compare_and_set_cannot_overwrite_terminal_unknown(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    settings = _destination_settings()
+    ready = destination.destination_readiness(
+        db, seeded["item1"].id, settings=settings, now=NOW
+    )
+    run = PinterestAutonomousDestinationRun(
+        id="destination-cas",
+        portfolio_item_id=seeded["item1"].id,
+        plan_id=seeded["plan"].id,
+        input_fingerprint=ready["input_fingerprint"],
+        status="UNKNOWN",
+        stage="BOARD_PROVISIONING",
+        safe_metadata={"terminal_code": "FIRST_UNKNOWN"},
+        started_at=NOW,
+        completed_at=NOW,
+    )
+    db.add(run); db.commit()
+    result = destination._terminalize(
+        db,
+        run.id,
+        status="FAILED",
+        code="LATE_FAILURE",
+        now=NOW + timedelta(minutes=1),
+    )
+    assert result.status == "UNKNOWN"
+    assert result.safe_metadata["terminal_code"] == "FIRST_UNKNOWN"
+    db.close(); engine.dispose()
+
+
+@pytest.mark.parametrize("attempt_status", ["UNKNOWN", "FAILED"])
+def test_destination_terminal_provisioning_outcome_never_retries(monkeypatch, attempt_status):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    _remove_routed_provider_board(db, seeded)
+    settings = _destination_settings()
+    plan = destination.destination_readiness(
+        db, seeded["item1"].id, settings=settings, now=NOW
+    )["board_strategy"]
+    attempt = PinterestBoardProvisioningAttempt(
+        id=f"attempt-{attempt_status.lower()}",
+        connection_id=seeded["connection"].id,
+        canonical_key=plan["canonical_key"],
+        desired_name=plan["desired_name"],
+        desired_description=plan["desired_description"],
+        privacy=plan["privacy"],
+        request_fingerprint=plan["request_fingerprint"],
+        status=attempt_status,
+        provider_mutation_started_at=NOW,
+        error_code=f"SYNTHETIC_{attempt_status}",
+        safe_metadata={},
+        started_at=NOW,
+        completed_at=NOW,
+    )
+    db.add(attempt); db.commit()
+
+    async def must_not_create(*args, **kwargs):
+        raise AssertionError("terminal attempt must never be retried")
+    monkeypatch.setattr(destination, "execute_board_provisioning_attempt", must_not_create)
+
+    run = asyncio.run(destination.ensure_autonomous_destination(
+        db, seeded["item1"].id, settings=settings, now=NOW
+    ))
+    assert run.status == attempt_status
+    db.close(); engine.dispose()
+
+
+def test_destination_marks_failed_when_task57_fails(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+
+    def fail(*args, **kwargs):
+        raise execution.AutonomousExecutionError("TASK57_SYNTHETIC_FAILURE")
+
+    monkeypatch.setattr(destination, "execute_autonomous_item", fail)
+    with pytest.raises(
+        destination.AutonomousDestinationError,
+        match="TASK57_SYNTHETIC_FAILURE",
+    ):
+        asyncio.run(destination.ensure_autonomous_destination(
+            db, seeded["item1"].id, settings=_destination_settings(), now=NOW
+        ))
+    run = db.scalar(select(PinterestAutonomousDestinationRun))
+    assert run.status == "FAILED"
+    assert run.stage == "BOARD_READY"
+    db.close(); engine.dispose()
+
+
+def test_destination_detects_input_drift_before_sync_resume(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    settings = _destination_settings()
+    ready = destination.destination_readiness(
+        db, seeded["item1"].id, settings=settings, now=NOW
+    )
+    db.add(PinterestAutonomousDestinationRun(
+        id="destination-drift",
+        portfolio_item_id=seeded["item1"].id,
+        plan_id=seeded["plan"].id,
+        input_fingerprint=ready["input_fingerprint"],
+        status="STARTED",
+        stage="BOARD_SYNC_PENDING",
+        safe_metadata={},
+        started_at=NOW,
+    ))
+    db.commit()
+    seeded["plan"].plan_fingerprint = "z" * 64
+    db.commit()
+
+    with pytest.raises(
+        destination.AutonomousDestinationError,
+        match="AUTONOMOUS_DESTINATION_INPUT_DRIFT",
+    ):
+        asyncio.run(destination.ensure_autonomous_destination(
+            db, seeded["item1"].id, settings=settings, now=NOW
+        ))
+    db.close(); engine.dispose()
+
+
+def test_destination_adopts_preexisting_terminal_or_claimed_attempt_fail_closed(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    _remove_routed_provider_board(db, seeded)
+    settings = _destination_settings()
+    plan = destination.destination_readiness(
+        db, seeded["item1"].id, settings=settings, now=NOW
+    )["board_strategy"]
+    attempt = PinterestBoardProvisioningAttempt(
+        id="attempt-claimed",
+        connection_id=seeded["connection"].id,
+        canonical_key=plan["canonical_key"],
+        desired_name=plan["desired_name"],
+        desired_description=plan["desired_description"],
+        privacy=plan["privacy"],
+        request_fingerprint=plan["request_fingerprint"],
+        status="STARTED",
+        provider_mutation_started_at=NOW,
+        safe_metadata={},
+        started_at=NOW,
+    )
+    db.add(attempt); db.commit()
+
+    async def no_replay(*args, **kwargs):
+        raise AssertionError("claimed provider mutation cannot be replayed")
+    monkeypatch.setattr(destination, "execute_board_provisioning_attempt", no_replay)
+
+    run = asyncio.run(destination.ensure_autonomous_destination(
+        db, seeded["item1"].id, settings=settings, now=NOW
+    ))
+    assert run.status == "UNKNOWN"
+    assert run.board_provisioning_attempt_id == attempt.id
+    db.close(); engine.dispose()
+
+
+def test_destination_resumes_preexisting_succeeded_attempt_without_create(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    _remove_routed_provider_board(db, seeded)
+    settings = _destination_settings()
+    plan = destination.destination_readiness(
+        db, seeded["item1"].id, settings=settings, now=NOW
+    )["board_strategy"]
+    attempt = PinterestBoardProvisioningAttempt(
+        id="attempt-succeeded",
+        connection_id=seeded["connection"].id,
+        canonical_key=plan["canonical_key"],
+        desired_name=plan["desired_name"],
+        desired_description=plan["desired_description"],
+        privacy=plan["privacy"],
+        request_fingerprint=plan["request_fingerprint"],
+        status="SUCCEEDED",
+        provider_mutation_started_at=NOW,
+        provider_board_id="created-board-1",
+        safe_metadata={},
+        started_at=NOW,
+        completed_at=NOW,
+    )
+    db.add(attempt); db.commit()
+
+    async def no_create(*args, **kwargs):
+        raise AssertionError("succeeded provisioning attempt cannot be replayed")
+    async def sync(db_arg, connection, client=None):
+        await _fake_sync_created_board(db_arg, connection, client=client)
+
+    monkeypatch.setattr(destination, "execute_board_provisioning_attempt", no_create)
+    monkeypatch.setattr(destination, "sync_boards", sync)
+    monkeypatch.setattr(destination, "execute_autonomous_item", _successful_task57)
+
+    run = asyncio.run(destination.ensure_autonomous_destination(
+        db, seeded["item1"].id, settings=settings, now=NOW
+    ))
+    assert run.status == "SUCCEEDED"
+    assert run.board_provisioning_attempt_id == attempt.id
+    db.close(); engine.dispose()
