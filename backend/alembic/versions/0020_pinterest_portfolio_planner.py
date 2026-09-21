@@ -7,6 +7,7 @@ from alembic import op
 import sqlalchemy as sa
 from app.db.migration_adoption import (
     adopt_preapplied_revision,
+    reconcile_preapplied_bundle,
     repair_known_legacy_preapplied_revision,
 )
 
@@ -18,7 +19,12 @@ depends_on = None
 
 def upgrade():
     bind = op.get_bind()
-    repaired_legacy = repair_known_legacy_preapplied_revision(bind, revision)
+    reconciled_bundle = reconcile_preapplied_bundle(bind, revision)
+    repaired_legacy = (
+        False
+        if reconciled_bundle
+        else repair_known_legacy_preapplied_revision(bind, revision)
+    )
     if adopt_preapplied_revision(bind, revision):
         return
     op.create_table(
