@@ -25,6 +25,45 @@ OWNED_TABLES: dict[str, tuple[str, ...]] = {
     "0027": ("pinterest_autonomous_destination_runs",),
 }
 
+BUNDLE_TABLES = tuple(
+    table
+    for revision in ("0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027")
+    for table in OWNED_TABLES[revision]
+)
+
+# Exact empty catalogs left in production by the failed Replit publish for
+# Issue #117. This complete mapping is the only non-canonical 0020-0027 bundle
+# eligible for reconciliation.
+PREAPPLIED_BUNDLE_FINGERPRINTS = {
+    "pinterest_portfolio_plans": "9a91ae0ff2d722c7e12c23e236698cfd71259308e1ef3a42e4782075754129bf",
+    "pinterest_portfolio_plan_items": "3085a01cf1385f9ed5cab605f236c7eceba49fab8f7ae4d6eac5e63e63f61274",
+    "pinterest_seo_briefs": "32f3db20631cc243c492fb9fa9770a3fd33948b5b6345cc7bafa92275e7ee9e1",
+    "pinterest_autonomous_generation_runs": "a6c0ccdb9c5f8d73e06b0c554976d5923b01ad62582cd42aa335aab5e2557a57",
+    "pinterest_analytics_snapshots": "f48ddbaa2a3aa476e738a922be5bd894ec51f30c61bf452148c0a4eb4e09b720",
+    "pinterest_analytics_ingestion_runs": "7863c20acda5feca706a72a96f047f9683031346613bef257ca9a99cfe1ffe39",
+    "pinterest_learning_snapshots": "985935d8d8424d69bf5003e6c0c0e55656eb8990b418ec0cd3c23e4219f6e231",
+    "pinterest_optimizer_applications": "2605cb38c7f05c91f92931ab836592051277048fb711ce6cc8a03d8347fc7889",
+    "pinterest_autonomous_execution_runs": "e12a88dcc472ff7411ac09bf0f6d8ee89f4710f0e2a4e7f31e9689018c717c3a",
+    "pinterest_autonomous_destination_runs": "9acb16898b1f5db70bfade1dabe29d449d26a49a5c8752693f30ca3b292d523f",
+}
+
+# Child tables always precede their referenced parents. No statement may add
+# CASCADE: an unrecognized dependency must abort and roll back the transaction.
+PREAPPLIED_BUNDLE_DROP_ORDER = (
+    "pinterest_autonomous_destination_runs",
+    "pinterest_autonomous_execution_runs",
+    "pinterest_optimizer_applications",
+    "pinterest_learning_snapshots",
+    "pinterest_analytics_ingestion_runs",
+    "pinterest_analytics_snapshots",
+    "pinterest_autonomous_generation_runs",
+    "pinterest_seo_briefs",
+    "pinterest_portfolio_plan_items",
+    "pinterest_portfolio_plans",
+)
+
+_BUNDLE_RECONCILIATION_INFO_KEY = "issue_117_bundle_reconciliation"
+
 # SHA-256(json.dumps(catalog_contract, sort_keys=True)) for the canonical
 # migration-created PostgreSQL tables.  Keeping hashes here prevents future
 # ORM metadata changes from widening the adoption contract.
@@ -160,6 +199,208 @@ def _lock_owned_tables(connection: Any, owned: tuple[str, ...]) -> None:
             f'LOCK TABLE "public"."{table}" IN ACCESS EXCLUSIVE MODE'
         ))
 
+
+
+def _present_postgresql_tables(
+    connection: Any,
+    tables: tuple[str, ...],
+) -> list[str]:
+    return [
+        table for table in tables
+        if connection.execute(
+            sa.text("SELECT to_regclass(:qualified)"),
+            {"qualified": f"public.{table}"},
+        ).scalar_one() is not None
+    ]
+
+
+def _table_fingerprints(
+    connection: Any,
+    tables: tuple[str, ...],
+) -> dict[str, str]:
+    return {
+        table: _fingerprint(_catalog_contract(connection, table))
+        for table in tables
+    }
+
+
+def _require_empty_tables(connection: Any, tables: tuple[str, ...]) -> None:
+    for table in tables:
+        count = connection.execute(
+            sa.text(f'SELECT count(*) FROM "public"."{table}"')
+        ).scalar_one()
+        if int(count) != 0:
+            _refuse(f"{table} is not empty")
+
+
+def _external_bundle_dependencies(connection: Any) -> list[str]:
+    foreign_keys = connection.execute(sa.text(
+        """SELECT child_ns.nspname AS child_schema,
+               child.relname AS child_table,
+               c.conname AS constraint_name
+        FROM pg_constraint c
+        JOIN pg_class child ON child.oid = c.conrelid
+        JOIN pg_namespace child_ns ON child_ns.oid = child.relnamespace
+        JOIN pg_class parent ON parent.oid = c.confrelid
+        JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
+        WHERE c.contype = 'f'
+          AND parent_ns.nspname = 'public'
+          AND parent.relname = ANY(:owned)
+          AND NOT (
+              child_ns.nspname = 'public'
+              AND child.relname = ANY(:owned)
+          )
+        ORDER BY child_ns.nspname, child.relname, c.conname"""
+    ), {"owned": list(BUNDLE_TABLES)}).mappings().all()
+    rewrites = connection.execute(sa.text(
+        """SELECT DISTINCT dependent_ns.nspname AS dependent_schema,
+               dependent.relname AS dependent_relation,
+               rewrite.rulename AS dependent_rule
+        FROM pg_depend dependency
+        JOIN pg_rewrite rewrite ON rewrite.oid = dependency.objid
+        JOIN pg_class dependent ON dependent.oid = rewrite.ev_class
+        JOIN pg_namespace dependent_ns
+          ON dependent_ns.oid = dependent.relnamespace
+        JOIN pg_class parent ON parent.oid = dependency.refobjid
+        JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
+        WHERE dependency.classid = 'pg_rewrite'::regclass
+          AND parent_ns.nspname = 'public'
+          AND parent.relname = ANY(:owned)
+          AND NOT (
+              dependent_ns.nspname = 'public'
+              AND dependent.relname = ANY(:owned)
+          )
+        ORDER BY dependent_ns.nspname, dependent.relname, rewrite.rulename"""
+    ), {"owned": list(BUNDLE_TABLES)}).mappings().all()
+    inheritance = connection.execute(sa.text(
+        """SELECT child_ns.nspname AS child_schema,
+               child.relname AS child_table
+        FROM pg_inherits inheritance
+        JOIN pg_class child ON child.oid = inheritance.inhrelid
+        JOIN pg_namespace child_ns ON child_ns.oid = child.relnamespace
+        JOIN pg_class parent ON parent.oid = inheritance.inhparent
+        JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
+        WHERE parent_ns.nspname = 'public'
+          AND parent.relname = ANY(:owned)
+          AND NOT (
+              child_ns.nspname = 'public'
+              AND child.relname = ANY(:owned)
+          )
+        ORDER BY child_ns.nspname, child.relname"""
+    ), {"owned": list(BUNDLE_TABLES)}).mappings().all()
+    return [
+        f"foreign key {row['child_schema']}.{row['child_table']}."
+        f"{row['constraint_name']}"
+        for row in foreign_keys
+    ] + [
+        f"rewrite {row['dependent_schema']}.{row['dependent_relation']}."
+        f"{row['dependent_rule']}"
+        for row in rewrites
+    ] + [
+        f"inheritance {row['child_schema']}.{row['child_table']}"
+        for row in inheritance
+    ]
+
+
+def _require_bundle_bookkeeping_at_0019(connection: Any) -> None:
+    revisions = connection.execute(sa.text(
+        "SELECT version_num FROM alembic_version ORDER BY version_num"
+    )).scalars().all()
+    if list(revisions) != ["0019"]:
+        _refuse(
+            "pre-applied bundle reconciliation requires Alembic revision 0019"
+        )
+
+
+def reconcile_preapplied_bundle(connection: Any, revision: str) -> bool:
+    """Remove only the exact empty Issue #117 bundle for canonical rebuilding."""
+    if revision != "0020":
+        return False
+
+    is_postgresql = getattr(connection.dialect, "name", None) == "postgresql"
+    if not is_postgresql:
+        present = [
+            table for table in BUNDLE_TABLES
+            if connection.dialect.has_table(connection, table)
+        ]
+        if present:
+            _refuse("pre-applied bundle reconciliation requires PostgreSQL")
+        return False
+
+    present = _present_postgresql_tables(connection, BUNDLE_TABLES)
+    if not present:
+        return False
+
+    # The exact 0020 pair belongs to Task #58.1 and must retain its existing
+    # repair/adoption behavior rather than being treated as a partial bundle.
+    if tuple(present) == OWNED_TABLES["0020"]:
+        return False
+    if tuple(present) != BUNDLE_TABLES:
+        _refuse(f"pre-applied bundle has partial table presence: {present}")
+
+    _require_bundle_bookkeeping_at_0019(connection)
+    _lock_owned_tables(connection, BUNDLE_TABLES)
+
+    locked_present = _present_postgresql_tables(connection, BUNDLE_TABLES)
+    if tuple(locked_present) != BUNDLE_TABLES:
+        _refuse("pre-applied bundle table presence changed while locking")
+
+    fingerprints = _table_fingerprints(connection, BUNDLE_TABLES)
+    canonical = {
+        table: FROZEN_FINGERPRINTS[table]
+        for table in BUNDLE_TABLES
+    }
+    if fingerprints == canonical:
+        return False
+    if fingerprints != PREAPPLIED_BUNDLE_FINGERPRINTS:
+        _refuse("pre-applied bundle is not the exact Issue #117 fingerprint set")
+
+    _require_empty_tables(connection, BUNDLE_TABLES)
+
+    dependencies = _external_bundle_dependencies(connection)
+    if dependencies:
+        _refuse(
+            "pre-applied bundle has unexpected external dependencies: "
+            + ", ".join(dependencies)
+        )
+
+    _drop_preapplied_bundle_tables(connection)
+
+    remaining = _present_postgresql_tables(connection, BUNDLE_TABLES)
+    if remaining:
+        _refuse(f"pre-applied bundle teardown left tables present: {remaining}")
+
+    connection.info[_BUNDLE_RECONCILIATION_INFO_KEY] = True
+    return True
+
+
+def _drop_preapplied_bundle_tables(connection: Any) -> None:
+    for table in PREAPPLIED_BUNDLE_DROP_ORDER:
+        connection.execute(sa.text(f'DROP TABLE "public"."{table}"'))
+
+
+def verify_reconciled_bundle(connection: Any, revision: str) -> None:
+    """Require a reconciled bundle to end revision 0027 exactly canonical."""
+    if revision != "0027":
+        return
+    if not connection.info.get(_BUNDLE_RECONCILIATION_INFO_KEY):
+        return
+    if getattr(connection.dialect, "name", None) != "postgresql":
+        _refuse("reconciled bundle verification requires PostgreSQL")
+
+    present = _present_postgresql_tables(connection, BUNDLE_TABLES)
+    if tuple(present) != BUNDLE_TABLES:
+        _refuse(f"reconciled bundle was not fully recreated: {present}")
+
+    fingerprints = _table_fingerprints(connection, BUNDLE_TABLES)
+    canonical = {
+        table: FROZEN_FINGERPRINTS[table]
+        for table in BUNDLE_TABLES
+    }
+    if fingerprints != canonical:
+        _refuse("reconciled bundle did not produce all frozen canonical contracts")
+    _require_empty_tables(connection, BUNDLE_TABLES)
+    connection.info.pop(_BUNDLE_RECONCILIATION_INFO_KEY, None)
 
 
 def repair_known_legacy_preapplied_revision(connection: Any, revision: str) -> bool:
