@@ -57,6 +57,30 @@ def migration_command() -> list[str]:
     ]
 
 
+def schema_canonicality_guard_command() -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "app.db.schema_canonicality_guard",
+    ]
+
+
+def run_schema_canonicality_guard(
+    *,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> None:
+    """Refuse startup if post-migration PostgreSQL catalog contracts drift."""
+    result = runner(
+        schema_canonicality_guard_command(),
+        cwd=BACKEND_DIR,
+        check=False,
+    )
+    if int(result.returncode) != 0:
+        raise StartupError(
+            f"schema canonicality guard failed with status {int(result.returncode)}"
+        )
+
+
 def run_database_migrations(
     *,
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
@@ -231,6 +255,9 @@ def run() -> int:
         lifecycle("database_migration_started")
         run_database_migrations()
         lifecycle("database_migration_succeeded")
+        lifecycle("schema_canonicality_guard_started")
+        run_schema_canonicality_guard()
+        lifecycle("schema_canonicality_guard_succeeded")
         backend = start_backend()
         lifecycle("backend_process_started")
         wait_for_backend_ready(
