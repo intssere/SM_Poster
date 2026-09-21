@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - task-58-replit-preapplied-schema-adoption
+      - task-58-autonomous-board-ensure-v2
 
 permissions:
   contents: read
@@ -66,7 +67,33 @@ jobs:
           export DATABASE_URL="${TASK58_CATALOG_URL}"
           alembic upgrade head
           alembic current 2>&1 | tee /tmp/task58-current
-          grep -Fx '0026 (head)' /tmp/task58-current
+          grep -E '^002[67] \(head\)      - name: Adoption and focused regressions
+        run: >-
+          pytest -q
+          tests/test_migration_schema_adoption.py
+          tests/test_production_alembic_0020_reconciler.py
+          tests/test_start_production.py
+          tests/test_production_startup_readiness.py
+          tests/test_routine_scheduler_postgres_lease.py
+          tests/test_pinterest_autonomous_destination.py
+          tests/test_pinterest_autonomous_execution.py
+          tests/test_pinterest_optimizer_apply.py
+          tests/test_pinterest_adaptive_optimizer.py
+          tests/test_pinterest_learning_ranking.py
+          tests/test_pinterest_performance_analytics.py
+          tests/test_pinterest_autonomous_generation.py
+          tests/test_pinterest_seo_intelligence.py
+          tests/test_pinterest_portfolio_planner.py
+          tests/test_pinterest_board_strategy.py
+          tests/test_routine_autonomous_authorization.py
+          tests/test_routine_activation_readiness.py
+          tests/test_routine_operational_readiness.py
+          tests/test_routine_pinterest_scheduler.py
+          tests/test_routine_pinterest_publishing_foundation.py
+          tests/test_routine_one_shot_live.py
+      - name: Full backend tests
+        if: matrix.postgres == '16'
+        run: pytest -q /tmp/task58-current
       - name: Adoption and focused regressions
         run: >-
           pytest -q
