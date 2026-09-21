@@ -128,6 +128,23 @@ POST_PUBLISH_DRIFT_DROP_ORDER = (
 )
 
 
+# Exact empty Replit development database state observed at Alembic 0023.
+# This is intentionally separate from the production Task #58.3 allowlist
+# because the development execution-run catalog has a different fingerprint.
+DEV_0023_DRIFT_TABLES = POST_PUBLISH_DRIFT_TABLES
+DEV_0023_PRESERVED_TABLES = POST_PUBLISH_PRESERVED_TABLES
+DEV_0023_DRIFT_FINGERPRINTS = {
+    "pinterest_analytics_snapshots": "54751d9124942ca617d34da53e997f45f2a5924efae2d92deadfca944b5ca25e",
+    "pinterest_analytics_ingestion_runs": "4aaccd7247ba75c43f3319842b3a86a816b55cb205537cb7d1dfb1da2abba3c5",
+    "pinterest_learning_snapshots": "985935d8d8424d69bf5003e6c0c0e55656eb8990b418ec0cd3c23e4219f6e231",
+    "pinterest_optimizer_applications": "2605cb38c7f05c91f92931ab836592051277048fb711ce6cc8a03d8347fc7889",
+    "pinterest_autonomous_execution_runs": "26cb4cbfa1b2adb97f42a0ef8f8a0700c40937b06e07387ab57e9cffffc8d28d",
+    "pinterest_autonomous_destination_runs": "fc7f6af3194be33a88ae130358250d75c08e0fd839606dcb1f86ef54fce7664b",
+}
+DEV_0023_DROP_ORDER = POST_PUBLISH_DRIFT_DROP_ORDER
+_DEV_0023_RECONCILIATION_INFO_KEY = "task_58_5_dev_0023_reconciliation"
+
+
 class SchemaAdoptionRefused(RuntimeError):
     """Raised when a pre-applied table is not exactly canonical and empty."""
 
@@ -534,6 +551,131 @@ def _require_canonical_tables(
     expected = {table: FROZEN_FINGERPRINTS[table] for table in tables}
     if fingerprints != expected:
         _refuse("canonical predecessor contracts do not match frozen fingerprints")
+
+
+def reconcile_development_drift_at_0024(
+    connection: Any,
+    revision: str,
+) -> bool:
+    """Remove only the exact empty development drift observed at Alembic 0023."""
+    if revision != "0024":
+        return False
+    if getattr(connection.dialect, "name", None) != "postgresql":
+        return False
+
+    _require_exact_alembic_revision(connection, "0023")
+    _require_canonical_tables(connection, DEV_0023_PRESERVED_TABLES)
+
+    present = _present_postgresql_tables(connection, DEV_0023_DRIFT_TABLES)
+
+    # Normal canonical 0023 has only its two analytics tables present.  Leave
+    # that state to the ordinary 0024 migration path.
+    analytics_only = OWNED_TABLES["0023"]
+    if tuple(present) == analytics_only:
+        analytics_fingerprints = _table_fingerprints(connection, analytics_only)
+        expected = {
+            table: FROZEN_FINGERPRINTS[table]
+            for table in analytics_only
+        }
+        if analytics_fingerprints != expected:
+            _refuse("revision 0023 analytics tables are non-canonical")
+        return False
+
+    if tuple(present) != DEV_0023_DRIFT_TABLES:
+        _refuse(f"development 0023 drift has partial table presence: {present}")
+
+    fingerprints = _table_fingerprints(connection, DEV_0023_DRIFT_TABLES)
+    canonical = {
+        table: FROZEN_FINGERPRINTS[table]
+        for table in DEV_0023_DRIFT_TABLES
+    }
+    if fingerprints == canonical:
+        # A fully canonical pre-applied future bundle can retain the existing
+        # per-revision adoption behavior.
+        return False
+    if fingerprints != DEV_0023_DRIFT_FINGERPRINTS:
+        _refuse("development 0023 drift is not the exact Task #58.5 fingerprint set")
+
+    # Lock the complete owned bundle so predecessor and target contracts cannot
+    # change between validation and teardown.
+    _lock_owned_tables(connection, BUNDLE_TABLES)
+
+    _require_exact_alembic_revision(connection, "0023")
+    locked_present = _present_postgresql_tables(connection, BUNDLE_TABLES)
+    if tuple(locked_present) != BUNDLE_TABLES:
+        _refuse("development 0023 table presence changed while locking")
+
+    _require_canonical_tables(connection, DEV_0023_PRESERVED_TABLES)
+    _require_empty_tables(connection, DEV_0023_PRESERVED_TABLES)
+
+    locked_fingerprints = _table_fingerprints(
+        connection,
+        DEV_0023_DRIFT_TABLES,
+    )
+    if locked_fingerprints != DEV_0023_DRIFT_FINGERPRINTS:
+        _refuse("development 0023 drift fingerprints changed while locking")
+    _require_empty_tables(connection, DEV_0023_DRIFT_TABLES)
+
+    dependencies = _external_dependencies_for_tables(
+        connection,
+        DEV_0023_DRIFT_TABLES,
+    )
+    if dependencies:
+        _refuse(
+            "development 0023 drift has unexpected external dependencies: "
+            + ", ".join(dependencies)
+        )
+
+    for table in DEV_0023_DROP_ORDER:
+        connection.execute(sa.text(f'DROP TABLE "public"."{table}"'))
+
+    remaining = _present_postgresql_tables(
+        connection,
+        DEV_0023_DRIFT_TABLES,
+    )
+    if remaining:
+        _refuse(
+            "development 0023 reconciliation left drift tables present: "
+            + ", ".join(remaining)
+        )
+
+    connection.info[_DEV_0023_RECONCILIATION_INFO_KEY] = True
+    return True
+
+
+def verify_development_0023_analytics_rebuild(connection: Any) -> None:
+    """Verify canonical recreation of the already-recorded revision 0023 tables."""
+    if not connection.info.get(_DEV_0023_RECONCILIATION_INFO_KEY):
+        return
+    if getattr(connection.dialect, "name", None) != "postgresql":
+        _refuse("development 0023 reconciliation verification requires PostgreSQL")
+    _require_canonical_tables(connection, OWNED_TABLES["0023"])
+    _require_empty_tables(connection, OWNED_TABLES["0023"])
+    _require_canonical_tables(connection, DEV_0023_PRESERVED_TABLES)
+    _require_empty_tables(connection, DEV_0023_PRESERVED_TABLES)
+
+
+def verify_development_reconciliation(connection: Any, revision: str) -> None:
+    """Require a Task #58.5 reconciliation to finish 0027 fully canonical."""
+    if revision != "0027":
+        return
+    if not connection.info.get(_DEV_0023_RECONCILIATION_INFO_KEY):
+        return
+    if getattr(connection.dialect, "name", None) != "postgresql":
+        _refuse("development reconciliation verification requires PostgreSQL")
+
+    present = _present_postgresql_tables(connection, BUNDLE_TABLES)
+    if tuple(present) != BUNDLE_TABLES:
+        _refuse(f"development reconciliation was not fully recreated: {present}")
+    fingerprints = _table_fingerprints(connection, BUNDLE_TABLES)
+    expected = {
+        table: FROZEN_FINGERPRINTS[table]
+        for table in BUNDLE_TABLES
+    }
+    if fingerprints != expected:
+        _refuse("development reconciliation did not produce frozen canonical contracts")
+    _require_empty_tables(connection, BUNDLE_TABLES)
+    connection.info.pop(_DEV_0023_RECONCILIATION_INFO_KEY, None)
 
 
 def reconcile_post_publish_drift(connection: Any, revision: str) -> bool:

@@ -8,6 +8,7 @@ import sqlalchemy as sa
 
 from app.db.migration_adoption import (
     adopt_preapplied_revision,
+    verify_development_reconciliation,
     verify_reconciled_bundle,
 )
 
@@ -22,6 +23,7 @@ def upgrade():
     bind = op.get_bind()
     if adopt_preapplied_revision(bind, revision):
         verify_reconciled_bundle(bind, revision)
+        verify_development_reconciliation(bind, revision)
         return
     op.create_table(
         "pinterest_autonomous_destination_runs",
@@ -123,6 +125,7 @@ def upgrade():
         ["autonomous_execution_run_id"],
     )
     verify_reconciled_bundle(bind, revision)
+    verify_development_reconciliation(bind, revision)
 
 
 def downgrade():
