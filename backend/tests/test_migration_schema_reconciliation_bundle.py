@@ -237,7 +237,7 @@ def test_only_certified_issue_117_bundle_is_allowlisted() -> None:
     }
 
 
-def test_exact_bundle_reconciles_and_reaches_0027(
+def test_exact_bundle_reconciles_and_reaches_current_head(
     isolated_database: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -247,7 +247,7 @@ def test_exact_bundle_reconciles_and_reaches_0027(
 
     _upgrade(isolated_database, "head")
 
-    assert _revision(isolated_database) == "0027"
+    assert _revision(isolated_database) == "0028"
     engine = sa.create_engine(isolated_database)
     try:
         with engine.begin() as connection:
@@ -256,16 +256,16 @@ def test_exact_bundle_reconciles_and_reaches_0027(
         engine.dispose()
 
 
-def test_fresh_upgrade_still_reaches_0027(isolated_database: str) -> None:
+def test_fresh_upgrade_still_reaches_current_head(isolated_database: str) -> None:
     _upgrade(isolated_database, "head")
-    assert _revision(isolated_database) == "0027"
+    assert _revision(isolated_database) == "0028"
 
 
 def test_complete_canonical_bundle_still_adopts(isolated_database: str) -> None:
     _upgrade(isolated_database, "head")
     _set_revision(isolated_database, "0019")
     _upgrade(isolated_database, "head")
-    assert _revision(isolated_database) == "0027"
+    assert _revision(isolated_database) == "0028"
 
 
 def test_exact_0020_only_pair_is_left_for_task_58_1(
