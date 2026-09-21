@@ -301,26 +301,37 @@ class PinterestOptimizerApplication(Base):
     plan_id: Mapped[str] = mapped_column(
         ForeignKey("pinterest_portfolio_plans.id", ondelete="RESTRICT"),
         nullable=False,
-        unique=True,
-        index=True,
     )
     plan_fingerprint_snapshot: Mapped[str] = mapped_column(String(64), nullable=False)
     optimizer_policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
-    optimizer_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    optimizer_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     learning_fingerprint: Mapped[str | None] = mapped_column(String(64))
-    input_state_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    input_state_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     frozen_item_count: Mapped[int] = mapped_column(Integer, nullable=False)
     optimizable_item_count: Mapped[int] = mapped_column(Integer, nullable=False)
     exploit_count: Mapped[int] = mapped_column(Integer, nullable=False)
     explore_count: Mapped[int] = mapped_column(Integer, nullable=False)
     recommendation_snapshot: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="APPLIED", index=True)
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="APPLIED",
+        server_default="APPLIED",
+    )
     applied_by: Mapped[str] = mapped_column(String(255), nullable=False)
     applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     __table_args__ = (
+        UniqueConstraint(
+            "plan_id",
+            name="uq_pinterest_optimizer_application_plan",
+        ),
+        UniqueConstraint(
+            "optimizer_fingerprint",
+            name="uq_pinterest_optimizer_application_fingerprint",
+        ),
         CheckConstraint(
             "status = 'APPLIED'",
             name="ck_pinterest_optimizer_application_status",
@@ -330,8 +341,13 @@ class PinterestOptimizerApplication(Base):
             "AND exploit_count >= 0 AND explore_count >= 0",
             name="ck_pinterest_optimizer_application_counts",
         ),
+        Index("ix_pinterest_optimizer_applications_plan_id", "plan_id"),
+        Index(
+            "ix_pinterest_optimizer_applications_input_state",
+            "input_state_fingerprint",
+        ),
+        Index("ix_pinterest_optimizer_applications_status", "status"),
     )
-
 
 class PinterestAutonomousDestinationRun(Base):
     __tablename__ = "pinterest_autonomous_destination_runs"
@@ -339,15 +355,24 @@ class PinterestAutonomousDestinationRun(Base):
     portfolio_item_id: Mapped[str] = mapped_column(
         ForeignKey("pinterest_portfolio_plan_items.id", ondelete="RESTRICT"),
         nullable=False,
-        unique=True,
     )
     plan_id: Mapped[str] = mapped_column(
         ForeignKey("pinterest_portfolio_plans.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="STARTED")
-    stage: Mapped[str] = mapped_column(String(40), nullable=False, default="STARTED")
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="STARTED",
+        server_default="STARTED",
+    )
+    stage: Mapped[str] = mapped_column(
+        String(40),
+        nullable=False,
+        default="STARTED",
+        server_default="STARTED",
+    )
     board_provisioning_attempt_id: Mapped[str | None] = mapped_column(
         ForeignKey("pinterest_board_provisioning_attempts.id", ondelete="RESTRICT"),
     )
@@ -364,6 +389,14 @@ class PinterestAutonomousDestinationRun(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     __table_args__ = (
+        UniqueConstraint(
+            "portfolio_item_id",
+            name="uq_pinterest_auto_destination_item",
+        ),
+        UniqueConstraint(
+            "input_fingerprint",
+            name="uq_pinterest_auto_destination_fingerprint",
+        ),
         CheckConstraint(
             "status IN ('STARTED','SUCCEEDED','FAILED','UNKNOWN')",
             name="ck_pinterest_auto_destination_status",
@@ -391,43 +424,50 @@ class PinterestAutonomousDestinationRun(Base):
         ),
     )
 
-
 class PinterestAutonomousExecutionRun(Base):
     __tablename__ = "pinterest_autonomous_execution_runs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     portfolio_item_id: Mapped[str] = mapped_column(
         ForeignKey("pinterest_portfolio_plan_items.id", ondelete="RESTRICT"),
         nullable=False,
-        unique=True,
-        index=True,
     )
     plan_id: Mapped[str] = mapped_column(
         ForeignKey("pinterest_portfolio_plans.id", ondelete="RESTRICT"),
         nullable=False,
-        index=True,
     )
     optimizer_application_id: Mapped[str] = mapped_column(
         ForeignKey("pinterest_optimizer_applications.id", ondelete="RESTRICT"),
         nullable=False,
-        index=True,
     )
-    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="STARTED", index=True)
-    stage: Mapped[str] = mapped_column(String(40), nullable=False, default="STARTED", index=True)
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="STARTED",
+        server_default="STARTED",
+    )
+    stage: Mapped[str] = mapped_column(
+        String(40),
+        nullable=False,
+        default="STARTED",
+        server_default="STARTED",
+    )
     seo_brief_id: Mapped[str | None] = mapped_column(
-        ForeignKey("pinterest_seo_briefs.id", ondelete="SET NULL"), index=True
+        ForeignKey("pinterest_seo_briefs.id", ondelete="SET NULL")
     )
     generation_run_id: Mapped[str | None] = mapped_column(
-        ForeignKey("pinterest_autonomous_generation_runs.id", ondelete="SET NULL"), index=True
+        ForeignKey("pinterest_autonomous_generation_runs.id", ondelete="SET NULL")
     )
     approval_id: Mapped[str | None] = mapped_column(
-        ForeignKey("pin_approvals.id", ondelete="SET NULL"), index=True
+        ForeignKey("pin_approvals.id", ondelete="SET NULL")
     )
     publication_id: Mapped[str | None] = mapped_column(
-        ForeignKey("pin_publications.id", ondelete="SET NULL"), index=True
+        ForeignKey("pin_publications.id", ondelete="SET NULL")
     )
-    routine_permit_id: Mapped[str | None] = mapped_column(String(36), index=True)
-    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    routine_permit_id: Mapped[str | None] = mapped_column(
+        ForeignKey("routine_dispatch_permits.id", ondelete="SET NULL")
+    )
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     safe_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -435,21 +475,34 @@ class PinterestAutonomousExecutionRun(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     __table_args__ = (
+        UniqueConstraint(
+            "portfolio_item_id",
+            name="uq_pinterest_auto_exec_portfolio_item",
+        ),
+        UniqueConstraint(
+            "input_fingerprint",
+            name="uq_pinterest_auto_exec_input_fingerprint",
+        ),
         CheckConstraint(
             "status IN ('STARTED','SUCCEEDED','FAILED')",
-            name="ck_pinterest_autonomous_execution_run_status",
+            name="ck_pinterest_auto_exec_status",
         ),
         CheckConstraint(
             "stage IN ('STARTED','SEO_READY','GENERATED','AUTHORIZED','PUBLICATION_CREATED','PERMITTED')",
-            name="ck_pinterest_autonomous_execution_run_stage",
+            name="ck_pinterest_auto_exec_stage",
         ),
-        Index(
-            "ix_pinterest_autonomous_execution_plan_stage",
-            "plan_id",
-            "stage",
-        ),
+        Index("ix_pinterest_auto_exec_plan_id", "plan_id"),
+        Index("ix_pinterest_auto_exec_optimizer_app", "optimizer_application_id"),
+        Index("ix_pinterest_auto_exec_status", "status"),
+        Index("ix_pinterest_auto_exec_stage", "stage"),
+        Index("ix_pinterest_auto_exec_scheduled_for", "scheduled_for"),
+        Index("ix_pinterest_auto_exec_plan_stage", "plan_id", "stage"),
+        Index("ix_pinterest_auto_exec_seo_brief", "seo_brief_id"),
+        Index("ix_pinterest_auto_exec_generation", "generation_run_id"),
+        Index("ix_pinterest_auto_exec_approval", "approval_id"),
+        Index("ix_pinterest_auto_exec_publication", "publication_id"),
+        Index("ix_pinterest_auto_exec_permit", "routine_permit_id"),
     )
-
 
 class PinterestSeoBrief(Base):
     __tablename__ = "pinterest_seo_briefs"
@@ -772,14 +825,14 @@ class PinterestAnalyticsSnapshot(Base):
     __tablename__ = "pinterest_analytics_snapshots"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     publication_id: Mapped[str] = mapped_column(
-        ForeignKey("pin_publications.id", ondelete="RESTRICT"), index=True, nullable=False
+        ForeignKey("pin_publications.id", ondelete="RESTRICT"), nullable=False
     )
     pinterest_pin_id: Mapped[str] = mapped_column(String(80), nullable=False)
     metric_policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
     observation_window: Mapped[str] = mapped_column(String(4), nullable=False)
     range_start: Mapped[date] = mapped_column(Date, nullable=False)
     range_end: Mapped[date] = mapped_column(Date, nullable=False)
-    provider_payload_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    provider_payload_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     impressions: Mapped[int] = mapped_column(Integer, nullable=False)
     saves: Mapped[int] = mapped_column(Integer, nullable=False)
     pin_clicks: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -811,23 +864,35 @@ class PinterestAnalyticsSnapshot(Base):
             "AND outbound_clicks >= 0 AND engagements >= 0",
             name="ck_pinterest_analytics_counts_nonnegative",
         ),
+        Index(
+            "ix_pinterest_analytics_snapshots_publication_id",
+            "publication_id",
+        ),
+        Index(
+            "ix_pinterest_analytics_snapshots_payload_fp",
+            "provider_payload_fingerprint",
+        ),
     )
-
 
 class PinterestAnalyticsIngestionRun(Base):
     __tablename__ = "pinterest_analytics_ingestion_runs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     publication_id: Mapped[str] = mapped_column(
-        ForeignKey("pin_publications.id", ondelete="RESTRICT"), index=True, nullable=False
+        ForeignKey("pin_publications.id", ondelete="RESTRICT"), nullable=False
     )
     observation_window: Mapped[str] = mapped_column(String(4), nullable=False)
     pinterest_pin_id: Mapped[str] = mapped_column(String(80), nullable=False)
     range_start: Mapped[date] = mapped_column(Date, nullable=False)
     range_end: Mapped[date] = mapped_column(Date, nullable=False)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="STARTED", index=True)
-    provider_payload_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="STARTED",
+        server_default="STARTED",
+    )
+    provider_payload_fingerprint: Mapped[str | None] = mapped_column(String(64))
     snapshot_id: Mapped[str | None] = mapped_column(
-        ForeignKey("pinterest_analytics_snapshots.id", ondelete="SET NULL"), index=True
+        ForeignKey("pinterest_analytics_snapshots.id", ondelete="SET NULL")
     )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -845,19 +910,25 @@ class PinterestAnalyticsIngestionRun(Base):
             "status IN ('STARTED','SUCCEEDED','FAILED')",
             name="ck_pinterest_analytics_run_status",
         ),
+        Index("ix_pinterest_analytics_runs_publication_id", "publication_id"),
+        Index("ix_pinterest_analytics_runs_status", "status"),
+        Index(
+            "ix_pinterest_analytics_runs_payload_fp",
+            "provider_payload_fingerprint",
+        ),
+        Index("ix_pinterest_analytics_runs_snapshot_id", "snapshot_id"),
     )
-
 
 class PinterestLearningSnapshot(Base):
     __tablename__ = "pinterest_learning_snapshots"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     store_id: Mapped[str] = mapped_column(
-        ForeignKey("stores.id", ondelete="RESTRICT"), index=True, nullable=False
+        ForeignKey("stores.id", ondelete="RESTRICT"), nullable=False
     )
     policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
-    as_of_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
-    input_fingerprint: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
-    learning_fingerprint: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    as_of_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    learning_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     publication_count: Mapped[int] = mapped_column(Integer, nullable=False)
     snapshot_count: Mapped[int] = mapped_column(Integer, nullable=False)
     global_priors: Mapped[dict] = mapped_column(JSON, nullable=False)
@@ -873,12 +944,18 @@ class PinterestLearningSnapshot(Base):
             "input_fingerprint",
             name="uq_pinterest_learning_input",
         ),
+        UniqueConstraint(
+            "learning_fingerprint",
+            name="uq_pinterest_learning_fingerprint",
+        ),
         CheckConstraint(
             "publication_count >= 0 AND snapshot_count >= 0",
             name="ck_pinterest_learning_counts_nonnegative",
         ),
+        Index("ix_pinterest_learning_snapshots_store_id", "store_id"),
+        Index("ix_pinterest_learning_snapshots_as_of_at", "as_of_at"),
+        Index("ix_pinterest_learning_snapshots_input_fp", "input_fingerprint"),
     )
-
 
 class PublicationAttempt(Base):
     __tablename__ = "publication_attempts"
