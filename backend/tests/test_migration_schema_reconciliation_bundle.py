@@ -125,7 +125,46 @@ def _create_proxy_bundle(url: str) -> dict[str, str]:
                 connection,
                 tables=[Base.metadata.tables[table] for table in BUNDLE_TABLES],
             )
-            return _fingerprints(connection)
+            # Task #58.3 intentionally makes the six later ORM models exactly
+            # canonical. This older Task #58.2 fixture still needs a disposable
+            # noncanonical catalog so aliasing it to the certified Issue #117
+            # fingerprints cannot also alias freshly rebuilt canonical tables.
+            for old_name, new_name in (
+                (
+                    "ix_pinterest_analytics_snapshots_payload_fp",
+                    "proxy_582_analytics_payload",
+                ),
+                (
+                    "ix_pinterest_analytics_runs_payload_fp",
+                    "proxy_582_ingestion_payload",
+                ),
+                (
+                    "ix_pinterest_learning_snapshots_input_fp",
+                    "proxy_582_learning_input",
+                ),
+                (
+                    "ix_pinterest_optimizer_applications_input_state",
+                    "proxy_582_optimizer_input",
+                ),
+                (
+                    "ix_pinterest_auto_exec_status",
+                    "proxy_582_exec_status",
+                ),
+                (
+                    "ix_pinterest_auto_destination_status",
+                    "proxy_582_destination_status",
+                ),
+            ):
+                connection.execute(
+                    sa.text(
+                        f'ALTER INDEX "public"."{old_name}" '
+                        f'RENAME TO "{new_name}"'
+                    )
+                )
+            proxy = _fingerprints(connection)
+            for table in BUNDLE_TABLES:
+                assert proxy[table] != FROZEN_FINGERPRINTS[table]
+            return proxy
     finally:
         engine.dispose()
 
@@ -237,7 +276,7 @@ def test_only_certified_issue_117_bundle_is_allowlisted() -> None:
     }
 
 
-def test_exact_bundle_reconciles_and_reaches_0027(
+def test_exact_bundle_reconciles_and_reaches_current_head(
     isolated_database: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -247,7 +286,7 @@ def test_exact_bundle_reconciles_and_reaches_0027(
 
     _upgrade(isolated_database, "head")
 
-    assert _revision(isolated_database) == "0027"
+    assert _revision(isolated_database) == "0028"
     engine = sa.create_engine(isolated_database)
     try:
         with engine.begin() as connection:
@@ -256,16 +295,16 @@ def test_exact_bundle_reconciles_and_reaches_0027(
         engine.dispose()
 
 
-def test_fresh_upgrade_still_reaches_0027(isolated_database: str) -> None:
+def test_fresh_upgrade_still_reaches_current_head(isolated_database: str) -> None:
     _upgrade(isolated_database, "head")
-    assert _revision(isolated_database) == "0027"
+    assert _revision(isolated_database) == "0028"
 
 
 def test_complete_canonical_bundle_still_adopts(isolated_database: str) -> None:
     _upgrade(isolated_database, "head")
     _set_revision(isolated_database, "0019")
     _upgrade(isolated_database, "head")
-    assert _revision(isolated_database) == "0027"
+    assert _revision(isolated_database) == "0028"
 
 
 def test_exact_0020_only_pair_is_left_for_task_58_1(

@@ -151,6 +151,11 @@ def test_run_starts_frontend_only_after_backend_readiness(monkeypatch):
         "run_database_migrations",
         lambda: events.append("migration"),
     )
+    monkeypatch.setattr(
+        startup,
+        "run_schema_canonicality_guard",
+        lambda: events.append("schema_guard"),
+    )
     backend = FakeProcess()
     frontend = FakeProcess()
 
@@ -178,7 +183,14 @@ def test_run_starts_frontend_only_after_backend_readiness(monkeypatch):
     )
 
     assert startup.run() == 0
-    assert events == ["migration", "backend", "ready", "frontend", "supervise"]
+    assert events == [
+        "migration",
+        "schema_guard",
+        "backend",
+        "ready",
+        "frontend",
+        "supervise",
+    ]
 
 
 def test_run_never_starts_frontend_when_readiness_fails(monkeypatch):
@@ -187,6 +199,11 @@ def test_run_never_starts_frontend_when_readiness_fails(monkeypatch):
         startup,
         "run_database_migrations",
         lambda: events.append("migration"),
+    )
+    monkeypatch.setattr(
+        startup,
+        "run_schema_canonicality_guard",
+        lambda: events.append("schema_guard"),
     )
     backend = FakeProcess()
 
@@ -208,7 +225,7 @@ def test_run_never_starts_frontend_when_readiness_fails(monkeypatch):
     )
 
     assert startup.run() == 1
-    assert events == ["migration", "backend", "readiness_failed"]
+    assert events == ["migration", "schema_guard", "backend", "readiness_failed"]
     assert backend.terminated is True
 
 
@@ -227,6 +244,7 @@ def test_lifecycle_log_records_monotonic_elapsed_time(capsys):
 def test_run_emits_success_lifecycle_events_in_order(monkeypatch, capsys):
     backend = FakeProcess()
     monkeypatch.setattr(startup, "run_database_migrations", lambda: None)
+    monkeypatch.setattr(startup, "run_schema_canonicality_guard", lambda: None)
     frontend = FakeProcess()
 
     monkeypatch.setattr(startup, "start_backend", lambda: backend)
@@ -241,6 +259,8 @@ def test_run_emits_success_lifecycle_events_in_order(monkeypatch, capsys):
         "wrapper_start",
         "database_migration_started",
         "database_migration_succeeded",
+        "schema_canonicality_guard_started",
+        "schema_canonicality_guard_succeeded",
         "backend_process_started",
         "backend_readiness_succeeded",
         "frontend_process_started",
@@ -255,6 +275,7 @@ def test_run_emits_success_lifecycle_events_in_order(monkeypatch, capsys):
 def test_run_omits_frontend_lifecycle_events_on_readiness_failure(monkeypatch, capsys):
     backend = FakeProcess()
     monkeypatch.setattr(startup, "run_database_migrations", lambda: None)
+    monkeypatch.setattr(startup, "run_schema_canonicality_guard", lambda: None)
 
     monkeypatch.setattr(startup, "start_backend", lambda: backend)
 
@@ -275,6 +296,8 @@ def test_run_omits_frontend_lifecycle_events_on_readiness_failure(monkeypatch, c
         "wrapper_start",
         "database_migration_started",
         "database_migration_succeeded",
+        "schema_canonicality_guard_started",
+        "schema_canonicality_guard_succeeded",
         "backend_process_started",
     ]
     assert "backend_readiness_succeeded" not in output

@@ -23,6 +23,7 @@ OWNED_TABLES: dict[str, tuple[str, ...]] = {
     "0025": ("pinterest_optimizer_applications",),
     "0026": ("pinterest_autonomous_execution_runs",),
     "0027": ("pinterest_autonomous_destination_runs",),
+    "0028": (),
 }
 
 BUNDLE_TABLES = tuple(
@@ -87,6 +88,44 @@ LEGACY_0020_FINGERPRINTS = {
     "pinterest_portfolio_plans": "9a91ae0ff2d722c7e12c23e236698cfd71259308e1ef3a42e4782075754129bf",
     "pinterest_portfolio_plan_items": "3085a01cf1385f9ed5cab605f236c7eceba49fab8f7ae4d6eac5e63e63f61274",
 }
+
+
+# Exact empty six-table catalog Replit produced after the successful Task #58.2
+# website publish.  This state is repairable only at Alembic 0027 and only as
+# one indivisible bundle.
+POST_PUBLISH_DRIFT_TABLES = (
+    "pinterest_analytics_snapshots",
+    "pinterest_analytics_ingestion_runs",
+    "pinterest_learning_snapshots",
+    "pinterest_optimizer_applications",
+    "pinterest_autonomous_execution_runs",
+    "pinterest_autonomous_destination_runs",
+)
+
+POST_PUBLISH_PRESERVED_TABLES = (
+    "pinterest_portfolio_plans",
+    "pinterest_portfolio_plan_items",
+    "pinterest_seo_briefs",
+    "pinterest_autonomous_generation_runs",
+)
+
+POST_PUBLISH_DRIFT_FINGERPRINTS = {
+    "pinterest_analytics_snapshots": "54751d9124942ca617d34da53e997f45f2a5924efae2d92deadfca944b5ca25e",
+    "pinterest_analytics_ingestion_runs": "4aaccd7247ba75c43f3319842b3a86a816b55cb205537cb7d1dfb1da2abba3c5",
+    "pinterest_learning_snapshots": "985935d8d8424d69bf5003e6c0c0e55656eb8990b418ec0cd3c23e4219f6e231",
+    "pinterest_optimizer_applications": "2605cb38c7f05c91f92931ab836592051277048fb711ce6cc8a03d8347fc7889",
+    "pinterest_autonomous_execution_runs": "92143aab35020f091c1ae917d7c6aed7ebe7880302abffccda79d8c4f5416af6",
+    "pinterest_autonomous_destination_runs": "fc7f6af3194be33a88ae130358250d75c08e0fd839606dcb1f86ef54fce7664b",
+}
+
+POST_PUBLISH_DRIFT_DROP_ORDER = (
+    "pinterest_autonomous_destination_runs",
+    "pinterest_autonomous_execution_runs",
+    "pinterest_optimizer_applications",
+    "pinterest_analytics_ingestion_runs",
+    "pinterest_analytics_snapshots",
+    "pinterest_learning_snapshots",
+)
 
 
 class SchemaAdoptionRefused(RuntimeError):
@@ -401,6 +440,183 @@ def verify_reconciled_bundle(connection: Any, revision: str) -> None:
         _refuse("reconciled bundle did not produce all frozen canonical contracts")
     _require_empty_tables(connection, BUNDLE_TABLES)
     connection.info.pop(_BUNDLE_RECONCILIATION_INFO_KEY, None)
+
+
+def _external_dependencies_for_tables(
+    connection: Any,
+    tables: tuple[str, ...],
+) -> list[str]:
+    foreign_keys = connection.execute(sa.text(
+        """SELECT child_ns.nspname AS child_schema,
+               child.relname AS child_table,
+               c.conname AS constraint_name
+        FROM pg_constraint c
+        JOIN pg_class child ON child.oid = c.conrelid
+        JOIN pg_namespace child_ns ON child_ns.oid = child.relnamespace
+        JOIN pg_class parent ON parent.oid = c.confrelid
+        JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
+        WHERE c.contype = 'f'
+          AND parent_ns.nspname = 'public'
+          AND parent.relname = ANY(:owned)
+          AND NOT (
+              child_ns.nspname = 'public'
+              AND child.relname = ANY(:owned)
+          )
+        ORDER BY child_ns.nspname, child.relname, c.conname"""
+    ), {"owned": list(tables)}).mappings().all()
+    rewrites = connection.execute(sa.text(
+        """SELECT DISTINCT dependent_ns.nspname AS dependent_schema,
+               dependent.relname AS dependent_relation,
+               rewrite.rulename AS dependent_rule
+        FROM pg_depend dependency
+        JOIN pg_rewrite rewrite ON rewrite.oid = dependency.objid
+        JOIN pg_class dependent ON dependent.oid = rewrite.ev_class
+        JOIN pg_namespace dependent_ns ON dependent_ns.oid = dependent.relnamespace
+        JOIN pg_class parent ON parent.oid = dependency.refobjid
+        JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
+        WHERE dependency.classid = 'pg_rewrite'::regclass
+          AND parent_ns.nspname = 'public'
+          AND parent.relname = ANY(:owned)
+          AND NOT (
+              dependent_ns.nspname = 'public'
+              AND dependent.relname = ANY(:owned)
+          )
+        ORDER BY dependent_ns.nspname, dependent.relname, rewrite.rulename"""
+    ), {"owned": list(tables)}).mappings().all()
+    inheritance = connection.execute(sa.text(
+        """SELECT child_ns.nspname AS child_schema,
+               child.relname AS child_table
+        FROM pg_inherits inheritance
+        JOIN pg_class child ON child.oid = inheritance.inhrelid
+        JOIN pg_namespace child_ns ON child_ns.oid = child.relnamespace
+        JOIN pg_class parent ON parent.oid = inheritance.inhparent
+        JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
+        WHERE parent_ns.nspname = 'public'
+          AND parent.relname = ANY(:owned)
+          AND NOT (
+              child_ns.nspname = 'public'
+              AND child.relname = ANY(:owned)
+          )
+        ORDER BY child_ns.nspname, child.relname"""
+    ), {"owned": list(tables)}).mappings().all()
+    return [
+        f"foreign key {row['child_schema']}.{row['child_table']}."
+        f"{row['constraint_name']}"
+        for row in foreign_keys
+    ] + [
+        f"rewrite {row['dependent_schema']}.{row['dependent_relation']}."
+        f"{row['dependent_rule']}"
+        for row in rewrites
+    ] + [
+        f"inheritance {row['child_schema']}.{row['child_table']}"
+        for row in inheritance
+    ]
+
+
+def _require_exact_alembic_revision(connection: Any, revision: str) -> None:
+    revisions = connection.execute(sa.text(
+        "SELECT version_num FROM alembic_version ORDER BY version_num"
+    )).scalars().all()
+    if list(revisions) != [revision]:
+        _refuse(
+            f"schema reconciliation requires Alembic revision {revision}"
+        )
+
+
+def _require_canonical_tables(
+    connection: Any,
+    tables: tuple[str, ...],
+) -> None:
+    present = _present_postgresql_tables(connection, tables)
+    if tuple(present) != tables:
+        _refuse(f"canonical predecessor table presence mismatch: {present}")
+    fingerprints = _table_fingerprints(connection, tables)
+    expected = {table: FROZEN_FINGERPRINTS[table] for table in tables}
+    if fingerprints != expected:
+        _refuse("canonical predecessor contracts do not match frozen fingerprints")
+
+
+def reconcile_post_publish_drift(connection: Any, revision: str) -> bool:
+    """Validate the exact empty Task #58.3 drift and authorize its rebuild."""
+    if revision != "0028":
+        return False
+    if getattr(connection.dialect, "name", None) != "postgresql":
+        return False
+
+    _require_exact_alembic_revision(connection, "0027")
+    _require_canonical_tables(connection, POST_PUBLISH_PRESERVED_TABLES)
+
+    present = _present_postgresql_tables(connection, POST_PUBLISH_DRIFT_TABLES)
+    if tuple(present) != POST_PUBLISH_DRIFT_TABLES:
+        _refuse(f"post-publish drift has partial table presence: {present}")
+
+    fingerprints = _table_fingerprints(connection, POST_PUBLISH_DRIFT_TABLES)
+    canonical = {
+        table: FROZEN_FINGERPRINTS[table]
+        for table in POST_PUBLISH_DRIFT_TABLES
+    }
+    if fingerprints == canonical:
+        return False
+    if fingerprints != POST_PUBLISH_DRIFT_FINGERPRINTS:
+        _refuse("post-publish drift is not the exact Task #58.3 fingerprint set")
+
+    _lock_owned_tables(connection, POST_PUBLISH_DRIFT_TABLES)
+
+    locked_present = _present_postgresql_tables(
+        connection,
+        POST_PUBLISH_DRIFT_TABLES,
+    )
+    if tuple(locked_present) != POST_PUBLISH_DRIFT_TABLES:
+        _refuse("post-publish drift table presence changed while locking")
+
+    locked_fingerprints = _table_fingerprints(
+        connection,
+        POST_PUBLISH_DRIFT_TABLES,
+    )
+    if locked_fingerprints != POST_PUBLISH_DRIFT_FINGERPRINTS:
+        _refuse("post-publish drift fingerprints changed while locking")
+
+    _require_empty_tables(connection, POST_PUBLISH_DRIFT_TABLES)
+    _require_canonical_tables(connection, POST_PUBLISH_PRESERVED_TABLES)
+    _require_empty_tables(connection, POST_PUBLISH_PRESERVED_TABLES)
+
+    dependencies = _external_dependencies_for_tables(
+        connection,
+        POST_PUBLISH_DRIFT_TABLES,
+    )
+    if dependencies:
+        _refuse(
+            "post-publish drift has unexpected external dependencies: "
+            + ", ".join(dependencies)
+        )
+    return True
+
+
+def verify_post_publish_repair(connection: Any) -> None:
+    """Require the six repaired tables and preserved predecessors canonical."""
+    if getattr(connection.dialect, "name", None) != "postgresql":
+        return
+    _require_canonical_tables(connection, POST_PUBLISH_PRESERVED_TABLES)
+    _require_canonical_tables(connection, POST_PUBLISH_DRIFT_TABLES)
+    _require_empty_tables(connection, POST_PUBLISH_PRESERVED_TABLES)
+    _require_empty_tables(connection, POST_PUBLISH_DRIFT_TABLES)
+
+
+def verify_frozen_schema_at_head(connection: Any, revision: str = "0028") -> None:
+    """Read-only production startup guard for canonical migration contracts."""
+    if getattr(connection.dialect, "name", None) != "postgresql":
+        return
+    _require_exact_alembic_revision(connection, revision)
+    present = _present_postgresql_tables(connection, BUNDLE_TABLES)
+    if tuple(present) != BUNDLE_TABLES:
+        _refuse(f"canonical schema table presence mismatch: {present}")
+    fingerprints = _table_fingerprints(connection, BUNDLE_TABLES)
+    canonical = {
+        table: FROZEN_FINGERPRINTS[table]
+        for table in BUNDLE_TABLES
+    }
+    if fingerprints != canonical:
+        _refuse("canonical schema fingerprint verification failed")
 
 
 def repair_known_legacy_preapplied_revision(connection: Any, revision: str) -> bool:
