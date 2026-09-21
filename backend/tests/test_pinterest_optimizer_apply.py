@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
+import math
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -56,7 +57,42 @@ def _enabled_settings(**overrides):
     )
 
 
-def _seed_plan(db, *, status="DRAFT", frozen=False):
+def _cap_metadata(
+    *,
+    target_pins: int = 3,
+    max_pins_per_product: int = 5,
+    max_vendor_share: float = 1.0,
+    max_board_share: float = 1.0,
+    vendor_cap_relaxed: bool = False,
+    board_cap_relaxed: bool = False,
+):
+    vendor_limit = max(1, math.ceil(target_pins * max_vendor_share))
+    board_limit = max(1, math.ceil(target_pins * max_board_share))
+    return {
+        "cap_policy": {
+            "max_pins_per_product": max_pins_per_product,
+            "max_vendor_share": max_vendor_share,
+            "max_board_share": max_board_share,
+            "vendor_limit": vendor_limit,
+            "board_limit": board_limit,
+        },
+        "cap_relaxation": {
+            "used": bool(vendor_cap_relaxed or board_cap_relaxed),
+            "vendor_cap_relaxed": vendor_cap_relaxed,
+            "board_cap_relaxed": board_cap_relaxed,
+            "vendor_limit": vendor_limit,
+            "board_limit": board_limit,
+        },
+    }
+
+
+def _seed_plan(
+    db,
+    *,
+    status="DRAFT",
+    frozen=False,
+    cap_metadata=None,
+):
     db.add(Store(id="store-1", name="Diamond Shelf", shop_domain="diamondshelf.us"))
     for index in range(1, 5):
         db.add(Product(
@@ -97,7 +133,10 @@ def _seed_plan(db, *, status="DRAFT", frozen=False):
         input_fingerprint="a" * 64,
         plan_fingerprint="b" * 64,
         status=status,
-        metadata_json={"existing": "keep"},
+        metadata_json={
+            "existing": "keep",
+            **(cap_metadata or _cap_metadata()),
+        },
     )
     db.add(plan)
     db.flush()
@@ -116,7 +155,14 @@ def _seed_plan(db, *, status="DRAFT", frozen=False):
             angle_key_snapshot="angle-1",
             seed_keywords=["alpha"],
             selection_score=Decimal("10.000000"),
-            selection_metadata={"source": "planner"},
+            selection_metadata={
+                "source": "planner",
+                "candidate_fingerprint": "a" * 64,
+                "vendor_key": "vendor-default",
+                "selection_stage": "STRICT",
+                "relaxed_vendor_cap": False,
+                "relaxed_board_cap": False,
+            },
             item_fingerprint="1" * 64,
             status="PLANNED",
         ),
@@ -133,7 +179,14 @@ def _seed_plan(db, *, status="DRAFT", frozen=False):
             angle_key_snapshot="angle-2",
             seed_keywords=["beta"],
             selection_score=Decimal("9.000000"),
-            selection_metadata={"source": "planner"},
+            selection_metadata={
+                "source": "planner",
+                "candidate_fingerprint": "b" * 64,
+                "vendor_key": "vendor-default",
+                "selection_stage": "STRICT",
+                "relaxed_vendor_cap": False,
+                "relaxed_board_cap": False,
+            },
             item_fingerprint="2" * 64,
             status="PLANNED",
         ),
@@ -150,7 +203,15 @@ def _seed_plan(db, *, status="DRAFT", frozen=False):
             angle_key_snapshot="angle-3",
             seed_keywords=["reserve"],
             selection_score=Decimal("8.000000"),
-            selection_metadata={"source": "planner", "retain": {"x": 1}},
+            selection_metadata={
+                "source": "planner",
+                "retain": {"x": 1},
+                "candidate_fingerprint": "c" * 64,
+                "vendor_key": "vendor-default",
+                "selection_stage": "RESERVE",
+                "relaxed_vendor_cap": False,
+                "relaxed_board_cap": False,
+            },
             item_fingerprint="3" * 64,
             status="PLANNED",
         ),
@@ -169,7 +230,14 @@ def _seed_plan(db, *, status="DRAFT", frozen=False):
             angle_key_snapshot="angle-4",
             seed_keywords=["frozen"],
             selection_score=Decimal("7.000000"),
-            selection_metadata={"frozen": True},
+            selection_metadata={
+                "frozen": True,
+                "candidate_fingerprint": "d" * 64,
+                "vendor_key": "vendor-default",
+                "selection_stage": "STRICT",
+                "relaxed_vendor_cap": False,
+                "relaxed_board_cap": False,
+            },
             item_fingerprint="4" * 64,
             status="GENERATED",
         ))
