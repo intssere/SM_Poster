@@ -333,6 +333,58 @@ class PinterestOptimizerApplication(Base):
     )
 
 
+class PinterestAutonomousDestinationRun(Base):
+    __tablename__ = "pinterest_autonomous_destination_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    portfolio_item_id: Mapped[str] = mapped_column(
+        ForeignKey("pinterest_portfolio_plan_items.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    plan_id: Mapped[str] = mapped_column(
+        ForeignKey("pinterest_portfolio_plans.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="STARTED", index=True)
+    stage: Mapped[str] = mapped_column(String(40), nullable=False, default="STARTED", index=True)
+    board_provisioning_attempt_id: Mapped[str | None] = mapped_column(
+        ForeignKey("pinterest_board_provisioning_attempts.id", ondelete="SET NULL"),
+        index=True,
+    )
+    pinterest_board_record_id: Mapped[str | None] = mapped_column(
+        ForeignKey("pinterest_boards.id", ondelete="SET NULL"),
+        index=True,
+    )
+    autonomous_execution_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("pinterest_autonomous_execution_runs.id", ondelete="SET NULL"),
+        index=True,
+    )
+    safe_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('STARTED','SUCCEEDED','FAILED','UNKNOWN')",
+            name="ck_pinterest_auto_destination_status",
+        ),
+        CheckConstraint(
+            "stage IN ('STARTED','BOARD_PROVISIONING','BOARD_CREATED','BOARD_SYNC_PENDING','BOARD_READY','EXECUTION_READY')",
+            name="ck_pinterest_auto_destination_stage",
+        ),
+        Index(
+            "ix_pinterest_auto_destination_plan_stage",
+            "plan_id",
+            "stage",
+        ),
+    )
+
+
 class PinterestAutonomousExecutionRun(Base):
     __tablename__ = "pinterest_autonomous_execution_runs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
