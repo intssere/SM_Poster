@@ -322,16 +322,24 @@ def test_exploration_prefers_lower_historical_exposure(monkeypatch):
 
 def test_product_cap_violation_blocks_preview(monkeypatch):
     engine, db = _db()
-    plan = _seed_plan(db, item_specs=[
-        {"id": "a", "product_id": "same", "board_id": "b1", "angle_id": "a1"},
-        {"id": "b", "product_id": "same", "board_id": "b2", "angle_id": "a2"},
-        {"id": "c", "product_id": "same", "board_id": "b3", "angle_id": "a3"},
-    ])
+    plan = _seed_plan(
+        db,
+        target_pins=3,
+        cap_metadata=_cap_metadata(
+            target_pins=3,
+            max_pins_per_product=2,
+        ),
+        item_specs=[
+            {"id": "a", "product_id": "same", "board_id": "b1", "angle_id": "a1"},
+            {"id": "b", "product_id": "same", "board_id": "b2", "angle_id": "a2"},
+            {"id": "c", "product_id": "same", "board_id": "b3", "angle_id": "a3"},
+        ],
+    )
     monkeypatch.setattr(optimizer, "learning_preview", lambda *a, **k: _learning(ready=False))
 
     result = optimizer.optimizer_preview(
         db, plan.id,
-        settings=_settings(pinterest_portfolio_max_pins_per_product=2),
+        settings=_settings(pinterest_portfolio_max_pins_per_product=99),
         as_of_at=AS_OF,
     )
     assert result["ready"] is False
@@ -341,16 +349,24 @@ def test_product_cap_violation_blocks_preview(monkeypatch):
 
 def test_board_share_violation_blocks_preview(monkeypatch):
     engine, db = _db()
-    plan = _seed_plan(db, item_specs=[
-        {"id": "a", "board_id": "same-board"},
-        {"id": "b", "board_id": "same-board"},
-        {"id": "c", "board_id": "other-board"},
-    ])
+    plan = _seed_plan(
+        db,
+        target_pins=3,
+        cap_metadata=_cap_metadata(
+            target_pins=3,
+            max_board_share=0.50,
+        ),
+        item_specs=[
+            {"id": "a", "board_id": "same-board"},
+            {"id": "b", "board_id": "same-board"},
+            {"id": "c", "board_id": "same-board"},
+        ],
+    )
     monkeypatch.setattr(optimizer, "learning_preview", lambda *a, **k: _learning(ready=False))
 
     result = optimizer.optimizer_preview(
         db, plan.id,
-        settings=_settings(pinterest_portfolio_max_board_share=0.50),
+        settings=_settings(pinterest_portfolio_max_board_share=1.0),
         as_of_at=AS_OF,
     )
     assert result["ready"] is False
