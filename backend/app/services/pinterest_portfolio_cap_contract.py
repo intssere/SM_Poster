@@ -93,12 +93,17 @@ def _selection_marker(
     vendor_relaxed = _strict_bool(vendor_relaxed)
     board_relaxed = _strict_bool(board_relaxed)
 
-    if item.is_reserve:
-        if stage != "RESERVE" or vendor_relaxed or board_relaxed:
+    optimized = isinstance(metadata.get("adaptive_optimizer_v1"), dict)
+    if stage == "RESERVE":
+        if vendor_relaxed or board_relaxed:
+            _fail("PLANNER_CAP_RELAXATION_MISMATCH")
+        if not item.is_reserve and not optimized:
             _fail("PLANNER_CAP_RELAXATION_MISMATCH")
     else:
         if stage not in {"STRICT", "RELAXED"}:
             _fail("PLANNER_CAP_METADATA_INVALID")
+        if item.is_reserve and not optimized:
+            _fail("PLANNER_CAP_RELAXATION_MISMATCH")
         if stage == "STRICT" and (vendor_relaxed or board_relaxed):
             _fail("PLANNER_CAP_RELAXATION_MISMATCH")
         if stage == "RELAXED" and not (vendor_relaxed or board_relaxed):
@@ -165,7 +170,6 @@ def validate_planner_cap_contract(
         normalized_markers.append({
             "item_id": item.id,
             "slot_index": item.slot_index,
-            "is_reserve": bool(item.is_reserve),
             "selection_stage": stage,
             "relaxed_vendor_cap": item_vendor_relaxed,
             "relaxed_board_cap": item_board_relaxed,
