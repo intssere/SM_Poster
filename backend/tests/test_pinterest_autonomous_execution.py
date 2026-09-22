@@ -1663,3 +1663,32 @@ def test_phase_b2_internal_gate_override_rejects_unsafe_provider_gate():
 
     assert db.query(PinterestAutonomousExecutionRun).count() == 0
     db.close(); engine.dispose()
+
+
+def test_destination_threads_phase_b2_internal_gate_override(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    seen = {"override": None}
+
+    def inspect_execute(db_arg, item_id, **kwargs):
+        seen["override"] = kwargs.get("phase_b2_internal_gate_override")
+        return SimpleNamespace(
+            id="execution-phase-b2-thread",
+            status="SUCCEEDED",
+            stage="PERMITTED",
+        )
+
+    monkeypatch.setattr(destination, "execute_autonomous_item", inspect_execute)
+    run = asyncio.run(destination.ensure_autonomous_destination(
+        db,
+        seeded["item1"].id,
+        settings=_destination_settings(),
+        now=NOW,
+        phase_b2_internal_gate_override=True,
+    ))
+
+    assert seen["override"] is True
+    assert run.status == "SUCCEEDED"
+    assert run.stage == "EXECUTION_READY"
+    assert run.autonomous_execution_run_id == "execution-phase-b2-thread"
+    db.close(); engine.dispose()
