@@ -505,6 +505,7 @@ async def ensure_autonomous_destination(
     sync_client=None,
     renderer=None,
     now: datetime | None = None,
+    phase_b2_internal_gate_override: bool = False,
 ) -> PinterestAutonomousDestinationRun:
     lock_handle = _acquire_coordinator_lock(db, portfolio_item_id)
     if lock_handle is None:
@@ -521,6 +522,7 @@ async def ensure_autonomous_destination(
             sync_client=sync_client,
             renderer=renderer,
             now=now,
+            phase_b2_internal_gate_override=phase_b2_internal_gate_override,
         )
     finally:
         _release_coordinator_lock(lock_handle)
@@ -535,6 +537,7 @@ async def _ensure_autonomous_destination_locked(
     sync_client=None,
     renderer=None,
     now: datetime | None = None,
+    phase_b2_internal_gate_override: bool = False,
 ) -> PinterestAutonomousDestinationRun:
     settings = settings or get_settings()
     now = _utc(now or _now())
@@ -821,6 +824,7 @@ async def _ensure_autonomous_destination_locked(
             settings=settings,
             renderer=renderer,
             now=now,
+            phase_b2_internal_gate_override=phase_b2_internal_gate_override,
         )
         if execution_run.status != "SUCCEEDED" or execution_run.stage != "PERMITTED":
             raise AutonomousDestinationError("AUTONOMOUS_EXECUTION_NOT_PERMITTED")
