@@ -24,6 +24,7 @@ OWNED_TABLES: dict[str, tuple[str, ...]] = {
     "0026": ("pinterest_autonomous_execution_runs",),
     "0027": ("pinterest_autonomous_destination_runs",),
     "0028": (),
+    "0029": (),
 }
 
 BUNDLE_TABLES = tuple(
@@ -125,6 +126,16 @@ POST_PUBLISH_DRIFT_DROP_ORDER = (
     "pinterest_analytics_ingestion_runs",
     "pinterest_analytics_snapshots",
     "pinterest_learning_snapshots",
+)
+
+
+HEAD_EXECUTION_CHECK_RENDERING_TABLE = "pinterest_autonomous_execution_runs"
+HEAD_EXECUTION_CHECK_RENDERING_DRIFT_FINGERPRINT = (
+    "3fd9f7f1f65c518fdc1b36d6b2c8d4b0fdcecb23ecd28482038f4866012acd3a"
+)
+HEAD_EXECUTION_CHECK_NAMES = (
+    "ck_pinterest_auto_exec_stage",
+    "ck_pinterest_auto_exec_status",
 )
 
 
@@ -744,7 +755,55 @@ def verify_post_publish_repair(connection: Any) -> None:
     _require_empty_tables(connection, POST_PUBLISH_DRIFT_TABLES)
 
 
-def verify_frozen_schema_at_head(connection: Any, revision: str = "0028") -> None:
+
+def reconcile_head_execution_check_rendering(
+    connection: Any,
+    revision: str,
+) -> bool:
+    """Authorize only the exact empty 0028 check-rendering residual."""
+    if revision != "0029":
+        return False
+    if getattr(connection.dialect, "name", None) != "postgresql":
+        return False
+
+    _require_exact_alembic_revision(connection, "0028")
+    target = HEAD_EXECUTION_CHECK_RENDERING_TABLE
+    preserved = tuple(table for table in BUNDLE_TABLES if table != target)
+    _require_canonical_tables(connection, preserved)
+
+    present = _present_postgresql_tables(connection, (target,))
+    if tuple(present) != (target,):
+        _refuse("head check-rendering target table is missing")
+
+    fingerprint = _table_fingerprints(connection, (target,))[target]
+    canonical = FROZEN_FINGERPRINTS[target]
+    if fingerprint == canonical:
+        return False
+    if fingerprint != HEAD_EXECUTION_CHECK_RENDERING_DRIFT_FINGERPRINT:
+        _refuse("head check-rendering drift is not the exact Task #58.6 fingerprint")
+
+    _lock_owned_tables(connection, (target,))
+    _require_exact_alembic_revision(connection, "0028")
+
+    locked_present = _present_postgresql_tables(connection, (target,))
+    if tuple(locked_present) != (target,):
+        _refuse("head check-rendering target presence changed while locking")
+    locked_fingerprint = _table_fingerprints(connection, (target,))[target]
+    if locked_fingerprint != HEAD_EXECUTION_CHECK_RENDERING_DRIFT_FINGERPRINT:
+        _refuse("head check-rendering fingerprint changed while locking")
+    _require_empty_tables(connection, (target,))
+    _require_canonical_tables(connection, preserved)
+    return True
+
+
+def verify_head_execution_check_repair(connection: Any) -> None:
+    """Require Task #58.6 to finish at the pre-existing frozen contract."""
+    if getattr(connection.dialect, "name", None) != "postgresql":
+        return
+    target = HEAD_EXECUTION_CHECK_RENDERING_TABLE
+    _require_canonical_tables(connection, (target,))
+
+def verify_frozen_schema_at_head(connection: Any, revision: str = "0029") -> None:
     """Read-only production startup guard for canonical migration contracts."""
     if getattr(connection.dialect, "name", None) != "postgresql":
         return
