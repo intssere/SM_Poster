@@ -474,6 +474,19 @@ def _publication_service(db) -> PublicationIdentityService:
     return PublicationIdentityService(session_factory=Session)
 
 
+def _failure_code(exc: Exception) -> str:
+    if isinstance(exc, AutonomousExecutionError):
+        return str(exc.code)[:120]
+    detail = str(exc).strip()
+    if (
+        detail
+        and len(detail) <= 120
+        and all(ch.isupper() or ch.isdigit() or ch == "_" for ch in detail)
+    ):
+        return detail
+    return exc.__class__.__name__[:120]
+
+
 def _fail_run(
     db,
     run: PinterestAutonomousExecutionRun,
@@ -486,7 +499,7 @@ def _fail_run(
         current = db.get(PinterestAutonomousExecutionRun, run.id)
         if current is None or current.status != "STARTED":
             return
-        code = exc.code if isinstance(exc, AutonomousExecutionError) else exc.__class__.__name__
+        code = _failure_code(exc)
         current.status = "FAILED"
         current.completed_at = now
         current.safe_metadata = {
@@ -825,7 +838,8 @@ def execute_autonomous_item(
 
         return run
     except Exception as exc:
+        code = _failure_code(exc)
         _fail_run(db, run, exc, now=now)
         if isinstance(exc, AutonomousExecutionError):
             raise
-        raise AutonomousExecutionError(exc.__class__.__name__) from exc
+        raise AutonomousExecutionError(code) from exc
