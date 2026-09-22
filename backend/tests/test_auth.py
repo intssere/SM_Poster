@@ -239,3 +239,17 @@ def test_phase_b2_canary_endpoints_remain_authenticated(auth_client):
         headers={"Origin": "http://localhost:5000"},
         json={},
     ).status_code == 401
+
+
+def test_product_source_hydration_endpoints_remain_authenticated(auth_client):
+    client = auth_client
+    params = "?product_image_id=5536ed41-22f8-441c-9efd-a2e73972649e"
+    assert client.get(
+        f"/api/portfolio/canary/product-source-readiness{params}",
+        headers={"Origin": "http://localhost:5000"},
+    ).status_code == 401
+    assert client.post(
+        "/api/portfolio/canary/product-source-hydrate",
+        headers={"Origin": "http://localhost:5000"},
+        json={},
+    ).status_code == 401
