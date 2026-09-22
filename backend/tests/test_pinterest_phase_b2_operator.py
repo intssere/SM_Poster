@@ -197,17 +197,23 @@ def test_phase_b2_readiness_ignores_only_four_expected_feature_blockers(monkeypa
 
 def test_phase_b2_readiness_fails_before_run_on_seo_preview_blocker(monkeypatch):
     db = _patch_basic_readiness(monkeypatch)
-    monkeypatch.setattr(
-        svc,
-        "seo_brief_preview",
-        lambda *a, **k: {
+    seen = {}
+
+    def blocked_preview(*args, **kwargs):
+        settings = kwargs["settings"]
+        seen["seo_enabled"] = settings.pinterest_seo_brief_persistence_enabled
+        seen["generation_enabled"] = settings.pinterest_autonomous_generation_enabled
+        seen["authorization_enabled"] = settings.routine_autonomous_authorization_enabled
+        seen["execution_enabled"] = settings.pinterest_autonomous_execution_enabled
+        return {
             "ready": False,
             "blockers": ["NO_EVIDENCE_BOUND_PRIMARY_KEYWORD"],
             "state_mutated": False,
             "provider_called": False,
             "ai_called": False,
-        },
-    )
+        }
+
+    monkeypatch.setattr(svc, "seo_brief_preview", blocked_preview)
 
     result = svc.phase_b2_readiness(
         db,
@@ -221,6 +227,54 @@ def test_phase_b2_readiness_fails_before_run_on_seo_preview_blocker(monkeypatch)
     assert result["seo_preview_ready"] is False
     assert result["seo_preview_blockers"] == ["NO_EVIDENCE_BOUND_PRIMARY_KEYWORD"]
     assert "NO_EVIDENCE_BOUND_PRIMARY_KEYWORD" in result["blockers"]
+    assert seen == {
+        "seo_enabled": True,
+        "generation_enabled": True,
+        "authorization_enabled": True,
+        "execution_enabled": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_execute_phase_b2_seo_blocker_never_calls_coordinator(monkeypatch):
+    db = _patch_basic_readiness(monkeypatch)
+    monkeypatch.setattr(
+        svc,
+        "seo_brief_preview",
+        lambda *a, **k: {
+            "ready": False,
+            "blockers": ["NO_EVIDENCE_BOUND_PRIMARY_KEYWORD"],
+            "state_mutated": False,
+            "provider_called": False,
+            "ai_called": False,
+        },
+    )
+
+    async def should_not_run(*args, **kwargs):
+        raise AssertionError("coordinator must not run when SEO preview is blocked")
+
+    monkeypatch.setattr(svc, "ensure_autonomous_destination", should_not_run)
+
+    with pytest.raises(
+        svc.PhaseB2OperatorError,
+        match="NO_EVIDENCE_BOUND_PRIMARY_KEYWORD",
+    ):
+        await svc.execute_phase_b2(
+            db,
+            portfolio_item_id=ITEM_ID,
+            expected_plan_id=PLAN_ID,
+            expected_optimizer_application_id=OPTIMIZER_ID,
+            expected_item_fingerprint=ITEM_FP,
+            expected_destination_input_fingerprint=DEST_FP,
+            expected_execution_input_fingerprint=EXEC_FP,
+            expected_seo_input_fingerprint=SEO_INPUT_FP,
+            expected_seo_fingerprint=SEO_FP,
+            expected_scheduled_for=SCHEDULED_FOR,
+            expected_pinterest_board_record_id=BOARD_ID,
+            expected_external_board_id=EXTERNAL_BOARD_ID,
+            settings=_settings(),
+            now=datetime(2026, 9, 22, 15, 49, tzinfo=timezone.utc),
+        )
 
 
 def test_phase_b2_readiness_fails_on_any_fifth_blocker(monkeypatch):
@@ -452,6 +506,8 @@ async def test_execute_phase_b2_success_enforces_provider_free_postconditions(mo
             "item_fingerprint": ITEM_FP,
             "destination_input_fingerprint": DEST_FP,
             "execution_input_fingerprint": EXEC_FP,
+            "seo_input_fingerprint": SEO_INPUT_FP,
+            "seo_fingerprint": SEO_FP,
             "scheduled_for": SCHEDULED_FOR,
             "pinterest_board_record_id": BOARD_ID,
             "external_board_id": EXTERNAL_BOARD_ID,
@@ -529,6 +585,8 @@ async def test_execute_phase_b2_success_enforces_provider_free_postconditions(mo
         expected_item_fingerprint=ITEM_FP,
         expected_destination_input_fingerprint=DEST_FP,
         expected_execution_input_fingerprint=EXEC_FP,
+        expected_seo_input_fingerprint=SEO_INPUT_FP,
+        expected_seo_fingerprint=SEO_FP,
         expected_scheduled_for=SCHEDULED_FOR,
         expected_pinterest_board_record_id=BOARD_ID,
         expected_external_board_id=EXTERNAL_BOARD_ID,
