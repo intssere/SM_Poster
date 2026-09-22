@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -23,8 +24,26 @@ from app.services.pinterest_autonomous_destination import (
     AutonomousDestinationError,
     destination_readiness,
 )
+from app.services.pinterest_phase_b1_operator import (
+    PhaseB1OperatorError,
+    execute_phase_b1,
+    phase_b1_readiness,
+)
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
+
+
+class PhaseB1Request(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    store_id: str = Field(min_length=1, max_length=36)
+    month_key: str = Field(pattern=r"^\d{4}-\d{2}$")
+    target_pins: int = Field(ge=1, le=10000)
+    expected_preview_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_existing_commitments: int = Field(ge=0)
+    expected_active_slots: int = Field(ge=0)
+    expected_reserve_slots: int = Field(ge=0)
 
 
 @router.get("/preview")
@@ -44,6 +63,47 @@ def preview_monthly_portfolio(
         )
     except PortfolioPlanningError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.get("/canary/phase-b1-readiness")
+def preview_phase_b1_canary(
+    store_id: str = Query(..., min_length=1, max_length=36),
+    month_key: str = Query(..., pattern=r"^\d{4}-\d{2}$"),
+    target_pins: int = Query(..., ge=1, le=10000),
+    db: Session = Depends(get_db),
+):
+    try:
+        return phase_b1_readiness(
+            db,
+            store_id=store_id,
+            month_key=month_key,
+            target_pins=target_pins,
+            settings=get_settings(),
+        )
+    except PhaseB1OperatorError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from None
+
+
+@router.post("/canary/phase-b1")
+def run_phase_b1_canary(
+    payload: PhaseB1Request,
+    db: Session = Depends(get_db),
+):
+    try:
+        return execute_phase_b1(
+            db,
+            store_id=payload.store_id,
+            month_key=payload.month_key,
+            target_pins=payload.target_pins,
+            expected_preview_fingerprint=payload.expected_preview_fingerprint,
+            expected_input_fingerprint=payload.expected_input_fingerprint,
+            expected_existing_commitments=payload.expected_existing_commitments,
+            expected_active_slots=payload.expected_active_slots,
+            expected_reserve_slots=payload.expected_reserve_slots,
+            settings=get_settings(),
+        )
+    except PhaseB1OperatorError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from None
 
 
 @router.get("/items/{portfolio_item_id}/seo-preview")
