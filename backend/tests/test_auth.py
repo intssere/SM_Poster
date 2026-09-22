@@ -225,3 +225,17 @@ def test_phase_b1_canary_endpoints_remain_authenticated(auth_client):
         headers={"Origin": "http://localhost:5000"},
         json={},
     ).status_code == 401
+
+
+def test_phase_b2_canary_endpoints_remain_authenticated(auth_client):
+    client = auth_client
+    params = "?portfolio_item_id=b09d0c93-8da0-4561-86fa-bcf5bb36e9be"
+    assert client.get(
+        f"/api/portfolio/canary/phase-b2-readiness{params}",
+        headers={"Origin": "http://localhost:5000"},
+    ).status_code == 401
+    assert client.post(
+        "/api/portfolio/canary/phase-b2",
+        headers={"Origin": "http://localhost:5000"},
+        json={},
+    ).status_code == 401
