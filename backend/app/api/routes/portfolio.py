@@ -36,6 +36,11 @@ from app.services.pinterest_phase_b2_operator import (
     execute_phase_b2,
     phase_b2_readiness,
 )
+from app.services.product_source_hydration import (
+    ProductSourceHydrationError,
+    hydrate_product_source,
+    product_source_readiness,
+)
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
@@ -65,6 +70,19 @@ class PhaseB2Request(BaseModel):
     expected_scheduled_for: datetime
     expected_pinterest_board_record_id: str = Field(min_length=1, max_length=36)
     expected_external_board_id: str = Field(min_length=1, max_length=255)
+
+
+class ProductSourceHydrationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    product_image_id: str = Field(min_length=1, max_length=36)
+    expected_product_id: str = Field(min_length=1, max_length=36)
+    expected_source_url: str = Field(min_length=1, max_length=4096)
+    expected_shopify_media_id: str = Field(min_length=1, max_length=64)
+    expected_current_source_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
 
 
 @router.get("/preview")
@@ -124,6 +142,40 @@ def run_phase_b1_canary(
             settings=get_settings(),
         )
     except PhaseB1OperatorError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from None
+
+
+@router.get("/canary/product-source-readiness")
+def preview_product_source_canary(
+    product_image_id: str = Query(..., min_length=1, max_length=36),
+    db: Session = Depends(get_db),
+):
+    try:
+        return product_source_readiness(
+            db,
+            product_image_id=product_image_id,
+            settings=get_settings(),
+        )
+    except ProductSourceHydrationError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from None
+
+
+@router.post("/canary/product-source-hydrate")
+def hydrate_product_source_canary(
+    payload: ProductSourceHydrationRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return hydrate_product_source(
+            db,
+            product_image_id=payload.product_image_id,
+            expected_product_id=payload.expected_product_id,
+            expected_source_url=payload.expected_source_url,
+            expected_shopify_media_id=payload.expected_shopify_media_id,
+            expected_current_source_sha256=payload.expected_current_source_sha256,
+            settings=get_settings(),
+        )
+    except ProductSourceHydrationError as exc:
         raise HTTPException(status_code=409, detail=exc.code) from None
 
 
