@@ -35,6 +35,7 @@ from app.models.domain import (
 from app.models.routine_publishing import RoutineDispatchPermit
 from app.services import pinterest_autonomous_execution as execution
 from app.services.pinterest_optimizer_apply import OPTIMIZER_METADATA_KEY
+from app.services.pinterest_seo_intelligence import PinterestSeoError
 
 
 NOW = datetime(2026, 9, 20, 13, 0, tzinfo=timezone.utc)
@@ -824,6 +825,19 @@ def test_publication_recovery_ambiguity_fails_closed(monkeypatch):
     failed = db.get(PinterestAutonomousExecutionRun, run.id)
     assert failed.status == "FAILED"
     db.close(); engine.dispose()
+
+
+def test_failure_code_preserves_deterministic_downstream_code():
+    assert (
+        execution._failure_code(
+            PinterestSeoError("NO_EVIDENCE_BOUND_PRIMARY_KEYWORD")
+        )
+        == "NO_EVIDENCE_BOUND_PRIMARY_KEYWORD"
+    )
+    assert (
+        execution._failure_code(PinterestSeoError("human readable failure"))
+        == "PinterestSeoError"
+    )
 
 
 def test_failed_run_blocks_retry():
