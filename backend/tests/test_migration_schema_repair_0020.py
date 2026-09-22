@@ -242,7 +242,7 @@ def test_exact_production_fingerprint_pair_repairs_and_reaches_current_head(
 
     _alembic_in_process(isolated_database, "head")
 
-    assert _revision(isolated_database) == "0028"
+    assert _revision(isolated_database) == "0029"
     engine = sa.create_engine(isolated_database)
     try:
         with engine.begin() as connection:
@@ -268,7 +268,7 @@ def test_exact_canonical_empty_0020_still_adopts_without_repair(
         engine.dispose()
 
     _alembic(isolated_database, "head")
-    assert _revision(isolated_database) == "0028"
+    assert _revision(isolated_database) == "0029"
 
 
 @pytest.mark.parametrize("table", OWNED_0020)
