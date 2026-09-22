@@ -287,7 +287,7 @@ def test_exact_dev_0023_state_upgrades_to_canonical_head(
         engine.dispose()
 
     _upgrade(isolated_database, "head")
-    assert _revision(isolated_database) == "0028"
+    assert _revision(isolated_database) == "0029"
 
     engine = sa.create_engine(isolated_database)
     try:
@@ -310,7 +310,7 @@ def test_canonical_0023_without_future_tables_upgrades_normally(
 ) -> None:
     _upgrade(isolated_database, "0023")
     _upgrade(isolated_database, "head")
-    assert _revision(isolated_database) == "0028"
+    assert _revision(isolated_database) == "0029"
 
 
 def test_unknown_dev_fingerprint_refuses_at_0024(
