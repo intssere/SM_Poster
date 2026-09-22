@@ -12,6 +12,7 @@ on:
       - task-58-4-frozen-planner-cap-contract
       - task-58-5-dev-schema-0023-reconciliation
       - task-58-6-head-check-canonicalization
+      - task-58-7-arabian-angle-taxonomy
   pull_request:
     branches:
       - main
@@ -109,6 +110,7 @@ jobs:
           tests/test_pinterest_performance_analytics.py
           tests/test_pinterest_autonomous_generation.py
           tests/test_pinterest_seo_intelligence.py
+          tests/test_content_engine.py
           tests/test_pinterest_portfolio_planner.py
           tests/test_pinterest_board_strategy.py
           tests/test_routine_autonomous_authorization.py
