@@ -92,7 +92,7 @@ def propose_content(product: ProductFacts, *, limit: int = 5) -> list[ContentPro
 
     if product.is_arabian:
         proposals.append(ContentProposal(
-            angle_key="arabian-fragrance-discovery",
+            angle_key="arabian-fragrance",
             angle_label="Arabian Fragrance Discovery",
             board_key="arabian-fragrance",
             keywords=("arabian perfume", "middle eastern fragrance", "arabian fragrance"),

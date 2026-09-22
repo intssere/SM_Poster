@@ -24,10 +24,45 @@ def test_out_of_stock_has_no_proposals():
     assert propose_content(product(inventory_total=0)) == []
 
 
-def test_arabian_taxonomy_maps_to_arabian_board():
+def test_arabian_taxonomy_maps_to_canonical_arabian_angle_and_board():
     proposals = propose_content(product(is_arabian=True))
     assert proposals[0].board_key == "arabian-fragrance"
-    assert any(p.angle_key == "arabian-fragrance-discovery" for p in proposals)
+
+    arabian = [p for p in proposals if p.angle_key == "arabian-fragrance"]
+    assert len(arabian) == 1
+    proposal = arabian[0]
+    assert proposal.angle_label == "Arabian Fragrance Discovery"
+    assert proposal.board_key == "arabian-fragrance"
+    assert proposal.keywords == (
+        "arabian perfume",
+        "middle eastern fragrance",
+        "arabian fragrance",
+    )
+    assert proposal.reason == (
+        "Product taxonomy explicitly classifies the item as Arabian fragrance."
+    )
+    assert all(
+        p.angle_key != "arabian-fragrance-discovery"
+        for p in proposals
+    )
+
+
+def test_arabian_key_change_preserves_new_arrival_proposal():
+    proposals = propose_content(
+        product(is_arabian=True, is_new_arrival=True),
+        limit=20,
+    )
+    new_arrival = [p for p in proposals if p.angle_key == "new-arrival"]
+    assert len(new_arrival) == 1
+    proposal = new_arrival[0]
+    assert proposal.angle_label == "New Fragrance Arrival"
+    assert proposal.board_key == "new-arrivals"
+    assert proposal.keywords == (
+        "new perfume",
+        "new fragrance",
+        "fragrance new arrivals",
+    )
+    assert proposal.reason == "Product is explicitly marked as a new arrival."
 
 
 def test_copy_does_not_invent_note_for_generic_spotlight():

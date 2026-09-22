@@ -90,7 +90,7 @@ def _seed_taxonomy(
     ))
     db.add(ContentAngle(
         id="angle-arabian",
-        key="arabian-fragrance-discovery",
+        key="arabian-fragrance",
         name="Arabian Fragrance Discovery",
         active=True,
         rules={},
@@ -520,6 +520,45 @@ def test_missing_taxonomy_mappings_are_product_level_and_excluded():
     assert all(
         item["board_key_snapshot"] == "arabian-fragrance"
         for item in preview["items"]
+    )
+    db.close()
+
+
+def test_candidate_pool_accepts_canonical_arabian_board_and_angle():
+    db = _db()
+    store = _seed_taxonomy(
+        db,
+        include_guide_board=False,
+        include_under50=False,
+    )
+    _seed_products(db, 1)
+
+    pool = planner._candidate_pool(
+        db,
+        store_id=store.id,
+        month_key="2026-10",
+        used_identity=set(),
+        now=NOW,
+    )
+
+    arabian = [
+        candidate
+        for candidate in pool["candidates"]
+        if candidate.board_key == "arabian-fragrance"
+        and candidate.angle_key == "arabian-fragrance"
+    ]
+    assert len(arabian) == 1
+    candidate = arabian[0]
+    assert candidate.local_board_id == "board-arabian"
+    assert candidate.content_angle_id == "angle-arabian"
+    assert (
+        "arabian-fragrance-discovery"
+        not in pool["missing_angle_mappings"]
+    )
+    assert candidate.seed_keywords == (
+        "arabian perfume",
+        "middle eastern fragrance",
+        "arabian fragrance",
     )
     db.close()
 
