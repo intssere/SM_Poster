@@ -710,6 +710,13 @@ async def execute_phase_b2(
         raise PhaseB2OperatorError(
             (readiness.get("blockers") or ["PHASE_B2_NOT_READY"])[0]
         )
+    recovery_required = (
+        readiness.get("recoverable_provider_free_failure") is True
+    )
+    if readiness.get("ready") is not True and not recovery_required:
+        raise PhaseB2OperatorError(
+            (readiness.get("blockers") or ["PHASE_B2_NOT_READY"])[0]
+        )
 
     _require_exact(expected_plan_id, readiness.get("plan_id"), "PLAN_ID_MISMATCH")
     _require_exact(
@@ -777,6 +784,39 @@ async def execute_phase_b2(
         )
         or 0
     )
+
+    recovery_applied = False
+    if recovery_required:
+        _reopen_exact_pre_seo_failure(
+            db,
+            item=item,
+            recovery=readiness.get("recovery") or {},
+            expected_destination_input_fingerprint=expected_destination_input_fingerprint,
+            expected_execution_input_fingerprint=expected_execution_input_fingerprint,
+            now=now,
+        )
+        recovery_applied = True
+        readiness = phase_b2_readiness(
+            db,
+            portfolio_item_id=portfolio_item_id,
+            settings=settings,
+            now=now,
+            source_storage=source_storage,
+        )
+        if readiness.get("ready") is not True:
+            raise PhaseB2OperatorError(
+                (readiness.get("blockers") or ["PHASE_B2_RECOVERY_RECHECK_FAILED"])[0]
+            )
+        _require_exact(
+            expected_destination_input_fingerprint,
+            readiness.get("destination_input_fingerprint"),
+            "DESTINATION_INPUT_FINGERPRINT_DRIFT",
+        )
+        _require_exact(
+            expected_execution_input_fingerprint,
+            readiness.get("execution_input_fingerprint"),
+            "EXECUTION_INPUT_FINGERPRINT_DRIFT",
+        )
 
     operator_settings = _operator_settings(settings)
     enabled_readiness = destination_readiness(
@@ -857,6 +897,7 @@ async def execute_phase_b2(
             sync_client=_provider_tripwire(),
             renderer=renderer,
             now=now,
+            phase_b2_internal_gate_override=True,
         )
     except AutonomousDestinationError as exc:
         raise PhaseB2OperatorError(exc.code) from None
@@ -1006,6 +1047,7 @@ async def execute_phase_b2(
         "routine_permit_status": permit.status,
         "source_image_id": readiness.get("source_cache", {}).get("source_image_id"),
         "source_sha256": readiness.get("source_cache", {}).get("source_sha256"),
+        "recovery_applied": recovery_applied,
         "provider_called": False,
         "ai_called": False,
     }
