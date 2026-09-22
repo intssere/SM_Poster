@@ -14,6 +14,8 @@ OPTIMIZER_ID = "affced85-21f7-47d5-bab6-9eea694d8519"
 ITEM_FP = "b" * 64
 DEST_FP = "d" * 64
 EXEC_FP = "e" * 64
+SEO_INPUT_FP = "1" * 64
+SEO_FP = "2" * 64
 BOARD_ID = "dab1fe65-621d-4ace-9a4c-bbbf7f26272b"
 EXTERNAL_BOARD_ID = "1093811896939213067"
 SCHEDULED_FOR = datetime(2026, 9, 23, 14, 15, tzinfo=timezone.utc)
@@ -146,6 +148,20 @@ def _patch_basic_readiness(monkeypatch, *, destination=None, execution=None):
     monkeypatch.setattr(svc, "_publish_unknown_count", lambda db: 0)
     monkeypatch.setattr(
         svc,
+        "seo_brief_preview",
+        lambda *a, **k: {
+            "ready": True,
+            "blockers": [],
+            "input_fingerprint": SEO_INPUT_FP,
+            "seo_fingerprint": SEO_FP,
+            "primary_keyword": "new brand perfume",
+            "state_mutated": False,
+            "provider_called": False,
+            "ai_called": False,
+        },
+    )
+    monkeypatch.setattr(
+        svc,
         "_cache_status",
         lambda *a, **k: {
             "ready": True,
@@ -172,7 +188,39 @@ def test_phase_b2_readiness_ignores_only_four_expected_feature_blockers(monkeypa
     assert result["destination_input_fingerprint"] == DEST_FP
     assert result["execution_input_fingerprint"] == EXEC_FP
     assert result["pinterest_board_record_id"] == BOARD_ID
+    assert result["seo_preview_ready"] is True
+    assert result["seo_input_fingerprint"] == SEO_INPUT_FP
+    assert result["seo_fingerprint"] == SEO_FP
+    assert result["primary_keyword"] == "new brand perfume"
     assert result["source_cache"]["ready"] is True
+
+
+def test_phase_b2_readiness_fails_before_run_on_seo_preview_blocker(monkeypatch):
+    db = _patch_basic_readiness(monkeypatch)
+    monkeypatch.setattr(
+        svc,
+        "seo_brief_preview",
+        lambda *a, **k: {
+            "ready": False,
+            "blockers": ["NO_EVIDENCE_BOUND_PRIMARY_KEYWORD"],
+            "state_mutated": False,
+            "provider_called": False,
+            "ai_called": False,
+        },
+    )
+
+    result = svc.phase_b2_readiness(
+        db,
+        portfolio_item_id=ITEM_ID,
+        settings=_settings(),
+        now=datetime(2026, 9, 22, 15, 49, tzinfo=timezone.utc),
+    )
+
+    assert result["ready"] is False
+    assert result["structurally_ready"] is False
+    assert result["seo_preview_ready"] is False
+    assert result["seo_preview_blockers"] == ["NO_EVIDENCE_BOUND_PRIMARY_KEYWORD"]
+    assert "NO_EVIDENCE_BOUND_PRIMARY_KEYWORD" in result["blockers"]
 
 
 def test_phase_b2_readiness_fails_on_any_fifth_blocker(monkeypatch):
@@ -266,6 +314,8 @@ async def test_execute_phase_b2_exact_binding_mismatch_fails_before_mutation(mon
             "item_fingerprint": ITEM_FP,
             "destination_input_fingerprint": DEST_FP,
             "execution_input_fingerprint": EXEC_FP,
+            "seo_input_fingerprint": SEO_INPUT_FP,
+            "seo_fingerprint": SEO_FP,
             "scheduled_for": SCHEDULED_FOR,
             "pinterest_board_record_id": BOARD_ID,
             "external_board_id": EXTERNAL_BOARD_ID,
@@ -291,6 +341,8 @@ async def test_execute_phase_b2_exact_binding_mismatch_fails_before_mutation(mon
             expected_item_fingerprint="0" * 64,
             expected_destination_input_fingerprint=DEST_FP,
             expected_execution_input_fingerprint=EXEC_FP,
+            expected_seo_input_fingerprint=SEO_INPUT_FP,
+            expected_seo_fingerprint=SEO_FP,
             expected_scheduled_for=SCHEDULED_FOR,
             expected_pinterest_board_record_id=BOARD_ID,
             expected_external_board_id=EXTERNAL_BOARD_ID,
@@ -408,6 +460,17 @@ async def test_execute_phase_b2_success_enforces_provider_free_postconditions(mo
                 "source_image_id": "image-1",
                 "source_sha256": "a" * 64,
             },
+        },
+    )
+    monkeypatch.setattr(
+        svc,
+        "seo_brief_preview",
+        lambda *a, **k: {
+            "ready": True,
+            "blockers": [],
+            "input_fingerprint": SEO_INPUT_FP,
+            "seo_fingerprint": SEO_FP,
+            "primary_keyword": "new brand perfume",
         },
     )
     monkeypatch.setattr(
