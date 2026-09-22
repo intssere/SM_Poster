@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
@@ -29,6 +31,11 @@ from app.services.pinterest_phase_b1_operator import (
     execute_phase_b1,
     phase_b1_readiness,
 )
+from app.services.pinterest_phase_b2_operator import (
+    PhaseB2OperatorError,
+    execute_phase_b2,
+    phase_b2_readiness,
+)
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
@@ -44,6 +51,20 @@ class PhaseB1Request(BaseModel):
     expected_existing_commitments: int = Field(ge=0)
     expected_active_slots: int = Field(ge=0)
     expected_reserve_slots: int = Field(ge=0)
+
+
+class PhaseB2Request(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    portfolio_item_id: str = Field(min_length=1, max_length=36)
+    expected_plan_id: str = Field(min_length=1, max_length=36)
+    expected_optimizer_application_id: str = Field(min_length=1, max_length=36)
+    expected_item_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_destination_input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_execution_input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_scheduled_for: datetime
+    expected_pinterest_board_record_id: str = Field(min_length=1, max_length=36)
+    expected_external_board_id: str = Field(min_length=1, max_length=255)
 
 
 @router.get("/preview")
@@ -103,6 +124,44 @@ def run_phase_b1_canary(
             settings=get_settings(),
         )
     except PhaseB1OperatorError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from None
+
+
+@router.get("/canary/phase-b2-readiness")
+def preview_phase_b2_canary(
+    portfolio_item_id: str = Query(..., min_length=1, max_length=36),
+    db: Session = Depends(get_db),
+):
+    try:
+        return phase_b2_readiness(
+            db,
+            portfolio_item_id=portfolio_item_id,
+            settings=get_settings(),
+        )
+    except PhaseB2OperatorError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from None
+
+
+@router.post("/canary/phase-b2")
+async def run_phase_b2_canary(
+    payload: PhaseB2Request,
+    db: Session = Depends(get_db),
+):
+    try:
+        return await execute_phase_b2(
+            db,
+            portfolio_item_id=payload.portfolio_item_id,
+            expected_plan_id=payload.expected_plan_id,
+            expected_optimizer_application_id=payload.expected_optimizer_application_id,
+            expected_item_fingerprint=payload.expected_item_fingerprint,
+            expected_destination_input_fingerprint=payload.expected_destination_input_fingerprint,
+            expected_execution_input_fingerprint=payload.expected_execution_input_fingerprint,
+            expected_scheduled_for=payload.expected_scheduled_for,
+            expected_pinterest_board_record_id=payload.expected_pinterest_board_record_id,
+            expected_external_board_id=payload.expected_external_board_id,
+            settings=get_settings(),
+        )
+    except PhaseB2OperatorError as exc:
         raise HTTPException(status_code=409, detail=exc.code) from None
 
 
