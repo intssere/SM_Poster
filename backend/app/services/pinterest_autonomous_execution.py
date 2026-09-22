@@ -57,6 +57,78 @@ class AutonomousExecutionError(RuntimeError):
         self.code = code
 
 
+_PHASE_B2_UNSAFE_GATE_FIELDS = (
+    "publishing_enabled",
+    "buffer_publishing_enabled",
+    "buffer_single_pin_pilot_enabled",
+    "routine_pinterest_scheduler_enabled",
+    "routine_pinterest_worker_enabled",
+    "routine_buffer_dispatch_enabled",
+    "pinterest_write_scope_enabled",
+    "pinterest_board_write_scope_enabled",
+    "pinterest_board_provisioning_enabled",
+    "pinterest_single_pin_pilot_enabled",
+    "pinterest_autonomous_board_ensure_enabled",
+    "pinterest_analytics_ingestion_enabled",
+    "pinterest_learning_snapshot_persistence_enabled",
+)
+
+_PHASE_B2_INTERNAL_GATE_FIELDS = (
+    "pinterest_seo_brief_persistence_enabled",
+    "pinterest_autonomous_generation_enabled",
+    "routine_autonomous_authorization_enabled",
+    "pinterest_autonomous_execution_enabled",
+)
+
+
+def _phase_b2_gate_snapshot(settings: Settings) -> dict[str, bool]:
+    names = (
+        *_PHASE_B2_UNSAFE_GATE_FIELDS,
+        *_PHASE_B2_INTERNAL_GATE_FIELDS,
+        "routine_pinterest_dry_run",
+    )
+    return {name: bool(getattr(settings, name)) for name in names}
+
+
+def _phase_b2_execution_settings(settings: Settings) -> Settings:
+    if settings.routine_pinterest_dry_run is not True:
+        raise AutonomousExecutionError("PHASE_B2_DRY_RUN_REQUIRED")
+    unsafe = [
+        name for name in _PHASE_B2_UNSAFE_GATE_FIELDS
+        if bool(getattr(settings, name))
+    ]
+    if unsafe:
+        raise AutonomousExecutionError(
+            f"PHASE_B2_UNSAFE_GATE_ENABLED:{unsafe[0]}"
+        )
+
+    values = settings.model_dump()
+    values.update({name: False for name in _PHASE_B2_UNSAFE_GATE_FIELDS})
+    values.update({name: True for name in _PHASE_B2_INTERNAL_GATE_FIELDS})
+    values["routine_pinterest_dry_run"] = True
+    operator = Settings.model_validate(values)
+    _assert_phase_b2_internal_gate_continuity(operator, "ENTRY")
+    return operator
+
+
+def _assert_phase_b2_internal_gate_continuity(
+    settings: Settings,
+    stage: str,
+) -> None:
+    if settings.routine_pinterest_dry_run is not True:
+        raise AutonomousExecutionError(
+            f"PHASE_B2_INTERNAL_GATE_CONTINUITY_LOST_{stage}"
+        )
+    if any(bool(getattr(settings, name)) for name in _PHASE_B2_UNSAFE_GATE_FIELDS):
+        raise AutonomousExecutionError(
+            f"PHASE_B2_INTERNAL_GATE_CONTINUITY_LOST_{stage}"
+        )
+    if any(getattr(settings, name) is not True for name in _PHASE_B2_INTERNAL_GATE_FIELDS):
+        raise AutonomousExecutionError(
+            f"PHASE_B2_INTERNAL_GATE_CONTINUITY_LOST_{stage}"
+        )
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -518,8 +590,12 @@ def execute_autonomous_item(
     settings: Settings | None = None,
     renderer=None,
     now: datetime | None = None,
+    phase_b2_internal_gate_override: bool = False,
 ) -> PinterestAutonomousExecutionRun:
     settings = settings or get_settings()
+    if phase_b2_internal_gate_override:
+        settings = _phase_b2_execution_settings(settings)
+        _assert_phase_b2_internal_gate_continuity(settings, "ENTRY")
     now = _utc(now or _now())
     item = db.get(PinterestPortfolioPlanItem, portfolio_item_id)
     if item is None:
@@ -575,6 +651,14 @@ def execute_autonomous_item(
                 "board_record_id": readiness["board_routing"]["selected_board_id"],
                 "provider_called": False,
                 "ai_called": False,
+                **(
+                    {
+                        "phase_b2_internal_gate_override": True,
+                        "internal_gate_snapshot": _phase_b2_gate_snapshot(settings),
+                    }
+                    if phase_b2_internal_gate_override
+                    else {}
+                ),
             },
             started_at=now,
         )
@@ -615,8 +699,21 @@ def execute_autonomous_item(
         if not _same_schedule(run.scheduled_for, readiness["scheduled_for"]):
             raise AutonomousExecutionError("AUTONOMOUS_EXECUTION_SCHEDULE_DRIFT")
 
+    if phase_b2_internal_gate_override:
+        current = db.get(PinterestAutonomousExecutionRun, run.id)
+        current.safe_metadata = {
+            **(current.safe_metadata or {}),
+            "phase_b2_internal_gate_override": True,
+            "internal_gate_snapshot": _phase_b2_gate_snapshot(settings),
+        }
+        db.commit()
+        db.refresh(current)
+        run = current
+
     try:
         # SEO_READY
+        if phase_b2_internal_gate_override:
+            _assert_phase_b2_internal_gate_continuity(settings, "SEO")
         if _stage_at_least(run, "SEO_READY"):
             if not run.seo_brief_id:
                 raise AutonomousExecutionError("SEO_STAGE_DRIFT")
@@ -634,6 +731,8 @@ def execute_autonomous_item(
             db.refresh(run)
 
         # GENERATED
+        if phase_b2_internal_gate_override:
+            _assert_phase_b2_internal_gate_continuity(settings, "GENERATION")
         if _stage_at_least(run, "GENERATED"):
             if not run.generation_run_id:
                 raise AutonomousExecutionError("GENERATION_STAGE_DRIFT")
@@ -657,6 +756,8 @@ def execute_autonomous_item(
             db.refresh(run)
 
         # AUTHORIZED
+        if phase_b2_internal_gate_override:
+            _assert_phase_b2_internal_gate_continuity(settings, "AUTHORIZATION")
         if _stage_at_least(run, "AUTHORIZED"):
             if not run.approval_id:
                 raise AutonomousExecutionError("AUTHORIZATION_STAGE_DRIFT")
@@ -771,6 +872,8 @@ def execute_autonomous_item(
             db.refresh(run)
 
         # PERMITTED
+        if phase_b2_internal_gate_override:
+            _assert_phase_b2_internal_gate_continuity(settings, "PERMIT")
         if _stage_at_least(run, "PERMITTED"):
             if not run.routine_permit_id:
                 raise AutonomousExecutionError("PERMIT_STAGE_DRIFT")
