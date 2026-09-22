@@ -515,7 +515,6 @@ def phase_b2_readiness(
         now=now,
     )
 
-    blockers: list[str] = []
     raw_blockers = list(dict.fromkeys([
         *(destination.get("blockers") or []),
         *(execution.get("blockers") or []),
@@ -524,7 +523,7 @@ def phase_b2_readiness(
         code for code in raw_blockers
         if code not in _EXPECTED_DISABLED_BLOCKERS
     ]
-    blockers.extend(structural_blockers)
+    blockers: list[str] = list(structural_blockers)
 
     if plan is None or plan.status != "ACTIVE":
         blockers.append("PORTFOLIO_PLAN_NOT_ACTIVE")
@@ -571,19 +570,16 @@ def phase_b2_readiness(
             blockers.append("PORTFOLIO_ITEM_PUBLICATION_ALREADY_SET")
     else:
         if existing_destination is not None and existing_destination.status in {"FAILED", "UNKNOWN"}:
-            blockers.append(
-                "AUTONOMOUS_DESTINATION_RECONCILIATION_REQUIRED"
-            )
+            blockers.append("AUTONOMOUS_DESTINATION_RECONCILIATION_REQUIRED")
         if existing_execution is not None and existing_execution.status == "FAILED":
-            blockers.append(
-                "AUTONOMOUS_EXECUTION_FAILED_RECONCILIATION_REQUIRED"
-            )
+            blockers.append("AUTONOMOUS_EXECUTION_FAILED_RECONCILIATION_REQUIRED")
 
     publish_unknown_count = _publish_unknown_count(db)
     if publish_unknown_count:
         blockers.append("PUBLISH_UNKNOWN_PRESENT")
 
-    blockers.extend(_safety_blockers(settings))
+    safety_blockers = _safety_blockers(settings)
+    blockers.extend(safety_blockers)
 
     cache = _cache_status(
         db,
@@ -594,11 +590,41 @@ def phase_b2_readiness(
     if cache.get("ready") is not True and cache.get("blocker"):
         blockers.append(cache["blocker"])
 
+    recovery = _recoverable_pre_seo_failure(
+        db,
+        item=item,
+        destination_run=existing_destination,
+        execution_run=existing_execution,
+        destination_input_fingerprint=destination.get("input_fingerprint"),
+        execution_input_fingerprint=execution.get("input_fingerprint"),
+        expected_board_id=destination_board.get("selected_board_id"),
+        cache_ready=cache.get("ready") is True,
+        publish_unknown_count=publish_unknown_count,
+        safety_blockers=safety_blockers,
+    )
+    if recovery.get("recoverable") is True:
+        structural_blockers = [
+            code for code in structural_blockers
+            if code not in _RECOVERY_BLOCKER_CODES
+        ]
+        blockers = [
+            code for code in blockers
+            if code not in _RECOVERY_BLOCKER_CODES
+        ]
+        blockers.append(_RECOVERY_REQUIRED_BLOCKER)
+
     blockers = list(dict.fromkeys(blockers))
+    non_structural = _EXPECTED_DISABLED_BLOCKERS | {_RECOVERY_REQUIRED_BLOCKER}
+    structural_remaining = [
+        code for code in blockers
+        if code not in non_structural
+    ]
+
     return {
         "ready": not blockers,
-        "structurally_ready": not structural_blockers
-        and not [code for code in blockers if code not in _EXPECTED_DISABLED_BLOCKERS],
+        "structurally_ready": not structural_remaining and not structural_blockers,
+        "recoverable_provider_free_failure": recovery.get("recoverable") is True,
+        "recovery": recovery,
         "blockers": blockers,
         "raw_destination_blockers": list(destination.get("blockers") or []),
         "raw_execution_blockers": list(execution.get("blockers") or []),
@@ -641,7 +667,6 @@ def phase_b2_readiness(
         "provider_called": False,
         "ai_called": False,
     }
-
 
 def _require_exact(expected: Any, actual: Any, code: str) -> None:
     if expected != actual:
