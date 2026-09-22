@@ -32,6 +32,10 @@ from app.services.pinterest_autonomous_destination import (
 )
 from app.services.pinterest_autonomous_execution import execution_readiness
 from app.services.pinterest_autonomous_generation import _select_authentic_image
+from app.services.pinterest_seo_intelligence import (
+    PinterestSeoError,
+    seo_brief_preview,
+)
 from app.services.product_source_cache import (
     ProductSourceStorage,
     cached_downloader,
@@ -294,6 +298,21 @@ def phase_b2_readiness(
         settings=settings,
         now=now,
     )
+    operator_settings = _operator_settings(settings)
+    try:
+        seo_preview = seo_brief_preview(
+            db,
+            item.id,
+            settings=operator_settings,
+        )
+    except PinterestSeoError as exc:
+        seo_preview = {
+            "ready": False,
+            "blockers": [str(exc)],
+            "state_mutated": False,
+            "provider_called": False,
+            "ai_called": False,
+        }
 
     blockers: list[str] = []
     raw_blockers = list(dict.fromkeys([
@@ -305,6 +324,11 @@ def phase_b2_readiness(
         if code not in _EXPECTED_DISABLED_BLOCKERS
     ]
     blockers.extend(structural_blockers)
+    if seo_preview.get("ready") is not True:
+        blockers.extend(
+            seo_preview.get("blockers")
+            or ["PINTEREST_SEO_PREVIEW_BLOCKED"]
+        )
 
     if plan is None or plan.status != "ACTIVE":
         blockers.append("PORTFOLIO_PLAN_NOT_ACTIVE")
@@ -383,6 +407,11 @@ def phase_b2_readiness(
         "raw_destination_blockers": list(destination.get("blockers") or []),
         "raw_execution_blockers": list(execution.get("blockers") or []),
         "expected_disabled_blockers": sorted(_EXPECTED_DISABLED_BLOCKERS),
+        "seo_preview_ready": seo_preview.get("ready") is True,
+        "seo_preview_blockers": list(seo_preview.get("blockers") or []),
+        "seo_input_fingerprint": seo_preview.get("input_fingerprint"),
+        "seo_fingerprint": seo_preview.get("seo_fingerprint"),
+        "primary_keyword": seo_preview.get("primary_keyword"),
         "portfolio_item_id": item.id,
         "item_fingerprint": item.item_fingerprint,
         "item_status": item.status,
@@ -445,6 +474,8 @@ async def execute_phase_b2(
     expected_item_fingerprint: str,
     expected_destination_input_fingerprint: str,
     expected_execution_input_fingerprint: str,
+    expected_seo_input_fingerprint: str,
+    expected_seo_fingerprint: str,
     expected_scheduled_for: datetime,
     expected_pinterest_board_record_id: str,
     expected_external_board_id: str,
@@ -486,6 +517,16 @@ async def execute_phase_b2(
         expected_execution_input_fingerprint,
         readiness.get("execution_input_fingerprint"),
         "EXECUTION_INPUT_FINGERPRINT_MISMATCH",
+    )
+    _require_exact(
+        expected_seo_input_fingerprint,
+        readiness.get("seo_input_fingerprint"),
+        "SEO_INPUT_FINGERPRINT_MISMATCH",
+    )
+    _require_exact(
+        expected_seo_fingerprint,
+        readiness.get("seo_fingerprint"),
+        "SEO_FINGERPRINT_MISMATCH",
     )
     _require_exact(
         _utc(expected_scheduled_for),
@@ -534,6 +575,27 @@ async def execute_phase_b2(
     )
 
     operator_settings = _operator_settings(settings)
+    enabled_seo_preview = seo_brief_preview(
+        db,
+        item.id,
+        settings=operator_settings,
+    )
+    if enabled_seo_preview.get("ready") is not True:
+        raise PhaseB2OperatorError(
+            (enabled_seo_preview.get("blockers")
+             or ["PINTEREST_SEO_PREVIEW_BLOCKED"])[0]
+        )
+    _require_exact(
+        expected_seo_input_fingerprint,
+        enabled_seo_preview.get("input_fingerprint"),
+        "SEO_INPUT_FINGERPRINT_DRIFT",
+    )
+    _require_exact(
+        expected_seo_fingerprint,
+        enabled_seo_preview.get("seo_fingerprint"),
+        "SEO_FINGERPRINT_DRIFT",
+    )
+
     enabled_readiness = destination_readiness(
         db,
         item.id,
@@ -738,6 +800,9 @@ async def execute_phase_b2(
         "scheduled_for": publication.scheduled_for,
         "destination_input_fingerprint": destination_run.input_fingerprint,
         "execution_input_fingerprint": execution_run.input_fingerprint,
+        "seo_input_fingerprint": enabled_seo_preview.get("input_fingerprint"),
+        "seo_fingerprint": enabled_seo_preview.get("seo_fingerprint"),
+        "primary_keyword": enabled_seo_preview.get("primary_keyword"),
         "pinterest_board_record_id": board.id,
         "external_board_id": board.external_board_id,
         "destination_run_id": destination_run.id,

@@ -67,6 +67,8 @@ class PhaseB2Request(BaseModel):
     expected_item_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     expected_destination_input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     expected_execution_input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_seo_input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_seo_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     expected_scheduled_for: datetime
     expected_pinterest_board_record_id: str = Field(min_length=1, max_length=36)
     expected_external_board_id: str = Field(min_length=1, max_length=255)
@@ -208,6 +210,8 @@ async def run_phase_b2_canary(
             expected_item_fingerprint=payload.expected_item_fingerprint,
             expected_destination_input_fingerprint=payload.expected_destination_input_fingerprint,
             expected_execution_input_fingerprint=payload.expected_execution_input_fingerprint,
+            expected_seo_input_fingerprint=payload.expected_seo_input_fingerprint,
+            expected_seo_fingerprint=payload.expected_seo_fingerprint,
             expected_scheduled_for=payload.expected_scheduled_for,
             expected_pinterest_board_record_id=payload.expected_pinterest_board_record_id,
             expected_external_board_id=payload.expected_external_board_id,
