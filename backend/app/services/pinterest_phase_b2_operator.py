@@ -3,10 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.core.config import Settings, get_settings
 from app.models.domain import (
+    AuditLog,
     PinApproval,
     PinCreative,
     PinPublication,
@@ -82,6 +83,17 @@ _OPERATOR_ENABLED_FIELDS = (
     "pinterest_autonomous_execution_enabled",
 )
 
+_RECOVERABLE_ERROR_CODES = {
+    "PinterestSeoError",
+    "PINTEREST_SEO_BRIEF_PERSISTENCE_DISABLED",
+}
+_RECOVERY_BLOCKER_CODES = {
+    "AUTONOMOUS_DESTINATION_FAILED_RECONCILIATION_REQUIRED",
+    "AUTONOMOUS_DESTINATION_RECONCILIATION_REQUIRED",
+    "AUTONOMOUS_EXECUTION_FAILED_RECONCILIATION_REQUIRED",
+}
+_RECOVERY_REQUIRED_BLOCKER = "PHASE_B2_RECOVERY_REQUIRED"
+
 
 def _utc(value: datetime) -> datetime:
     if value.tzinfo is None:
@@ -130,6 +142,214 @@ def _generation_run(db, item_id: str) -> PinterestAutonomousGenerationRun | None
         .where(PinterestAutonomousGenerationRun.portfolio_item_id == item_id)
         .limit(1)
     )
+
+
+def _recoverable_pre_seo_failure(
+    db,
+    *,
+    item: PinterestPortfolioPlanItem,
+    destination_run: PinterestAutonomousDestinationRun | None,
+    execution_run: PinterestAutonomousExecutionRun | None,
+    destination_input_fingerprint: str | None,
+    execution_input_fingerprint: str | None,
+    expected_board_id: str | None,
+    cache_ready: bool,
+    publish_unknown_count: int,
+    safety_blockers: list[str],
+) -> dict[str, Any]:
+    blockers: list[str] = []
+    if destination_run is None or execution_run is None:
+        blockers.append("RECOVERY_RUN_PAIR_REQUIRED")
+    else:
+        if (
+            destination_run.status != "FAILED"
+            or destination_run.stage != "BOARD_READY"
+            or destination_run.input_fingerprint != destination_input_fingerprint
+            or destination_run.pinterest_board_record_id != expected_board_id
+            or destination_run.board_provisioning_attempt_id is not None
+            or destination_run.autonomous_execution_run_id is not None
+        ):
+            blockers.append("DESTINATION_FAILURE_SHAPE_MISMATCH")
+        destination_meta = destination_run.safe_metadata or {}
+        if (
+            destination_meta.get("provider_called") is not False
+            or destination_meta.get("ai_called") is not False
+            or destination_meta.get("error_code") not in _RECOVERABLE_ERROR_CODES
+        ):
+            blockers.append("DESTINATION_FAILURE_METADATA_MISMATCH")
+
+        if (
+            execution_run.status != "FAILED"
+            or execution_run.stage != "STARTED"
+            or execution_run.input_fingerprint != execution_input_fingerprint
+            or execution_run.seo_brief_id is not None
+            or execution_run.generation_run_id is not None
+            or execution_run.approval_id is not None
+            or execution_run.publication_id is not None
+            or execution_run.routine_permit_id is not None
+        ):
+            blockers.append("EXECUTION_FAILURE_SHAPE_MISMATCH")
+        execution_meta = execution_run.safe_metadata or {}
+        if (
+            execution_meta.get("provider_called") is not False
+            or execution_meta.get("ai_called") is not False
+            or execution_meta.get("error_code") not in _RECOVERABLE_ERROR_CODES
+        ):
+            blockers.append("EXECUTION_FAILURE_METADATA_MISMATCH")
+
+    if item.status != "PLANNED" or item.publication_id is not None:
+        blockers.append("PORTFOLIO_ITEM_RECOVERY_STATE_MISMATCH")
+    if publish_unknown_count:
+        blockers.append("PUBLISH_UNKNOWN_PRESENT")
+    if cache_ready is not True:
+        blockers.append("LOCAL_PRODUCT_SOURCE_REQUIRED")
+    if safety_blockers:
+        blockers.append("UNSAFE_RUNTIME_GATE_STATE")
+
+    seo_count = int(
+        db.scalar(
+            select(func.count())
+            .select_from(PinterestSeoBrief)
+            .where(PinterestSeoBrief.portfolio_item_id == item.id)
+        )
+        or 0
+    )
+    generation_count = int(
+        db.scalar(
+            select(func.count())
+            .select_from(PinterestAutonomousGenerationRun)
+            .where(PinterestAutonomousGenerationRun.portfolio_item_id == item.id)
+        )
+        or 0
+    )
+    if seo_count or generation_count:
+        blockers.append("DOWNSTREAM_STATE_ALREADY_EXISTS")
+
+    blockers = list(dict.fromkeys(blockers))
+    return {
+        "recoverable": not blockers,
+        "blockers": blockers,
+        "destination_run_id": destination_run.id if destination_run else None,
+        "execution_run_id": execution_run.id if execution_run else None,
+        "reason": (
+            "PINTEREST_SEO_BRIEF_PERSISTENCE_DISABLED"
+            if not blockers
+            else None
+        ),
+    }
+
+
+def _recovery_metadata(
+    metadata: dict | None,
+    *,
+    now: datetime,
+    reason: str,
+) -> dict[str, Any]:
+    previous = dict(metadata or {})
+    prior_error = previous.pop("error_code", None)
+    previous["phase_b2_recovery"] = {
+        "reason": reason,
+        "previous_error_code": prior_error,
+        "reopened_at": now.isoformat(),
+        "provider_called": False,
+        "ai_called": False,
+    }
+    return previous
+
+
+def _reopen_exact_pre_seo_failure(
+    db,
+    *,
+    item: PinterestPortfolioPlanItem,
+    recovery: dict[str, Any],
+    expected_destination_input_fingerprint: str,
+    expected_execution_input_fingerprint: str,
+    now: datetime,
+) -> None:
+    if recovery.get("recoverable") is not True:
+        raise PhaseB2OperatorError("PHASE_B2_RECOVERY_NOT_ALLOWED")
+    destination = db.get(
+        PinterestAutonomousDestinationRun,
+        recovery.get("destination_run_id"),
+    )
+    execution = db.get(
+        PinterestAutonomousExecutionRun,
+        recovery.get("execution_run_id"),
+    )
+    if destination is None or execution is None:
+        raise PhaseB2OperatorError("PHASE_B2_RECOVERY_RUN_PAIR_MISSING")
+
+    reason = recovery.get("reason") or "PINTEREST_SEO_BRIEF_PERSISTENCE_DISABLED"
+    execution_changed = db.execute(
+        update(PinterestAutonomousExecutionRun)
+        .where(
+            PinterestAutonomousExecutionRun.id == execution.id,
+            PinterestAutonomousExecutionRun.portfolio_item_id == item.id,
+            PinterestAutonomousExecutionRun.status == "FAILED",
+            PinterestAutonomousExecutionRun.stage == "STARTED",
+            PinterestAutonomousExecutionRun.input_fingerprint
+            == expected_execution_input_fingerprint,
+            PinterestAutonomousExecutionRun.seo_brief_id.is_(None),
+            PinterestAutonomousExecutionRun.generation_run_id.is_(None),
+            PinterestAutonomousExecutionRun.approval_id.is_(None),
+            PinterestAutonomousExecutionRun.publication_id.is_(None),
+            PinterestAutonomousExecutionRun.routine_permit_id.is_(None),
+        )
+        .values(
+            status="STARTED",
+            completed_at=None,
+            safe_metadata=_recovery_metadata(
+                execution.safe_metadata,
+                now=now,
+                reason=reason,
+            ),
+        )
+    )
+    destination_changed = db.execute(
+        update(PinterestAutonomousDestinationRun)
+        .where(
+            PinterestAutonomousDestinationRun.id == destination.id,
+            PinterestAutonomousDestinationRun.portfolio_item_id == item.id,
+            PinterestAutonomousDestinationRun.status == "FAILED",
+            PinterestAutonomousDestinationRun.stage == "BOARD_READY",
+            PinterestAutonomousDestinationRun.input_fingerprint
+            == expected_destination_input_fingerprint,
+            PinterestAutonomousDestinationRun.board_provisioning_attempt_id.is_(None),
+            PinterestAutonomousDestinationRun.autonomous_execution_run_id.is_(None),
+        )
+        .values(
+            status="STARTED",
+            completed_at=None,
+            safe_metadata=_recovery_metadata(
+                destination.safe_metadata,
+                now=now,
+                reason=reason,
+            ),
+        )
+    )
+    if int(execution_changed.rowcount or 0) != 1 or int(destination_changed.rowcount or 0) != 1:
+        db.rollback()
+        raise PhaseB2OperatorError("PHASE_B2_RECOVERY_COMPARE_AND_SET_FAILED")
+
+    db.add(AuditLog(
+        actor="phase-b2-operator-v1",
+        action="PHASE_B2_PRE_SEO_FAILURE_REOPENED",
+        entity_type="PinterestPortfolioPlanItem",
+        entity_id=item.id,
+        metadata_json={
+            "destination_run_id": destination.id,
+            "execution_run_id": execution.id,
+            "reason": reason,
+            "provider_called": False,
+            "ai_called": False,
+        },
+    ))
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise PhaseB2OperatorError("PHASE_B2_RECOVERY_COMMIT_FAILED") from exc
+    db.expire_all()
 
 
 def _gate_state(settings: Settings) -> dict[str, bool]:
@@ -295,7 +515,6 @@ def phase_b2_readiness(
         now=now,
     )
 
-    blockers: list[str] = []
     raw_blockers = list(dict.fromkeys([
         *(destination.get("blockers") or []),
         *(execution.get("blockers") or []),
@@ -304,7 +523,7 @@ def phase_b2_readiness(
         code for code in raw_blockers
         if code not in _EXPECTED_DISABLED_BLOCKERS
     ]
-    blockers.extend(structural_blockers)
+    blockers: list[str] = list(structural_blockers)
 
     if plan is None or plan.status != "ACTIVE":
         blockers.append("PORTFOLIO_PLAN_NOT_ACTIVE")
@@ -351,19 +570,16 @@ def phase_b2_readiness(
             blockers.append("PORTFOLIO_ITEM_PUBLICATION_ALREADY_SET")
     else:
         if existing_destination is not None and existing_destination.status in {"FAILED", "UNKNOWN"}:
-            blockers.append(
-                "AUTONOMOUS_DESTINATION_RECONCILIATION_REQUIRED"
-            )
+            blockers.append("AUTONOMOUS_DESTINATION_RECONCILIATION_REQUIRED")
         if existing_execution is not None and existing_execution.status == "FAILED":
-            blockers.append(
-                "AUTONOMOUS_EXECUTION_FAILED_RECONCILIATION_REQUIRED"
-            )
+            blockers.append("AUTONOMOUS_EXECUTION_FAILED_RECONCILIATION_REQUIRED")
 
     publish_unknown_count = _publish_unknown_count(db)
     if publish_unknown_count:
         blockers.append("PUBLISH_UNKNOWN_PRESENT")
 
-    blockers.extend(_safety_blockers(settings))
+    safety_blockers = _safety_blockers(settings)
+    blockers.extend(safety_blockers)
 
     cache = _cache_status(
         db,
@@ -374,11 +590,41 @@ def phase_b2_readiness(
     if cache.get("ready") is not True and cache.get("blocker"):
         blockers.append(cache["blocker"])
 
+    recovery = _recoverable_pre_seo_failure(
+        db,
+        item=item,
+        destination_run=existing_destination,
+        execution_run=existing_execution,
+        destination_input_fingerprint=destination.get("input_fingerprint"),
+        execution_input_fingerprint=execution.get("input_fingerprint"),
+        expected_board_id=destination_board.get("selected_board_id"),
+        cache_ready=cache.get("ready") is True,
+        publish_unknown_count=publish_unknown_count,
+        safety_blockers=safety_blockers,
+    )
+    if recovery.get("recoverable") is True:
+        structural_blockers = [
+            code for code in structural_blockers
+            if code not in _RECOVERY_BLOCKER_CODES
+        ]
+        blockers = [
+            code for code in blockers
+            if code not in _RECOVERY_BLOCKER_CODES
+        ]
+        blockers.append(_RECOVERY_REQUIRED_BLOCKER)
+
     blockers = list(dict.fromkeys(blockers))
+    non_structural = _EXPECTED_DISABLED_BLOCKERS | {_RECOVERY_REQUIRED_BLOCKER}
+    structural_remaining = [
+        code for code in blockers
+        if code not in non_structural
+    ]
+
     return {
         "ready": not blockers,
-        "structurally_ready": not structural_blockers
-        and not [code for code in blockers if code not in _EXPECTED_DISABLED_BLOCKERS],
+        "structurally_ready": not structural_remaining and not structural_blockers,
+        "recoverable_provider_free_failure": recovery.get("recoverable") is True,
+        "recovery": recovery,
         "blockers": blockers,
         "raw_destination_blockers": list(destination.get("blockers") or []),
         "raw_execution_blockers": list(execution.get("blockers") or []),
@@ -422,7 +668,6 @@ def phase_b2_readiness(
         "ai_called": False,
     }
 
-
 def _require_exact(expected: Any, actual: Any, code: str) -> None:
     if expected != actual:
         raise PhaseB2OperatorError(code)
@@ -462,6 +707,13 @@ async def execute_phase_b2(
         source_storage=source_storage,
     )
     if readiness.get("structurally_ready") is not True:
+        raise PhaseB2OperatorError(
+            (readiness.get("blockers") or ["PHASE_B2_NOT_READY"])[0]
+        )
+    recovery_required = (
+        readiness.get("recoverable_provider_free_failure") is True
+    )
+    if readiness.get("ready") is not True and not recovery_required:
         raise PhaseB2OperatorError(
             (readiness.get("blockers") or ["PHASE_B2_NOT_READY"])[0]
         )
@@ -532,6 +784,39 @@ async def execute_phase_b2(
         )
         or 0
     )
+
+    recovery_applied = False
+    if recovery_required:
+        _reopen_exact_pre_seo_failure(
+            db,
+            item=item,
+            recovery=readiness.get("recovery") or {},
+            expected_destination_input_fingerprint=expected_destination_input_fingerprint,
+            expected_execution_input_fingerprint=expected_execution_input_fingerprint,
+            now=now,
+        )
+        recovery_applied = True
+        readiness = phase_b2_readiness(
+            db,
+            portfolio_item_id=portfolio_item_id,
+            settings=settings,
+            now=now,
+            source_storage=source_storage,
+        )
+        if readiness.get("ready") is not True:
+            raise PhaseB2OperatorError(
+                (readiness.get("blockers") or ["PHASE_B2_RECOVERY_RECHECK_FAILED"])[0]
+            )
+        _require_exact(
+            expected_destination_input_fingerprint,
+            readiness.get("destination_input_fingerprint"),
+            "DESTINATION_INPUT_FINGERPRINT_DRIFT",
+        )
+        _require_exact(
+            expected_execution_input_fingerprint,
+            readiness.get("execution_input_fingerprint"),
+            "EXECUTION_INPUT_FINGERPRINT_DRIFT",
+        )
 
     operator_settings = _operator_settings(settings)
     enabled_readiness = destination_readiness(
@@ -612,6 +897,7 @@ async def execute_phase_b2(
             sync_client=_provider_tripwire(),
             renderer=renderer,
             now=now,
+            phase_b2_internal_gate_override=True,
         )
     except AutonomousDestinationError as exc:
         raise PhaseB2OperatorError(exc.code) from None
@@ -761,6 +1047,7 @@ async def execute_phase_b2(
         "routine_permit_status": permit.status,
         "source_image_id": readiness.get("source_cache", {}).get("source_image_id"),
         "source_sha256": readiness.get("source_cache", {}).get("source_sha256"),
+        "recovery_applied": recovery_applied,
         "provider_called": False,
         "ai_called": False,
     }

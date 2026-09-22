@@ -261,6 +261,7 @@ async def test_execute_phase_b2_exact_binding_mismatch_fails_before_mutation(mon
         "phase_b2_readiness",
         lambda *a, **k: {
             "structurally_ready": True,
+            "ready": True,
             "plan_id": PLAN_ID,
             "optimizer_application_id": OPTIMIZER_ID,
             "item_fingerprint": ITEM_FP,
@@ -395,6 +396,7 @@ async def test_execute_phase_b2_success_enforces_provider_free_postconditions(mo
         "phase_b2_readiness",
         lambda *a, **k: {
             "structurally_ready": True,
+            "ready": True,
             "plan_id": PLAN_ID,
             "optimizer_application_id": OPTIMIZER_ID,
             "item_fingerprint": ITEM_FP,
@@ -479,3 +481,236 @@ async def test_execute_phase_b2_success_enforces_provider_free_postconditions(mo
     assert result["routine_permit_id"] == "permit-1"
     assert result["provider_called"] is False
     assert result["ai_called"] is False
+
+
+def _failed_destination_run(**updates):
+    values = {
+        "id": "dest-failed",
+        "status": "FAILED",
+        "stage": "BOARD_READY",
+        "input_fingerprint": DEST_FP,
+        "pinterest_board_record_id": BOARD_ID,
+        "board_provisioning_attempt_id": None,
+        "autonomous_execution_run_id": None,
+        "safe_metadata": {
+            "provider_called": False,
+            "ai_called": False,
+            "error_code": "PinterestSeoError",
+        },
+    }
+    values.update(updates)
+    return SimpleNamespace(**values)
+
+
+def _failed_execution_run(**updates):
+    values = {
+        "id": "exec-failed",
+        "status": "FAILED",
+        "stage": "STARTED",
+        "input_fingerprint": EXEC_FP,
+        "seo_brief_id": None,
+        "generation_run_id": None,
+        "approval_id": None,
+        "publication_id": None,
+        "routine_permit_id": None,
+        "safe_metadata": {
+            "provider_called": False,
+            "ai_called": False,
+            "error_code": "PinterestSeoError",
+        },
+    }
+    values.update(updates)
+    return SimpleNamespace(**values)
+
+
+def test_exact_pre_seo_failure_is_recoverable():
+    db = FakeDB()
+    result = svc._recoverable_pre_seo_failure(
+        db,
+        item=_item(),
+        destination_run=_failed_destination_run(),
+        execution_run=_failed_execution_run(),
+        destination_input_fingerprint=DEST_FP,
+        execution_input_fingerprint=EXEC_FP,
+        expected_board_id=BOARD_ID,
+        cache_ready=True,
+        publish_unknown_count=0,
+        safety_blockers=[],
+    )
+    assert result["recoverable"] is True
+    assert result["blockers"] == []
+    assert result["reason"] == "PINTEREST_SEO_BRIEF_PERSISTENCE_DISABLED"
+
+
+@pytest.mark.parametrize(
+    ("destination_updates", "execution_updates", "expected_blocker"),
+    [
+        ({"stage": "BOARD_PROVISIONING"}, {}, "DESTINATION_FAILURE_SHAPE_MISMATCH"),
+        (
+            {"safe_metadata": {"provider_called": True, "ai_called": False, "error_code": "PinterestSeoError"}},
+            {},
+            "DESTINATION_FAILURE_METADATA_MISMATCH",
+        ),
+        ({}, {"publication_id": "unexpected-publication"}, "EXECUTION_FAILURE_SHAPE_MISMATCH"),
+        (
+            {},
+            {"safe_metadata": {"provider_called": False, "ai_called": True, "error_code": "PinterestSeoError"}},
+            "EXECUTION_FAILURE_METADATA_MISMATCH",
+        ),
+        ({}, {"status": "STARTED"}, "EXECUTION_FAILURE_SHAPE_MISMATCH"),
+    ],
+)
+def test_pre_seo_recovery_rejects_any_shape_or_provider_drift(
+    destination_updates,
+    execution_updates,
+    expected_blocker,
+):
+    db = FakeDB()
+    result = svc._recoverable_pre_seo_failure(
+        db,
+        item=_item(),
+        destination_run=_failed_destination_run(**destination_updates),
+        execution_run=_failed_execution_run(**execution_updates),
+        destination_input_fingerprint=DEST_FP,
+        execution_input_fingerprint=EXEC_FP,
+        expected_board_id=BOARD_ID,
+        cache_ready=True,
+        publish_unknown_count=0,
+        safety_blockers=[],
+    )
+    assert result["recoverable"] is False
+    assert expected_blocker in result["blockers"]
+
+
+def test_phase_b2_readiness_marks_exact_failed_pair_recoverable(monkeypatch):
+    destination = _destination(
+        blockers=[
+            "SEO_BRIEF_PERSISTENCE_DISABLED",
+            "AUTONOMOUS_GENERATION_DISABLED",
+            "AUTONOMOUS_AUTHORIZATION_DISABLED",
+            "AUTONOMOUS_EXECUTION_DISABLED",
+            "AUTONOMOUS_DESTINATION_FAILED_RECONCILIATION_REQUIRED",
+        ]
+    )
+    execution = _execution(
+        blockers=[
+            "SEO_BRIEF_PERSISTENCE_DISABLED",
+            "AUTONOMOUS_GENERATION_DISABLED",
+            "AUTONOMOUS_AUTHORIZATION_DISABLED",
+            "AUTONOMOUS_EXECUTION_DISABLED",
+            "AUTONOMOUS_EXECUTION_FAILED_RECONCILIATION_REQUIRED",
+        ]
+    )
+    db = _patch_basic_readiness(
+        monkeypatch,
+        destination=destination,
+        execution=execution,
+    )
+    monkeypatch.setattr(
+        svc,
+        "_destination_run",
+        lambda db, item_id: _failed_destination_run(),
+    )
+    monkeypatch.setattr(
+        svc,
+        "_execution_run",
+        lambda db, item_id: _failed_execution_run(),
+    )
+
+    result = svc.phase_b2_readiness(
+        db,
+        portfolio_item_id=ITEM_ID,
+        settings=_settings(),
+        now=datetime(2026, 9, 22, 15, 49, tzinfo=timezone.utc),
+    )
+
+    assert result["ready"] is False
+    assert result["structurally_ready"] is True
+    assert result["recoverable_provider_free_failure"] is True
+    assert result["blockers"] == ["PHASE_B2_RECOVERY_REQUIRED"]
+
+
+class RecoveryDB:
+    def __init__(self, destination, execution, rowcounts=(1, 1)):
+        self.rows = {destination.id: destination, execution.id: execution}
+        self.rowcounts = list(rowcounts)
+        self.executed = 0
+        self.added = []
+        self.commits = 0
+        self.rollbacks = 0
+        self.expired = 0
+
+    def get(self, model, row_id):
+        return self.rows.get(row_id)
+
+    def execute(self, statement):
+        self.executed += 1
+        return SimpleNamespace(rowcount=self.rowcounts.pop(0))
+
+    def add(self, row):
+        self.added.append(row)
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+    def expire_all(self):
+        self.expired += 1
+
+
+def test_exact_pre_seo_recovery_compare_and_set_touches_two_rows_and_audit():
+    destination = _failed_destination_run()
+    execution = _failed_execution_run()
+    db = RecoveryDB(destination, execution)
+    recovery = {
+        "recoverable": True,
+        "destination_run_id": destination.id,
+        "execution_run_id": execution.id,
+        "reason": "PINTEREST_SEO_BRIEF_PERSISTENCE_DISABLED",
+    }
+
+    svc._reopen_exact_pre_seo_failure(
+        db,
+        item=_item(),
+        recovery=recovery,
+        expected_destination_input_fingerprint=DEST_FP,
+        expected_execution_input_fingerprint=EXEC_FP,
+        now=datetime(2026, 9, 22, 18, 0, tzinfo=timezone.utc),
+    )
+
+    assert db.executed == 2
+    assert db.commits == 1
+    assert db.rollbacks == 0
+    assert db.expired == 1
+    assert len(db.added) == 1
+    assert db.added[0].action == "PHASE_B2_PRE_SEO_FAILURE_REOPENED"
+
+
+def test_pre_seo_recovery_compare_and_set_failure_rolls_back():
+    destination = _failed_destination_run()
+    execution = _failed_execution_run()
+    db = RecoveryDB(destination, execution, rowcounts=(1, 0))
+    recovery = {
+        "recoverable": True,
+        "destination_run_id": destination.id,
+        "execution_run_id": execution.id,
+        "reason": "PINTEREST_SEO_BRIEF_PERSISTENCE_DISABLED",
+    }
+
+    with pytest.raises(
+        svc.PhaseB2OperatorError,
+        match="PHASE_B2_RECOVERY_COMPARE_AND_SET_FAILED",
+    ):
+        svc._reopen_exact_pre_seo_failure(
+            db,
+            item=_item(),
+            recovery=recovery,
+            expected_destination_input_fingerprint=DEST_FP,
+            expected_execution_input_fingerprint=EXEC_FP,
+            now=datetime(2026, 9, 22, 18, 0, tzinfo=timezone.utc),
+        )
+
+    assert db.rollbacks == 1
+    assert db.commits == 0

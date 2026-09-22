@@ -1574,3 +1574,121 @@ def test_destination_resumes_preexisting_succeeded_attempt_without_create(monkey
     assert run.stage == "EXECUTION_READY"
     assert run.board_provisioning_attempt_id == attempt.id
     db.close(); engine.dispose()
+
+
+def test_phase_b2_internal_gate_override_rehydrates_flags_at_execution_boundary(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    base = _settings(
+        pinterest_seo_brief_persistence_enabled=False,
+        pinterest_autonomous_generation_enabled=False,
+        routine_autonomous_authorization_enabled=False,
+        pinterest_autonomous_execution_enabled=False,
+        pinterest_autonomous_board_ensure_enabled=False,
+        pinterest_analytics_ingestion_enabled=False,
+        pinterest_learning_snapshot_persistence_enabled=False,
+        routine_pinterest_dry_run=True,
+        publishing_enabled=False,
+        buffer_publishing_enabled=False,
+        buffer_single_pin_pilot_enabled=False,
+        routine_pinterest_scheduler_enabled=False,
+        routine_pinterest_worker_enabled=False,
+        routine_buffer_dispatch_enabled=False,
+        pinterest_write_scope_enabled=False,
+        pinterest_board_write_scope_enabled=False,
+        pinterest_board_provisioning_enabled=False,
+        pinterest_single_pin_pilot_enabled=False,
+    )
+
+    def inspect_gate_snapshot(db_arg, item_id, *, settings=None):
+        assert settings is not None
+        assert settings.pinterest_seo_brief_persistence_enabled is True
+        assert settings.pinterest_autonomous_generation_enabled is True
+        assert settings.routine_autonomous_authorization_enabled is True
+        assert settings.pinterest_autonomous_execution_enabled is True
+        assert settings.pinterest_autonomous_board_ensure_enabled is False
+        assert settings.routine_pinterest_dry_run is True
+        assert settings.buffer_publishing_enabled is False
+        assert settings.pinterest_write_scope_enabled is False
+        raise RuntimeError("stop-after-gate-inspection")
+
+    monkeypatch.setattr(execution, "persist_seo_brief", inspect_gate_snapshot)
+
+    with pytest.raises(execution.AutonomousExecutionError, match="RuntimeError"):
+        execution.execute_autonomous_item(
+            db,
+            seeded["item1"].id,
+            settings=base,
+            now=NOW,
+            phase_b2_internal_gate_override=True,
+        )
+
+    run = db.scalar(select(PinterestAutonomousExecutionRun))
+    assert run.status == "FAILED"
+    assert run.stage == "STARTED"
+    assert run.safe_metadata["phase_b2_internal_gate_override"] is True
+    snapshot = run.safe_metadata["internal_gate_snapshot"]
+    assert snapshot["pinterest_seo_brief_persistence_enabled"] is True
+    assert snapshot["pinterest_autonomous_generation_enabled"] is True
+    assert snapshot["routine_autonomous_authorization_enabled"] is True
+    assert snapshot["pinterest_autonomous_execution_enabled"] is True
+    assert snapshot["pinterest_autonomous_board_ensure_enabled"] is False
+    assert snapshot["routine_pinterest_dry_run"] is True
+    db.close(); engine.dispose()
+
+
+def test_phase_b2_internal_gate_override_rejects_unsafe_provider_gate():
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    base = _settings(
+        pinterest_seo_brief_persistence_enabled=False,
+        pinterest_autonomous_generation_enabled=False,
+        routine_autonomous_authorization_enabled=False,
+        pinterest_autonomous_execution_enabled=False,
+        publishing_enabled=True,
+        routine_pinterest_dry_run=True,
+    )
+
+    with pytest.raises(
+        execution.AutonomousExecutionError,
+        match="PHASE_B2_UNSAFE_GATE_ENABLED:publishing_enabled",
+    ):
+        execution.execute_autonomous_item(
+            db,
+            seeded["item1"].id,
+            settings=base,
+            now=NOW,
+            phase_b2_internal_gate_override=True,
+        )
+
+    assert db.query(PinterestAutonomousExecutionRun).count() == 0
+    db.close(); engine.dispose()
+
+
+def test_destination_threads_phase_b2_internal_gate_override(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    seen = {"override": None}
+
+    def inspect_execute(db_arg, item_id, **kwargs):
+        seen["override"] = kwargs.get("phase_b2_internal_gate_override")
+        return SimpleNamespace(
+            id="execution-phase-b2-thread",
+            status="SUCCEEDED",
+            stage="PERMITTED",
+        )
+
+    monkeypatch.setattr(destination, "execute_autonomous_item", inspect_execute)
+    run = asyncio.run(destination.ensure_autonomous_destination(
+        db,
+        seeded["item1"].id,
+        settings=_destination_settings(),
+        now=NOW,
+        phase_b2_internal_gate_override=True,
+    ))
+
+    assert seen["override"] is True
+    assert run.status == "SUCCEEDED"
+    assert run.stage == "EXECUTION_READY"
+    assert run.autonomous_execution_run_id == "execution-phase-b2-thread"
+    db.close(); engine.dispose()
