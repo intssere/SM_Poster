@@ -208,3 +208,20 @@ def test_auth_bypass_is_never_active_in_exposed_mode(monkeypatch):
     monkeypatch.setenv("APP_ENV", "development")
     monkeypatch.setenv("AUTH_DISABLED", "true")
     get_settings.cache_clear()
+
+
+def test_phase_b1_canary_endpoints_remain_authenticated(auth_client):
+    client = auth_client
+    params = (
+        "?store_id=87483ecc-9bb7-4ec3-80d0-ac3c0f851d41"
+        "&month_key=2026-09&target_pins=150"
+    )
+    assert client.get(
+        f"/api/portfolio/canary/phase-b1-readiness{params}",
+        headers={"Origin": "http://localhost:5000"},
+    ).status_code == 401
+    assert client.post(
+        "/api/portfolio/canary/phase-b1",
+        headers={"Origin": "http://localhost:5000"},
+        json={},
+    ).status_code == 401
