@@ -244,11 +244,11 @@ def test_only_certified_post_publish_fingerprints_are_allowlisted() -> None:
     )
 
 
-def test_fresh_upgrade_reaches_0028_and_is_canonical(
+def test_fresh_upgrade_reaches_current_head_and_is_canonical(
     isolated_database: str,
 ) -> None:
     _upgrade(isolated_database, "head")
-    assert _revision(isolated_database) == "0028"
+    assert _revision(isolated_database) == "0029"
     engine = sa.create_engine(isolated_database)
     try:
         with engine.connect() as connection:
@@ -573,7 +573,7 @@ def test_startup_guard_accepts_canonical_head_and_refuses_drift_read_only(
                 verify_frozen_schema_at_head(connection)
             assert connection.execute(
                 sa.text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == "0028"
+            ).scalar_one() == "0029"
             assert connection.execute(
                 sa.text(
                     "SELECT to_regclass("

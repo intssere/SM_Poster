@@ -11,6 +11,7 @@ on:
       - task-58-3-post-publish-schema-canonicality-v2
       - task-58-4-frozen-planner-cap-contract
       - task-58-5-dev-schema-0023-reconciliation
+      - task-58-6-head-check-canonicalization
   pull_request:
     branches:
       - main
@@ -59,8 +60,8 @@ jobs:
 
       - name: Exact canonical ancestry guard
         run: |
-          test "$(git rev-parse HEAD)" != "144458682532d18adbf0c0df63681edcaf2f5e68"
-          git merge-base --is-ancestor 144458682532d18adbf0c0df63681edcaf2f5e68 HEAD
+          test "$(git rev-parse HEAD)" != "0133ee8395174cd3159eff18fdfff1a5d455a54f"
+          git merge-base --is-ancestor 0133ee8395174cd3159eff18fdfff1a5d455a54f HEAD
 
       - uses: actions/setup-python@v5
         with:
@@ -84,7 +85,7 @@ jobs:
           export DATABASE_URL="${TASK58_CATALOG_URL}"
           alembic upgrade head
           alembic current 2>&1 | tee /tmp/task58-current
-          grep -Fx '0028 (head)' /tmp/task58-current
+          grep -Fx '0029 (head)' /tmp/task58-current
 
       - name: Task 58 focused and dependent regressions
         run: >-
@@ -93,6 +94,7 @@ jobs:
           tests/test_migration_schema_repair_0020.py
           tests/test_migration_schema_reconciliation_bundle.py
           tests/test_migration_schema_repair_0028.py
+          tests/test_migration_schema_repair_0029.py
           tests/test_migration_schema_repair_dev_0023.py
           tests/test_orm_schema_canonicality.py
           tests/test_production_alembic_0020_reconciler.py
