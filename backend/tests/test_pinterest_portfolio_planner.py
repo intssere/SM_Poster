@@ -521,6 +521,11 @@ def test_missing_taxonomy_mappings_are_product_level_and_excluded():
         item["board_key_snapshot"] == "arabian-fragrance"
         for item in preview["items"]
     )
+    assert any(
+        item["content_angle_id"] == "angle-arabian"
+        for item in preview["items"]
+    )
+    assert "arabian-fragrance-discovery" not in preview["taxonomy_gaps"]["angles"]
     db.close()
 
 

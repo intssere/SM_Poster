@@ -23,7 +23,7 @@ def generate_fact_safe_copy(product: ProductFacts, proposal: ContentProposal) ->
         note = proposal.angle_key.removeprefix("note-").title()
         title = f"{product_name} | {note} Fragrance"
         description = f"Explore {product_name} at Diamond Shelf. A {note.lower()}-focused fragrance pick based on the product's listed scent notes. Shop the authentic product and see current availability."
-    elif proposal.angle_key == "arabian-fragrance-discovery":
+    elif proposal.angle_key == "arabian-fragrance":
         title = f"{product_name} | Arabian Fragrance Discovery"
         description = f"Discover {product_name} from {vendor or 'Diamond Shelf'}. Explore this Arabian fragrance, view current pricing and availability, and shop the authentic product at Diamond Shelf."
     elif proposal.angle_key == "gift-idea":

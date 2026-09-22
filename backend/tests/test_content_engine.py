@@ -25,7 +25,8 @@ def test_out_of_stock_has_no_proposals():
 
 
 def test_arabian_taxonomy_maps_to_canonical_arabian_angle_and_board():
-    proposals = propose_content(product(is_arabian=True))
+    item = product(is_arabian=True)
+    proposals = propose_content(item)
     assert proposals[0].board_key == "arabian-fragrance"
 
     arabian = [p for p in proposals if p.angle_key == "arabian-fragrance"]
@@ -44,6 +45,9 @@ def test_arabian_taxonomy_maps_to_canonical_arabian_angle_and_board():
     assert all(
         p.angle_key != "arabian-fragrance-discovery"
         for p in proposals
+    )
+    assert generate_fact_safe_copy(item, proposal).title.endswith(
+        "| Arabian Fragrance Discovery"
     )
 
 
