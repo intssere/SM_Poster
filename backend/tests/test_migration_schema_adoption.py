@@ -137,15 +137,19 @@ def test_simulated_production_0020_is_adopted(isolated_database: str) -> None:
 def test_full_preapply_adopts_each_revision_sequentially(
     isolated_database: str,
 ) -> None:
+    # The adoption contract is historical through 0027. Pre-apply exactly the
+    # 0029 schema, replay its bookkeeping from 0019, then advance normally to
+    # the new 0030 lineage schema. A pre-applied 0030 run table must not be
+    # mistaken for its older 0022/0026/0027 frozen catalog.
     _alembic(isolated_database, "0019")
-    _alembic(isolated_database, "head")
+    _alembic(isolated_database, "0029")
     _set_bookkeeping(isolated_database, "0019")
-    output = _alembic(isolated_database, "head")
-    assert _current(isolated_database) == "0030 (head)"
-    _assert_frozen_owned_tables(isolated_database)
+    output = _alembic(isolated_database, "0029")
     for revision in ("0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027"):
-        assert f"Running upgrade" in output
+        assert "Running upgrade" in output
         assert revision in output
+    _alembic(isolated_database, "head")
+    assert _current(isolated_database) == "0030 (head)"
 
 
 def test_partial_0020_refuses_before_bookkeeping(isolated_database: str) -> None:
@@ -178,11 +182,13 @@ REVISION_TABLES = (
 )
 
 
-def test_canonical_tables_are_adoptable_and_empty() -> None:
+def test_unchanged_canonical_tables_remain_adoptable_at_0030() -> None:
     engine = sa.create_engine(POSTGRES_URL)
     try:
         with engine.begin() as connection:
-            for revision in ("0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027"):
+            # 0022/0026/0027 own tables intentionally evolved in 0030 and must
+            # no longer satisfy their historical frozen adoption fingerprints.
+            for revision in ("0020", "0021", "0023", "0024", "0025"):
                 assert adopt_preapplied_revision(connection, revision) is True
     finally:
         engine.dispose()
