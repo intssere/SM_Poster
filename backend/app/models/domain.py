@@ -365,7 +365,11 @@ class PinterestAutonomousDestinationRun(Base):
         Integer, nullable=False, default=1, server_default=text("1")
     )
     supersedes_run_id: Mapped[str | None] = mapped_column(
-        ForeignKey("pinterest_autonomous_destination_runs.id", ondelete="RESTRICT"),
+        ForeignKey(
+            "pinterest_autonomous_destination_runs.id",
+            ondelete="RESTRICT",
+            name="fk_pinterest_auto_destination_supersedes",
+        ),
         index=True,
     )
     status: Mapped[str] = mapped_column(
@@ -449,7 +453,11 @@ class PinterestAutonomousExecutionRun(Base):
         Integer, nullable=False, default=1, server_default=text("1")
     )
     supersedes_run_id: Mapped[str | None] = mapped_column(
-        ForeignKey("pinterest_autonomous_execution_runs.id", ondelete="RESTRICT"),
+        ForeignKey(
+            "pinterest_autonomous_execution_runs.id",
+            ondelete="RESTRICT",
+            name="fk_pinterest_auto_exec_supersedes",
+        ),
         index=True,
     )
     status: Mapped[str] = mapped_column(
@@ -564,7 +572,11 @@ class PinterestAutonomousGenerationRun(Base):
         Integer, nullable=False, default=1, server_default=text("1")
     )
     supersedes_run_id: Mapped[str | None] = mapped_column(
-        ForeignKey("pinterest_autonomous_generation_runs.id", ondelete="RESTRICT"),
+        ForeignKey(
+            "pinterest_autonomous_generation_runs.id",
+            ondelete="RESTRICT",
+            name="fk_pinterest_autonomous_generation_supersedes",
+        ),
         index=True,
     )
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="STARTED", index=True)
@@ -606,22 +618,18 @@ class PinterestAutonomousRunReconciliation(Base):
     portfolio_item_id: Mapped[str] = mapped_column(
         ForeignKey("pinterest_portfolio_plan_items.id", ondelete="RESTRICT"),
         nullable=False,
-        index=True,
     )
     failed_destination_run_id: Mapped[str] = mapped_column(
         ForeignKey("pinterest_autonomous_destination_runs.id", ondelete="RESTRICT"),
         nullable=False,
-        unique=True,
     )
     failed_execution_run_id: Mapped[str] = mapped_column(
         ForeignKey("pinterest_autonomous_execution_runs.id", ondelete="RESTRICT"),
         nullable=False,
-        unique=True,
     )
     failed_generation_run_id: Mapped[str] = mapped_column(
         ForeignKey("pinterest_autonomous_generation_runs.id", ondelete="RESTRICT"),
         nullable=False,
-        unique=True,
     )
     failed_destination_input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     failed_execution_input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -629,7 +637,7 @@ class PinterestAutonomousRunReconciliation(Base):
     retry_destination_input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     retry_execution_input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     retry_generation_input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
-    reconciliation_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    reconciliation_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="RECONCILED", server_default="RECONCILED"
     )
@@ -639,9 +647,29 @@ class PinterestAutonomousRunReconciliation(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     __table_args__ = (
+        UniqueConstraint(
+            "failed_destination_run_id",
+            name="uq_pinterest_auto_reconcile_destination",
+        ),
+        UniqueConstraint(
+            "failed_execution_run_id",
+            name="uq_pinterest_auto_reconcile_execution",
+        ),
+        UniqueConstraint(
+            "failed_generation_run_id",
+            name="uq_pinterest_auto_reconcile_generation",
+        ),
+        UniqueConstraint(
+            "reconciliation_fingerprint",
+            name="uq_pinterest_auto_reconcile_fingerprint",
+        ),
         CheckConstraint(
             "status IN ('RECONCILED')",
             name="ck_pinterest_autonomous_run_reconciliation_status",
+        ),
+        Index(
+            "ix_pinterest_auto_reconcile_item",
+            "portfolio_item_id",
         ),
     )
 
