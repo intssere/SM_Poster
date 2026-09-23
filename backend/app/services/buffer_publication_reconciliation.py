@@ -28,6 +28,20 @@ from app.services.pinterest_publisher import PublicationReconciliationError
 class BufferReconciliationError(RuntimeError):
     """A bounded failure; never contains a provider body or credential."""
 
+    def __init__(self, code: str, *, stage: str | None = None, field: str | None = None):
+        super().__init__(code)
+        self.code = code
+        self.stage = stage
+        self.field = field
+
+    def safe_diagnostic(self) -> dict[str, str]:
+        diagnostic = {"code": self.code}
+        if self.stage:
+            diagnostic["stage"] = self.stage
+        if self.field:
+            diagnostic["field"] = self.field
+        return diagnostic
+
 
 def pinterest_pin_id(link):
     try:
@@ -41,17 +55,25 @@ def pinterest_pin_id(link):
         return None
 
 
+def snapshot_mismatch_field(publication, snapshot, settings) -> str | None:
+    comparisons = (
+        ("buffer_channel_id", settings.buffer_pinterest_channel_id, snapshot.channel_id),
+        ("channel_service", "pinterest", snapshot.channel_service),
+        ("description", publication.description_snapshot, snapshot.text),
+        ("board_id", publication.pinterest_board_id_snapshot, snapshot.pinterest_board_service_id),
+        ("title", publication.title_snapshot, snapshot.pinterest_title),
+        ("pinterest_url", publication.utm_url, snapshot.pinterest_url),
+        ("media_url", publication.media_url_snapshot, snapshot.image_url),
+        ("alt_text", publication.alt_text_snapshot, snapshot.image_alt_text),
+    )
+    for field, expected, observed in comparisons:
+        if not expected or expected != observed:
+            return field
+    return None
+
+
 def snapshot_matches(publication, snapshot, settings):
-    return all((expected and expected == observed) for expected, observed in (
-        (settings.buffer_pinterest_channel_id, snapshot.channel_id),
-        ("pinterest", snapshot.channel_service),
-        (publication.description_snapshot, snapshot.text),
-        (publication.pinterest_board_id_snapshot, snapshot.pinterest_board_service_id),
-        (publication.title_snapshot, snapshot.pinterest_title),
-        (publication.utm_url, snapshot.pinterest_url),
-        (publication.media_url_snapshot, snapshot.image_url),
-        (publication.alt_text_snapshot, snapshot.image_alt_text),
-    ))
+    return snapshot_mismatch_field(publication, snapshot, settings) is None
 
 
 def _legacy_board_identity_valid(db, publication):
@@ -157,7 +179,7 @@ def _approved_content_identity_valid(db, publication, *, destination_mode):
     )
 
 
-def _entry(db, publication_id, settings):
+def _entry(db, publication_id, settings, *, stage="pre_provider"):
     publication = db.get(PinPublication, publication_id, populate_existing=True)
     if not publication or publication.status != PublicationStatus.PUBLISH_UNKNOWN:
         raise BufferReconciliationError("RECONCILIATION_REQUIRES_PUBLISH_UNKNOWN")
@@ -178,16 +200,29 @@ def _entry(db, publication_id, settings):
         known.add(publication.pinterest_pin_id)
     if len(known) > 1:
         raise BufferReconciliationError("CONFLICTING_KNOWN_PROVIDER_PIN_IDS")
+
     metadata = attempt.safe_response_metadata or {}
     destination_mode = _destination_identity_mode(db, publication)
-    if (not publication.publication_fingerprint or not publication.creative_id
-            or destination_mode is None
-            or not _approved_content_identity_valid(db, publication, destination_mode=destination_mode)
-            or attempt.request_fingerprint != request_fingerprint_for(publication)
-            or not settings.buffer_organization_id or not settings.buffer_pinterest_channel_id
-            or metadata.get("buffer_organization_id") != settings.buffer_organization_id
-            or metadata.get("buffer_channel_id") != settings.buffer_pinterest_channel_id):
-        raise BufferReconciliationError("BUFFER_POST_SNAPSHOT_MISMATCH")
+    guards = (
+        ("publication_fingerprint", bool(publication.publication_fingerprint)),
+        ("creative_id", bool(publication.creative_id)),
+        ("destination_identity", destination_mode is not None),
+        ("approved_content_identity", destination_mode is not None and _approved_content_identity_valid(
+            db, publication, destination_mode=destination_mode
+        )),
+        ("request_fingerprint", attempt.request_fingerprint == request_fingerprint_for(publication)),
+        ("buffer_organization_configuration", bool(settings.buffer_organization_id)),
+        ("buffer_channel_configuration", bool(settings.buffer_pinterest_channel_id)),
+        ("buffer_organization_identity", metadata.get("buffer_organization_id") == settings.buffer_organization_id),
+        ("buffer_channel_identity", metadata.get("buffer_channel_id") == settings.buffer_pinterest_channel_id),
+    )
+    for field, passed in guards:
+        if not passed:
+            raise BufferReconciliationError(
+                "BUFFER_POST_SNAPSHOT_MISMATCH",
+                stage=stage,
+                field=field,
+            )
     return publication, attempt, known
 
 
@@ -195,7 +230,7 @@ async def reconcile_buffer(db, publication_id, *, actor, settings=None, gateway=
     if not isinstance(actor, str) or not actor.strip() or len(actor) > 255 or any(ord(c) < 32 for c in actor):
         raise BufferReconciliationError("ACTOR_REQUIRED")
     settings = settings or get_settings()
-    publication, attempt, known = _entry(db, publication_id, settings)
+    publication, attempt, known = _entry(db, publication_id, settings, stage="pre_provider")
     operation_id = attempt.provider_operation_id
     expected_request = attempt.request_fingerprint
     gateway = gateway or BufferGateway(settings)
@@ -204,11 +239,24 @@ async def reconcile_buffer(db, publication_id, *, actor, settings=None, gateway=
     except (BufferReadError, BufferConfigurationError):
         raise BufferReconciliationError("BUFFER_RECONCILIATION_READ_FAILED") from None
     # Re-read after I/O; no stale ORM state may authorize a terminal transition.
-    publication, attempt, known = _entry(db, publication_id, settings)
+    publication, attempt, known = _entry(
+        db, publication_id, settings, stage="post_provider_revalidation"
+    )
     if operation_id != attempt.provider_operation_id or expected_request != attempt.request_fingerprint:
         raise BufferReconciliationError("BUFFER_OPERATION_CONFLICT")
-    if snapshot.buffer_post_id != operation_id or not snapshot_matches(publication, snapshot, settings):
-        raise BufferReconciliationError("BUFFER_POST_SNAPSHOT_MISMATCH")
+    if snapshot.buffer_post_id != operation_id:
+        raise BufferReconciliationError(
+            "BUFFER_POST_SNAPSHOT_MISMATCH",
+            stage="provider_snapshot",
+            field="provider_operation_id",
+        )
+    mismatch = snapshot_mismatch_field(publication, snapshot, settings)
+    if mismatch is not None:
+        raise BufferReconciliationError(
+            "BUFFER_POST_SNAPSHOT_MISMATCH",
+            stage="provider_snapshot",
+            field=mismatch,
+        )
     pin = pinterest_pin_id(snapshot.external_link) if snapshot.status == "sent" else None
     if snapshot.status == "sent" and not pin:
         raise BufferReconciliationError("BUFFER_SENT_LINK_UNVERIFIED")
