@@ -1397,6 +1397,9 @@ def test_destination_persists_exact_readiness_identity_before_reroute(monkeypatc
                 "pinterest_board_record_id": seeded["provider_board"].id,
                 "provider_board_id": seeded["provider_board"].external_board_id,
             },
+            "reconciliation_id": None,
+            "supersedes_run_id": None,
+            "attempt_number": 1,
             "provider_called": False,
             "ai_called": False,
         }
@@ -1537,6 +1540,92 @@ def test_destination_marks_failed_when_task57_fails(monkeypatch):
     assert run.status == "FAILED"
     assert run.stage == "BOARD_READY"
     assert run.safe_metadata["error_code"] == "TASK57_SYNTHETIC_FAILURE"
+    db.close(); engine.dispose()
+
+
+def test_reconciled_failed_destination_creates_superseding_attempt_two(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    settings = _destination_settings()
+    ready = destination.destination_readiness(
+        db,
+        seeded["item1"].id,
+        settings=settings,
+        now=NOW,
+    )
+    failed = PinterestAutonomousDestinationRun(
+        id="destination-failed-reconciled",
+        portfolio_item_id=seeded["item1"].id,
+        plan_id=seeded["plan"].id,
+        input_fingerprint=ready["input_fingerprint"],
+        attempt_number=1,
+        status="FAILED",
+        stage="BOARD_READY",
+        pinterest_board_record_id=seeded["provider_board"].id,
+        safe_metadata={"provider_called": False, "ai_called": False},
+        started_at=NOW,
+        completed_at=NOW,
+    )
+    db.add(failed)
+    db.add(PinterestAutonomousRunReconciliation(
+        id="dest-reconciliation-1",
+        portfolio_item_id=seeded["item1"].id,
+        failed_destination_run_id=failed.id,
+        failed_execution_run_id="exec-failed-2",
+        failed_generation_run_id="gen-failed-2",
+        failed_destination_input_fingerprint=failed.input_fingerprint,
+        failed_execution_input_fingerprint="2" * 64,
+        failed_generation_input_fingerprint="3" * 64,
+        retry_destination_input_fingerprint=ready["input_fingerprint"],
+        retry_execution_input_fingerprint="2" * 64,
+        retry_generation_input_fingerprint="4" * 64,
+        reconciliation_fingerprint="5" * 64,
+        status="RECONCILED",
+        actor="test",
+        evidence={},
+    ))
+    db.commit()
+
+    retriable = destination.destination_readiness(
+        db,
+        seeded["item1"].id,
+        settings=settings,
+        now=NOW,
+    )
+    assert retriable["ready"] is True
+    assert retriable["existing_run"]["retry_reconciliation_id"] == "dest-reconciliation-1"
+    assert retriable["next_attempt_number"] == 2
+
+    def fail_after_retry_start(*args, **kwargs):
+        raise execution.AutonomousExecutionError("SYNTHETIC_DESTINATION_RETRY_STOP")
+
+    monkeypatch.setattr(destination, "execute_autonomous_item", fail_after_retry_start)
+
+    with pytest.raises(
+        destination.AutonomousDestinationError,
+        match="SYNTHETIC_DESTINATION_RETRY_STOP",
+    ):
+        asyncio.run(destination.ensure_autonomous_destination(
+            db,
+            seeded["item1"].id,
+            settings=settings,
+            now=NOW,
+        ))
+
+    runs = (
+        db.query(PinterestAutonomousDestinationRun)
+        .order_by(PinterestAutonomousDestinationRun.attempt_number)
+        .all()
+    )
+    assert len(runs) == 2
+    assert runs[0].id == failed.id
+    assert runs[0].status == "FAILED"
+    assert runs[0].attempt_number == 1
+    assert runs[0].supersedes_run_id is None
+    assert runs[1].status == "FAILED"
+    assert runs[1].attempt_number == 2
+    assert runs[1].supersedes_run_id == failed.id
+    assert runs[1].safe_metadata["reconciliation_id"] == "dest-reconciliation-1"
     db.close(); engine.dispose()
 
 
