@@ -21,6 +21,7 @@ from app.models.domain import (
     PinPublication,
     PinterestAutonomousExecutionRun,
     PinterestAutonomousGenerationRun,
+    PinterestAutonomousRunReconciliation,
     PinterestBoard,
     PinterestConnection,
     PinterestOptimizerApplication,
@@ -869,6 +870,93 @@ def test_failed_run_blocks_retry():
             settings=_settings(),
             now=NOW,
         )
+    db.close(); engine.dispose()
+
+
+def test_reconciled_failed_execution_creates_superseding_attempt_two(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    settings = _settings()
+    ready = execution.execution_readiness(
+        db,
+        seeded["item1"].id,
+        settings=settings,
+        now=NOW,
+    )
+    failed = PinterestAutonomousExecutionRun(
+        id="failed-run-reconciled",
+        portfolio_item_id=seeded["item1"].id,
+        plan_id=seeded["plan"].id,
+        optimizer_application_id=seeded["app"].id,
+        input_fingerprint=ready["input_fingerprint"],
+        attempt_number=1,
+        status="FAILED",
+        stage="STARTED",
+        scheduled_for=ready["scheduled_for"],
+        safe_metadata={"provider_called": False, "ai_called": False},
+        started_at=NOW,
+        completed_at=NOW,
+    )
+    db.add(failed)
+    db.add(PinterestAutonomousRunReconciliation(
+        id="exec-reconciliation-1",
+        portfolio_item_id=seeded["item1"].id,
+        failed_destination_run_id="dest-failed-1",
+        failed_execution_run_id=failed.id,
+        failed_generation_run_id="gen-failed-1",
+        failed_destination_input_fingerprint="1" * 64,
+        failed_execution_input_fingerprint=failed.input_fingerprint,
+        failed_generation_input_fingerprint="2" * 64,
+        retry_destination_input_fingerprint="1" * 64,
+        retry_execution_input_fingerprint=ready["input_fingerprint"],
+        retry_generation_input_fingerprint="3" * 64,
+        reconciliation_fingerprint="4" * 64,
+        status="RECONCILED",
+        actor="test",
+        evidence={},
+    ))
+    db.commit()
+
+    retriable = execution.execution_readiness(
+        db,
+        seeded["item1"].id,
+        settings=settings,
+        now=NOW,
+    )
+    assert retriable["ready"] is True
+    assert retriable["existing_run"]["retry_reconciliation_id"] == "exec-reconciliation-1"
+    assert retriable["next_attempt_number"] == 2
+
+    def fail_after_retry_start(*args, **kwargs):
+        raise PinterestSeoError("SYNTHETIC_RETRY_STOP")
+
+    monkeypatch.setattr(execution, "persist_seo_brief", fail_after_retry_start)
+
+    with pytest.raises(
+        execution.AutonomousExecutionError,
+        match="SYNTHETIC_RETRY_STOP",
+    ):
+        execution.execute_autonomous_item(
+            db,
+            seeded["item1"].id,
+            settings=settings,
+            now=NOW,
+        )
+
+    runs = (
+        db.query(PinterestAutonomousExecutionRun)
+        .order_by(PinterestAutonomousExecutionRun.attempt_number)
+        .all()
+    )
+    assert len(runs) == 2
+    assert runs[0].id == failed.id
+    assert runs[0].status == "FAILED"
+    assert runs[0].attempt_number == 1
+    assert runs[0].supersedes_run_id is None
+    assert runs[1].status == "FAILED"
+    assert runs[1].attempt_number == 2
+    assert runs[1].supersedes_run_id == failed.id
+    assert runs[1].safe_metadata["reconciliation_id"] == "exec-reconciliation-1"
     db.close(); engine.dispose()
 
 
