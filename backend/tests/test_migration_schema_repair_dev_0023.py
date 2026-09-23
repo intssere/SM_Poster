@@ -286,7 +286,7 @@ def test_exact_dev_0023_state_upgrades_to_canonical_head(
     finally:
         engine.dispose()
 
-    _upgrade(isolated_database, "head")
+    _upgrade(isolated_database, "0029")
     assert _revision(isolated_database) == "0029"
 
     engine = sa.create_engine(isolated_database)
@@ -309,7 +309,7 @@ def test_canonical_0023_without_future_tables_upgrades_normally(
     isolated_database: str,
 ) -> None:
     _upgrade(isolated_database, "0023")
-    _upgrade(isolated_database, "head")
+    _upgrade(isolated_database, "0029")
     assert _revision(isolated_database) == "0029"
 
 
