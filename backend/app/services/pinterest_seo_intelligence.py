@@ -242,6 +242,7 @@ def _history_warnings(
     board_id: str,
     angle_id: str,
     primary_keyword: str,
+    current_portfolio_item_id: str,
 ) -> list[dict]:
     phrase = normalize_keyword(primary_keyword)
     rows = list(db.execute(
@@ -252,6 +253,9 @@ def _history_warnings(
     ).all())
     warnings = []
     for draft, concept in rows:
+        rationale = concept.rationale if isinstance(concept.rationale, dict) else {}
+        if rationale.get("portfolio_item_id") == current_portfolio_item_id:
+            continue
         haystack = normalize_keyword(f"{draft.title} {draft.description}")
         if phrase and phrase in haystack:
             warnings.append({
@@ -382,6 +386,7 @@ def seo_brief_preview(
         board_id=item.local_board_id,
         angle_id=item.content_angle_id,
         primary_keyword=primary.phrase,
+        current_portfolio_item_id=item.id,
     )
 
     evidence_payload = {

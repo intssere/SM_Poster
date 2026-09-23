@@ -260,6 +260,99 @@ def test_historical_primary_phrase_reuse_emits_cannibalization_warning():
     db.close()
 
 
+def test_current_portfolio_item_autonomous_draft_is_excluded_from_history_and_fingerprint_stays_stable():
+    db = _db()
+    seeded = _seed(db)
+    before = seo.seo_brief_preview(
+        db,
+        seeded["item"].id,
+        settings=_settings(),
+    )
+
+    concept = PinConcept(
+        id="concept-self-lineage",
+        store_id=seeded["store"].id,
+        product_id=seeded["product"].id,
+        content_angle_id=seeded["angle"].id,
+        board_id=seeded["board"].id,
+        fingerprint="1" * 64,
+        rationale={
+            "generation_policy_version": "PINTEREST_AUTONOMOUS_GENERATION_V1",
+            "portfolio_item_id": seeded["item"].id,
+            "portfolio_item_fingerprint": seeded["item"].item_fingerprint,
+        },
+    )
+    draft = PinDraft(
+        id="draft-self-lineage",
+        concept_id=concept.id,
+        version=1,
+        title="Arabian Fragrance | Afnan 9PM",
+        description="Explore this Arabian fragrance from Afnan.",
+        alt_text="Afnan 9PM bottle",
+        destination_url=seeded["product"].product_url,
+        utm_url=seeded["product"].product_url + "?utm_source=pinterest",
+        text_fingerprint="2" * 64,
+    )
+    db.add_all([concept, draft])
+    db.commit()
+
+    after = seo.seo_brief_preview(
+        db,
+        seeded["item"].id,
+        settings=_settings(),
+    )
+
+    assert before["input_fingerprint"] == after["input_fingerprint"]
+    assert before["seo_fingerprint"] == after["seo_fingerprint"]
+    assert before["cannibalization_warnings"] == []
+    assert after["cannibalization_warnings"] == []
+    db.close()
+
+
+def test_separate_portfolio_item_draft_still_emits_cannibalization_warning():
+    db = _db()
+    seeded = _seed(db)
+    concept = PinConcept(
+        id="concept-other-item",
+        store_id=seeded["store"].id,
+        product_id=seeded["product"].id,
+        content_angle_id=seeded["angle"].id,
+        board_id=seeded["board"].id,
+        fingerprint="3" * 64,
+        rationale={
+            "generation_policy_version": "PINTEREST_AUTONOMOUS_GENERATION_V1",
+            "portfolio_item_id": "different-item-id",
+        },
+    )
+    draft = PinDraft(
+        id="draft-other-item",
+        concept_id=concept.id,
+        version=1,
+        title="Arabian Fragrance | Afnan 9PM",
+        description="Explore this Arabian fragrance from Afnan.",
+        alt_text="Afnan 9PM bottle",
+        destination_url=seeded["product"].product_url,
+        utm_url=seeded["product"].product_url + "?utm_source=pinterest",
+        text_fingerprint="4" * 64,
+    )
+    db.add_all([concept, draft])
+    db.commit()
+
+    result = seo.seo_brief_preview(
+        db,
+        seeded["item"].id,
+        settings=_settings(),
+    )
+
+    assert result["cannibalization_warnings"] == [{
+        "code": "PRIMARY_KEYWORD_PREVIOUSLY_USED",
+        "draft_id": draft.id,
+        "same_board": True,
+        "same_angle": True,
+    }]
+    db.close()
+
+
 def test_missing_required_item_context_fails_closed():
     db = _db()
     seeded = _seed(db)
