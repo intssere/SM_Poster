@@ -25,6 +25,7 @@ OWNED_TABLES: dict[str, tuple[str, ...]] = {
     "0027": ("pinterest_autonomous_destination_runs",),
     "0028": (),
     "0029": (),
+    "0030": ("pinterest_autonomous_run_reconciliations",),
 }
 
 BUNDLE_TABLES = tuple(
@@ -803,21 +804,251 @@ def verify_head_execution_check_repair(connection: Any) -> None:
     target = HEAD_EXECUTION_CHECK_RENDERING_TABLE
     _require_canonical_tables(connection, (target,))
 
-def verify_frozen_schema_at_head(connection: Any, revision: str = "0029") -> None:
+LINEAGE_RUN_TABLES = (
+    "pinterest_autonomous_destination_runs",
+    "pinterest_autonomous_execution_runs",
+    "pinterest_autonomous_generation_runs",
+)
+LINEAGE_RECONCILIATION_TABLE = "pinterest_autonomous_run_reconciliations"
+LINEAGE_PRESERVED_TABLES = tuple(
+    table for table in BUNDLE_TABLES if table not in LINEAGE_RUN_TABLES
+)
+
+
+def _require_0030_lineage_schema(connection: Any) -> None:
+    inspector = sa.inspect(connection)
+    present = set(inspector.get_table_names(schema="public"))
+    required = set(LINEAGE_RUN_TABLES) | {LINEAGE_RECONCILIATION_TABLE}
+    missing = sorted(required - present)
+    if missing:
+        _refuse("0030 lineage schema tables missing: " + ", ".join(missing))
+
+    run_contracts = {
+        "pinterest_autonomous_destination_runs": {
+            "attempt_uq": "uq_pinterest_auto_destination_attempt",
+            "supersedes_fk": "fk_pinterest_auto_destination_supersedes",
+            "old_uqs": {
+                "uq_pinterest_auto_destination_item",
+                "uq_pinterest_auto_destination_fingerprint",
+            },
+            "expected_indexes": {
+                "ix_pinterest_auto_destination_input_fingerprint",
+                "ix_pinterest_auto_destination_plan_stage",
+                "ix_pinterest_auto_destination_plan_id",
+                "ix_pinterest_auto_destination_status",
+                "ix_pinterest_auto_destination_stage",
+                "ix_pinterest_auto_destination_status_stage",
+                "ix_pinterest_auto_destination_provisioning_attempt",
+                "ix_pinterest_auto_destination_board_record",
+                "ix_pinterest_auto_destination_execution_run",
+                "ix_pinterest_autonomous_destination_runs_supersedes_run_id",
+            },
+        },
+        "pinterest_autonomous_execution_runs": {
+            "attempt_uq": "uq_pinterest_auto_exec_attempt",
+            "supersedes_fk": "fk_pinterest_auto_exec_supersedes",
+            "old_uqs": {
+                "uq_pinterest_auto_exec_portfolio_item",
+                "uq_pinterest_auto_exec_input_fingerprint",
+            },
+            "expected_indexes": {
+                "ix_pinterest_auto_exec_input_fingerprint",
+                "ix_pinterest_auto_exec_plan_id",
+                "ix_pinterest_auto_exec_optimizer_app",
+                "ix_pinterest_auto_exec_status",
+                "ix_pinterest_auto_exec_stage",
+                "ix_pinterest_auto_exec_scheduled_for",
+                "ix_pinterest_auto_exec_plan_stage",
+                "ix_pinterest_auto_exec_seo_brief",
+                "ix_pinterest_auto_exec_generation",
+                "ix_pinterest_auto_exec_approval",
+                "ix_pinterest_auto_exec_publication",
+                "ix_pinterest_auto_exec_permit",
+                "ix_pinterest_autonomous_execution_runs_supersedes_run_id",
+            },
+        },
+        "pinterest_autonomous_generation_runs": {
+            "attempt_uq": "uq_pinterest_autonomous_generation_attempt",
+            "supersedes_fk": "fk_pinterest_autonomous_generation_supersedes",
+            "old_uqs": {
+                "uq_pinterest_autonomous_generation_item",
+                "uq_pinterest_autonomous_generation_input_fp",
+            },
+            "expected_indexes": {
+                "ix_pinterest_autonomous_generation_input_fingerprint",
+                "ix_pinterest_generation_runs_portfolio_item",
+                "ix_pinterest_generation_runs_seo_brief",
+                "ix_pinterest_generation_runs_status",
+                "ix_pinterest_generation_runs_concept",
+                "ix_pinterest_generation_runs_draft",
+                "ix_pinterest_generation_runs_creative",
+                "ix_pinterest_autonomous_generation_runs_supersedes_run_id",
+            },
+        },
+    }
+    for table, contract in run_contracts.items():
+        columns = {row["name"]: row for row in inspector.get_columns(table)}
+        attempt = columns.get("attempt_number")
+        supersedes = columns.get("supersedes_run_id")
+        if attempt is None or attempt.get("nullable") is not False:
+            _refuse(f"{table} attempt_number contract mismatch")
+        if supersedes is None or supersedes.get("nullable") is not True:
+            _refuse(f"{table} supersedes_run_id contract mismatch")
+
+        uniques = {
+            row.get("name"): tuple(row.get("column_names") or ())
+            for row in inspector.get_unique_constraints(table)
+        }
+        if uniques.get(contract["attempt_uq"]) != (
+            "portfolio_item_id",
+            "attempt_number",
+        ):
+            _refuse(f"{table} attempt uniqueness contract mismatch")
+        if contract["old_uqs"] & set(uniques):
+            _refuse(f"{table} obsolete one-run uniqueness still present")
+
+        foreign_keys = {
+            row.get("name"): row
+            for row in inspector.get_foreign_keys(table)
+        }
+        fk = foreign_keys.get(contract["supersedes_fk"])
+        if (
+            fk is None
+            or tuple(fk.get("constrained_columns") or ()) != ("supersedes_run_id",)
+            or fk.get("referred_table") != table
+            or tuple(fk.get("referred_columns") or ()) != ("id",)
+        ):
+            _refuse(f"{table} supersession foreign key contract mismatch")
+
+        indexes = {
+            row.get("name"): tuple(row.get("column_names") or ())
+            for row in inspector.get_indexes(table)
+        }
+        missing_indexes = sorted(contract["expected_indexes"] - set(indexes))
+        if missing_indexes:
+            _refuse(
+                f"{table} index contract mismatch: "
+                + ", ".join(missing_indexes)
+            )
+        input_indexes = [
+            name for name, columns in indexes.items()
+            if columns == ("input_fingerprint",)
+        ]
+        if not input_indexes:
+            _refuse(f"{table} input fingerprint index contract mismatch")
+
+    reconciliation_columns = {
+        row["name"]: row
+        for row in inspector.get_columns(LINEAGE_RECONCILIATION_TABLE)
+    }
+    expected_columns = {
+        "id",
+        "portfolio_item_id",
+        "failed_destination_run_id",
+        "failed_execution_run_id",
+        "failed_generation_run_id",
+        "failed_destination_input_fingerprint",
+        "failed_execution_input_fingerprint",
+        "failed_generation_input_fingerprint",
+        "retry_destination_input_fingerprint",
+        "retry_execution_input_fingerprint",
+        "retry_generation_input_fingerprint",
+        "reconciliation_fingerprint",
+        "status",
+        "actor",
+        "evidence",
+        "created_at",
+    }
+    if set(reconciliation_columns) != expected_columns:
+        _refuse("0030 reconciliation column contract mismatch")
+
+    reconciliation_uniques = {
+        row.get("name"): tuple(row.get("column_names") or ())
+        for row in inspector.get_unique_constraints(LINEAGE_RECONCILIATION_TABLE)
+    }
+    expected_uniques = {
+        "uq_pinterest_auto_reconcile_destination": ("failed_destination_run_id",),
+        "uq_pinterest_auto_reconcile_execution": ("failed_execution_run_id",),
+        "uq_pinterest_auto_reconcile_generation": ("failed_generation_run_id",),
+        "uq_pinterest_auto_reconcile_fingerprint": ("reconciliation_fingerprint",),
+    }
+    for name, columns in expected_uniques.items():
+        if reconciliation_uniques.get(name) != columns:
+            _refuse(f"0030 reconciliation unique contract mismatch: {name}")
+
+    referred = {
+        tuple(row.get("constrained_columns") or ()): row.get("referred_table")
+        for row in inspector.get_foreign_keys(LINEAGE_RECONCILIATION_TABLE)
+    }
+    expected_fks = {
+        ("portfolio_item_id",): "pinterest_portfolio_plan_items",
+        ("failed_destination_run_id",): "pinterest_autonomous_destination_runs",
+        ("failed_execution_run_id",): "pinterest_autonomous_execution_runs",
+        ("failed_generation_run_id",): "pinterest_autonomous_generation_runs",
+    }
+    if any(referred.get(columns) != table for columns, table in expected_fks.items()):
+        _refuse("0030 reconciliation foreign key contract mismatch")
+
+    checks = {
+        row.get("name"): (row.get("sqltext") or "")
+        for row in inspector.get_check_constraints(LINEAGE_RECONCILIATION_TABLE)
+    }
+    status_check = checks.get(
+        "ck_pinterest_autonomous_run_reconciliation_status",
+        "",
+    ).lower()
+    normalized_status_check = re.sub(r"\s+", "", status_check)
+    normalized_status_check = re.sub(
+        r"::(?:character varying|varchar|text)",
+        "",
+        normalized_status_check,
+    )
+    normalized_status_check = normalized_status_check.replace("(status)", "status")
+    while (
+        normalized_status_check.startswith("(")
+        and normalized_status_check.endswith(")")
+    ):
+        normalized_status_check = normalized_status_check[1:-1]
+    if normalized_status_check not in {
+        "status='reconciled'",
+        "statusin('reconciled')",
+    }:
+        _refuse("0030 reconciliation status check contract mismatch")
+
+
+def verify_frozen_schema_at_head(connection: Any, revision: str = "0030") -> None:
     """Read-only production startup guard for canonical migration contracts."""
     if getattr(connection.dialect, "name", None) != "postgresql":
         return
     _require_exact_alembic_revision(connection, revision)
-    present = _present_postgresql_tables(connection, BUNDLE_TABLES)
-    if tuple(present) != BUNDLE_TABLES:
-        _refuse(f"canonical schema table presence mismatch: {present}")
-    fingerprints = _table_fingerprints(connection, BUNDLE_TABLES)
+
+    if revision == "0029":
+        present = _present_postgresql_tables(connection, BUNDLE_TABLES)
+        if tuple(present) != BUNDLE_TABLES:
+            _refuse(f"canonical schema table presence mismatch: {present}")
+        fingerprints = _table_fingerprints(connection, BUNDLE_TABLES)
+        canonical = {
+            table: FROZEN_FINGERPRINTS[table]
+            for table in BUNDLE_TABLES
+        }
+        if fingerprints != canonical:
+            _refuse("canonical schema fingerprint verification failed")
+        return
+
+    if revision != "0030":
+        _refuse(f"unsupported canonical head revision: {revision}")
+
+    present = _present_postgresql_tables(connection, LINEAGE_PRESERVED_TABLES)
+    if tuple(present) != LINEAGE_PRESERVED_TABLES:
+        _refuse(f"0030 preserved schema table presence mismatch: {present}")
+    fingerprints = _table_fingerprints(connection, LINEAGE_PRESERVED_TABLES)
     canonical = {
         table: FROZEN_FINGERPRINTS[table]
-        for table in BUNDLE_TABLES
+        for table in LINEAGE_PRESERVED_TABLES
     }
     if fingerprints != canonical:
-        _refuse("canonical schema fingerprint verification failed")
+        _refuse("0030 preserved schema fingerprint verification failed")
+    _require_0030_lineage_schema(connection)
 
 
 def repair_known_legacy_preapplied_revision(connection: Any, revision: str) -> bool:

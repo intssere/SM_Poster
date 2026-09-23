@@ -33,6 +33,11 @@ from app.services.pinterest_board_provisioning import (
 from app.services.pinterest_board_strategy import board_strategy
 from app.services.pinterest_boards import sync_boards
 from app.services.pinterest_optimizer_apply import OPTIMIZER_METADATA_KEY
+from app.services.pinterest_autonomous_run_lineage import (
+    latest_run,
+    next_attempt_context,
+    retry_reconciliation,
+)
 
 
 DESTINATION_POLICY_VERSION = "PINTEREST_AUTONOMOUS_DESTINATION_V1"
@@ -75,11 +80,7 @@ def _hash(payload: Any) -> str:
 
 
 def _existing_run(db, item_id: str) -> PinterestAutonomousDestinationRun | None:
-    return db.scalar(
-        select(PinterestAutonomousDestinationRun)
-        .where(PinterestAutonomousDestinationRun.portfolio_item_id == item_id)
-        .limit(1)
-    )
+    return latest_run(db, PinterestAutonomousDestinationRun, item_id)
 
 
 def _optimizer(db, plan_id: str) -> PinterestOptimizerApplication | None:
@@ -291,13 +292,21 @@ def destination_readiness(
         )
 
     already_completed = False
+    retry_reconciliation_record = None
     if existing is not None:
-        if not input_fingerprint or existing.input_fingerprint != input_fingerprint:
-            blockers.append("AUTONOMOUS_DESTINATION_INPUT_DRIFT")
-        elif existing.status == "FAILED":
-            blockers.append(
-                "AUTONOMOUS_DESTINATION_FAILED_RECONCILIATION_REQUIRED"
+        if existing.status == "FAILED":
+            retry_reconciliation_record = retry_reconciliation(
+                db,
+                kind="destination",
+                failed_run=existing,
+                retry_input_fingerprint=input_fingerprint,
             )
+            if retry_reconciliation_record is None:
+                blockers.append(
+                    "AUTONOMOUS_DESTINATION_FAILED_RECONCILIATION_REQUIRED"
+                )
+        elif not input_fingerprint or existing.input_fingerprint != input_fingerprint:
+            blockers.append("AUTONOMOUS_DESTINATION_INPUT_DRIFT")
         elif existing.status == "UNKNOWN":
             blockers.append(
                 "AUTONOMOUS_DESTINATION_UNKNOWN_RECONCILIATION_REQUIRED"
@@ -345,6 +354,7 @@ def destination_readiness(
             "id": existing.id if existing else None,
             "status": existing.status if existing else None,
             "stage": existing.stage if existing else None,
+            "attempt_number": existing.attempt_number if existing else None,
             "board_provisioning_attempt_id": (
                 existing.board_provisioning_attempt_id if existing else None
             ),
@@ -354,7 +364,15 @@ def destination_readiness(
             "autonomous_execution_run_id": (
                 existing.autonomous_execution_run_id if existing else None
             ),
+            "retry_reconciliation_id": (
+                retry_reconciliation_record.id if retry_reconciliation_record else None
+            ),
         },
+        "next_attempt_number": (
+            existing.attempt_number + 1
+            if existing is not None and retry_reconciliation_record is not None
+            else 1 if existing is None else existing.attempt_number
+        ),
         "state_mutated": False,
         "provider_called": False,
         "ai_called": False,
@@ -552,10 +570,6 @@ async def _ensure_autonomous_destination_locked(
         ):
             return existing
         raise AutonomousDestinationError("AUTONOMOUS_DESTINATION_INPUT_DRIFT")
-    if existing is not None and existing.status == "FAILED":
-        raise AutonomousDestinationError(
-            "AUTONOMOUS_DESTINATION_FAILED_RECONCILIATION_REQUIRED"
-        )
     if existing is not None and existing.status == "UNKNOWN":
         raise AutonomousDestinationError(
             "AUTONOMOUS_DESTINATION_UNKNOWN_RECONCILIATION_REQUIRED"
@@ -565,13 +579,23 @@ async def _ensure_autonomous_destination_locked(
     blockers = _execution_blockers_for_coordinator(readiness)
     if blockers:
         raise AutonomousDestinationError(blockers[0])
+    attempt_number, supersedes_run_id, reconciliation_id = next_attempt_context(
+        db,
+        kind="destination",
+        latest=existing,
+        retry_input_fingerprint=readiness["input_fingerprint"],
+    )
+    if existing is not None and existing.status == "FAILED" and reconciliation_id is None:
+        raise AutonomousDestinationError(
+            "AUTONOMOUS_DESTINATION_FAILED_RECONCILIATION_REQUIRED"
+        )
 
     item = db.get(PinterestPortfolioPlanItem, portfolio_item_id)
     plan = db.get(PinterestPortfolioPlan, item.plan_id) if item else None
     if item is None or plan is None:
         raise AutonomousDestinationError("AUTONOMOUS_DESTINATION_IDENTITY_INCOMPLETE")
 
-    run = existing
+    run = None if existing is not None and existing.status == "FAILED" else existing
     if run is None:
         identity = readiness.get("board_identity")
         if not isinstance(identity, dict):
@@ -582,6 +606,8 @@ async def _ensure_autonomous_destination_locked(
             portfolio_item_id=item.id,
             plan_id=plan.id,
             input_fingerprint=readiness["input_fingerprint"],
+            attempt_number=attempt_number,
+            supersedes_run_id=supersedes_run_id,
             status="STARTED",
             stage="STARTED",
             safe_metadata={
@@ -589,6 +615,9 @@ async def _ensure_autonomous_destination_locked(
                 "portfolio_item_fingerprint": item.item_fingerprint,
                 "plan_fingerprint": plan.plan_fingerprint,
                 "board_identity": identity,
+                "reconciliation_id": reconciliation_id,
+                "supersedes_run_id": supersedes_run_id,
+                "attempt_number": attempt_number,
                 "provider_called": False,
                 "ai_called": False,
             },
@@ -604,6 +633,9 @@ async def _ensure_autonomous_destination_locked(
             metadata_json={
                 "portfolio_item_id": item.id,
                 "input_fingerprint": run.input_fingerprint,
+                "attempt_number": run.attempt_number,
+                "supersedes_run_id": run.supersedes_run_id,
+                "reconciliation_id": reconciliation_id,
             },
         ))
         try:
@@ -615,6 +647,7 @@ async def _ensure_autonomous_destination_locked(
                 current is None
                 or current.status != "STARTED"
                 or current.input_fingerprint != readiness["input_fingerprint"]
+                or current.attempt_number != attempt_number
             ):
                 raise AutonomousDestinationError(
                     "AUTONOMOUS_DESTINATION_ALREADY_EXISTS"

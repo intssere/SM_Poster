@@ -86,7 +86,7 @@ jobs:
           export DATABASE_URL="${TASK58_CATALOG_URL}"
           alembic upgrade head
           alembic current 2>&1 | tee /tmp/task58-current
-          grep -Fx '0029 (head)' /tmp/task58-current
+          grep -Fx '0030 (head)' /tmp/task58-current
 
       - name: Task 58 focused and dependent regressions
         run: >-
@@ -97,6 +97,7 @@ jobs:
           tests/test_migration_schema_repair_0028.py
           tests/test_migration_schema_repair_0029.py
           tests/test_migration_schema_repair_dev_0023.py
+          tests/test_migration_autonomous_retry_lineage_0030.py
           tests/test_orm_schema_canonicality.py
           tests/test_production_alembic_0020_reconciler.py
           tests/test_start_production.py
@@ -109,6 +110,7 @@ jobs:
           tests/test_pinterest_learning_ranking.py
           tests/test_pinterest_performance_analytics.py
           tests/test_pinterest_autonomous_generation.py
+          tests/test_pinterest_autonomous_reconciliation.py
           tests/test_pinterest_seo_intelligence.py
           tests/test_content_engine.py
           tests/test_pinterest_portfolio_planner.py

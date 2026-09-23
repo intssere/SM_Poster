@@ -17,6 +17,7 @@ from app.core.config import get_settings
 from app.db.base import Base
 from app.db.migration_adoption import (
     FROZEN_FINGERPRINTS,
+    LINEAGE_RUN_TABLES,
     POST_PUBLISH_DRIFT_TABLES,
     _catalog_contract,
     _fingerprint,
@@ -82,31 +83,65 @@ def _upgrade(url: str, target: str) -> None:
         command.upgrade(Config(str(BACKEND / "alembic.ini")), target)
 
 
-def test_orm_metadata_matches_frozen_0023_0027_catalogs(
+def test_orm_metadata_preserves_unchanged_frozen_catalogs(
     isolated_database: str,
 ) -> None:
-    # Create all dependencies canonically through 0022, then let SQLAlchemy ORM
-    # metadata create exactly the six tables Replit's schema promotion sees.
+    # The execution/destination ORM models intentionally evolved in 0030.
+    # Continue enforcing the historical frozen contract only for tables whose
+    # schema did not change; the evolved run tables have dedicated 0030
+    # migration/startup-guard coverage.
     _upgrade(isolated_database, "0022")
     engine = sa.create_engine(isolated_database)
+    unchanged = tuple(
+        table
+        for table in POST_PUBLISH_DRIFT_TABLES
+        if table not in LINEAGE_RUN_TABLES
+    )
     try:
         with engine.begin() as connection:
             Base.metadata.create_all(
                 connection,
                 tables=[
                     Base.metadata.tables[table]
-                    for table in POST_PUBLISH_DRIFT_TABLES
+                    for table in unchanged
                 ],
             )
             actual = {
                 table: _fingerprint(_catalog_contract(connection, table))
-                for table in POST_PUBLISH_DRIFT_TABLES
+                for table in unchanged
             }
     finally:
         engine.dispose()
 
     expected = {
         table: FROZEN_FINGERPRINTS[table]
-        for table in POST_PUBLISH_DRIFT_TABLES
+        for table in unchanged
     }
     assert actual == expected
+
+
+def test_orm_lineage_models_expose_0030_attempt_contract() -> None:
+    for table_name in LINEAGE_RUN_TABLES:
+        table = Base.metadata.tables[table_name]
+        assert "attempt_number" in table.c
+        assert table.c.attempt_number.nullable is False
+        assert "supersedes_run_id" in table.c
+
+        uniques = {
+            constraint.name: tuple(column.name for column in constraint.columns)
+            for constraint in table.constraints
+            if isinstance(constraint, sa.UniqueConstraint)
+        }
+        assert ("portfolio_item_id", "attempt_number") in uniques.values()
+        assert ("portfolio_item_id",) not in uniques.values()
+        assert ("input_fingerprint",) not in uniques.values()
+
+    reconciliation = Base.metadata.tables[
+        "pinterest_autonomous_run_reconciliations"
+    ]
+    assert {
+        "failed_destination_run_id",
+        "failed_execution_run_id",
+        "failed_generation_run_id",
+        "reconciliation_fingerprint",
+    }.issubset(reconciliation.c.keys())

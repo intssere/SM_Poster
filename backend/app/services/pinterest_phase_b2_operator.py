@@ -41,6 +41,7 @@ from app.services.product_source_cache import (
     cached_downloader,
 )
 from app.services.routine_autonomous_authorization import AUTONOMOUS_ACTOR
+from app.services.pinterest_autonomous_run_lineage import latest_run
 
 
 class PhaseB2OperatorError(RuntimeError):
@@ -113,27 +114,15 @@ def _optimizer_for_plan(db, plan_id: str) -> PinterestOptimizerApplication | Non
 
 
 def _destination_run(db, item_id: str) -> PinterestAutonomousDestinationRun | None:
-    return db.scalar(
-        select(PinterestAutonomousDestinationRun)
-        .where(PinterestAutonomousDestinationRun.portfolio_item_id == item_id)
-        .limit(1)
-    )
+    return latest_run(db, PinterestAutonomousDestinationRun, item_id)
 
 
 def _execution_run(db, item_id: str) -> PinterestAutonomousExecutionRun | None:
-    return db.scalar(
-        select(PinterestAutonomousExecutionRun)
-        .where(PinterestAutonomousExecutionRun.portfolio_item_id == item_id)
-        .limit(1)
-    )
+    return latest_run(db, PinterestAutonomousExecutionRun, item_id)
 
 
 def _generation_run(db, item_id: str) -> PinterestAutonomousGenerationRun | None:
-    return db.scalar(
-        select(PinterestAutonomousGenerationRun)
-        .where(PinterestAutonomousGenerationRun.portfolio_item_id == item_id)
-        .limit(1)
-    )
+    return latest_run(db, PinterestAutonomousGenerationRun, item_id)
 
 
 def _gate_state(settings: Settings) -> dict[str, bool]:
@@ -366,22 +355,34 @@ def phase_b2_readiness(
 
     existing_destination = _destination_run(db, item.id)
     existing_execution = _execution_run(db, item.id)
-    if existing_destination is None and existing_execution is None:
+    retrying_failed_chain = bool(
+        (existing_destination is not None and existing_destination.status == "FAILED")
+        or (existing_execution is not None and existing_execution.status == "FAILED")
+    )
+    if existing_destination is None and existing_execution is None or retrying_failed_chain:
         if item.is_reserve:
             blockers.append("RESERVE_ITEM_NOT_EXECUTABLE")
         if item.status != "PLANNED":
             blockers.append("PORTFOLIO_ITEM_NOT_PLANNED")
         if item.publication_id is not None:
             blockers.append("PORTFOLIO_ITEM_PUBLICATION_ALREADY_SET")
-    else:
-        if existing_destination is not None and existing_destination.status in {"FAILED", "UNKNOWN"}:
-            blockers.append(
-                "AUTONOMOUS_DESTINATION_RECONCILIATION_REQUIRED"
-            )
-        if existing_execution is not None and existing_execution.status == "FAILED":
-            blockers.append(
-                "AUTONOMOUS_EXECUTION_FAILED_RECONCILIATION_REQUIRED"
-            )
+
+    if existing_destination is not None:
+        if existing_destination.status == "UNKNOWN":
+            blockers.append("AUTONOMOUS_DESTINATION_RECONCILIATION_REQUIRED")
+        elif (
+            existing_destination.status == "FAILED"
+            and "AUTONOMOUS_DESTINATION_FAILED_RECONCILIATION_REQUIRED"
+            in (destination.get("blockers") or [])
+        ):
+            blockers.append("AUTONOMOUS_DESTINATION_RECONCILIATION_REQUIRED")
+    if (
+        existing_execution is not None
+        and existing_execution.status == "FAILED"
+        and "AUTONOMOUS_EXECUTION_FAILED_RECONCILIATION_REQUIRED"
+        in (execution.get("blockers") or [])
+    ):
+        blockers.append("AUTONOMOUS_EXECUTION_FAILED_RECONCILIATION_REQUIRED")
 
     publish_unknown_count = _publish_unknown_count(db)
     if publish_unknown_count:
@@ -438,11 +439,23 @@ def phase_b2_readiness(
             "id": existing_destination.id if existing_destination else None,
             "status": existing_destination.status if existing_destination else None,
             "stage": existing_destination.stage if existing_destination else None,
+            "attempt_number": (
+                existing_destination.attempt_number if existing_destination else None
+            ),
+            "retry_reconciliation_id": (
+                (destination.get("existing_run") or {}).get("retry_reconciliation_id")
+            ),
         },
         "existing_execution_run": {
             "id": existing_execution.id if existing_execution else None,
             "status": existing_execution.status if existing_execution else None,
             "stage": existing_execution.stage if existing_execution else None,
+            "attempt_number": (
+                existing_execution.attempt_number if existing_execution else None
+            ),
+            "retry_reconciliation_id": (
+                (execution.get("existing_run") or {}).get("retry_reconciliation_id")
+            ),
         },
         "publish_unknown_count": publish_unknown_count,
         "gate_state": _gate_state(settings),

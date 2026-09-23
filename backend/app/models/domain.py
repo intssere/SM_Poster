@@ -361,6 +361,17 @@ class PinterestAutonomousDestinationRun(Base):
         nullable=False,
     )
     input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempt_number: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+    supersedes_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "pinterest_autonomous_destination_runs.id",
+            ondelete="RESTRICT",
+            name="fk_pinterest_auto_destination_supersedes",
+        ),
+        index=True,
+    )
     status: Mapped[str] = mapped_column(
         String(20),
         nullable=False,
@@ -391,11 +402,8 @@ class PinterestAutonomousDestinationRun(Base):
     __table_args__ = (
         UniqueConstraint(
             "portfolio_item_id",
-            name="uq_pinterest_auto_destination_item",
-        ),
-        UniqueConstraint(
-            "input_fingerprint",
-            name="uq_pinterest_auto_destination_fingerprint",
+            "attempt_number",
+            name="uq_pinterest_auto_destination_attempt",
         ),
         CheckConstraint(
             "status IN ('STARTED','SUCCEEDED','FAILED','UNKNOWN')",
@@ -405,6 +413,7 @@ class PinterestAutonomousDestinationRun(Base):
             "stage IN ('STARTED','BOARD_PROVISIONING','BOARD_CREATED','BOARD_SYNC_PENDING','BOARD_READY','EXECUTION_READY')",
             name="ck_pinterest_auto_destination_stage",
         ),
+        Index("ix_pinterest_auto_destination_input_fingerprint", "input_fingerprint"),
         Index("ix_pinterest_auto_destination_plan_stage", "plan_id", "stage"),
         Index("ix_pinterest_auto_destination_plan_id", "plan_id"),
         Index("ix_pinterest_auto_destination_status", "status"),
@@ -440,6 +449,17 @@ class PinterestAutonomousExecutionRun(Base):
         nullable=False,
     )
     input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempt_number: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+    supersedes_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "pinterest_autonomous_execution_runs.id",
+            ondelete="RESTRICT",
+            name="fk_pinterest_auto_exec_supersedes",
+        ),
+        index=True,
+    )
     status: Mapped[str] = mapped_column(
         String(20),
         nullable=False,
@@ -477,11 +497,8 @@ class PinterestAutonomousExecutionRun(Base):
     __table_args__ = (
         UniqueConstraint(
             "portfolio_item_id",
-            name="uq_pinterest_auto_exec_portfolio_item",
-        ),
-        UniqueConstraint(
-            "input_fingerprint",
-            name="uq_pinterest_auto_exec_input_fingerprint",
+            "attempt_number",
+            name="uq_pinterest_auto_exec_attempt",
         ),
         CheckConstraint(
             "status IN ('STARTED','SUCCEEDED','FAILED')",
@@ -491,6 +508,7 @@ class PinterestAutonomousExecutionRun(Base):
             "stage IN ('STARTED','SEO_READY','GENERATED','AUTHORIZED','PUBLICATION_CREATED','PERMITTED')",
             name="ck_pinterest_auto_exec_stage",
         ),
+        Index("ix_pinterest_auto_exec_input_fingerprint", "input_fingerprint"),
         Index("ix_pinterest_auto_exec_plan_id", "plan_id"),
         Index("ix_pinterest_auto_exec_optimizer_app", "optimizer_application_id"),
         Index("ix_pinterest_auto_exec_status", "status"),
@@ -542,7 +560,6 @@ class PinterestAutonomousGenerationRun(Base):
     portfolio_item_id: Mapped[str] = mapped_column(
         ForeignKey("pinterest_portfolio_plan_items.id", ondelete="CASCADE"),
         nullable=False,
-        unique=True,
         index=True,
     )
     seo_brief_id: Mapped[str] = mapped_column(
@@ -550,7 +567,18 @@ class PinterestAutonomousGenerationRun(Base):
         nullable=False,
         index=True,
     )
-    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempt_number: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+    supersedes_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "pinterest_autonomous_generation_runs.id",
+            ondelete="RESTRICT",
+            name="fk_pinterest_autonomous_generation_supersedes",
+        ),
+        index=True,
+    )
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="STARTED", index=True)
     concept_id: Mapped[str | None] = mapped_column(
         ForeignKey("pin_concepts.id", ondelete="SET NULL"), index=True
@@ -568,9 +596,80 @@ class PinterestAutonomousGenerationRun(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     __table_args__ = (
+        UniqueConstraint(
+            "portfolio_item_id",
+            "attempt_number",
+            name="uq_pinterest_autonomous_generation_attempt",
+        ),
         CheckConstraint(
             "status IN ('STARTED','SUCCEEDED','FAILED')",
             name="ck_pinterest_autonomous_generation_run_status",
+        ),
+        Index(
+            "ix_pinterest_autonomous_generation_input_fingerprint",
+            "input_fingerprint",
+        ),
+    )
+
+
+class PinterestAutonomousRunReconciliation(Base):
+    __tablename__ = "pinterest_autonomous_run_reconciliations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    portfolio_item_id: Mapped[str] = mapped_column(
+        ForeignKey("pinterest_portfolio_plan_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    failed_destination_run_id: Mapped[str] = mapped_column(
+        ForeignKey("pinterest_autonomous_destination_runs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    failed_execution_run_id: Mapped[str] = mapped_column(
+        ForeignKey("pinterest_autonomous_execution_runs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    failed_generation_run_id: Mapped[str] = mapped_column(
+        ForeignKey("pinterest_autonomous_generation_runs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    failed_destination_input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    failed_execution_input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    failed_generation_input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    retry_destination_input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    retry_execution_input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    retry_generation_input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    reconciliation_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="RECONCILED", server_default="RECONCILED"
+    )
+    actor: Mapped[str] = mapped_column(String(120), nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        UniqueConstraint(
+            "failed_destination_run_id",
+            name="uq_pinterest_auto_reconcile_destination",
+        ),
+        UniqueConstraint(
+            "failed_execution_run_id",
+            name="uq_pinterest_auto_reconcile_execution",
+        ),
+        UniqueConstraint(
+            "failed_generation_run_id",
+            name="uq_pinterest_auto_reconcile_generation",
+        ),
+        UniqueConstraint(
+            "reconciliation_fingerprint",
+            name="uq_pinterest_auto_reconcile_fingerprint",
+        ),
+        CheckConstraint(
+            "status IN ('RECONCILED')",
+            name="ck_pinterest_autonomous_run_reconciliation_status",
+        ),
+        Index(
+            "ix_pinterest_auto_reconcile_item",
+            "portfolio_item_id",
         ),
     )
 
