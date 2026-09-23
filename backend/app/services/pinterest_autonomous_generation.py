@@ -24,7 +24,11 @@ from app.models.domain import (
     ProductImage,
     ProductIntelligence,
 )
-from app.services.creative_rendering import CreativeRenderService
+from app.services.creative_rendering import (
+    CreativeRenderError,
+    CreativeRenderService,
+    creative_text_layout_preflight,
+)
 from app.services.fingerprints import concept_fingerprint, text_fingerprint
 from app.services.pin_proposals import CREATIVE_TEMPLATES, UNSUPPORTED_CLAIM_PATTERNS
 from app.services.pinterest_board_strategy import board_strategy
@@ -144,6 +148,76 @@ def _copy(
     }
 
 
+def _compact_product_identity(title: str) -> str:
+    value = " ".join((title or "").split()).strip()
+    value = re.sub(
+        r"\s*[\u2013\u2014-]\s*\d+(?:\.\d+)?\s*(?:fl\.?\s*oz|oz|ml|g)\.?\s*$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    ).strip()
+    return value
+
+
+def _controlled_render_failure_code(value: Exception | str) -> str:
+    message = str(value).strip()
+    code = re.sub(r"[^A-Z0-9]+", "_", message.upper()).strip("_")
+    return (code or "CREATIVE_RENDER_ERROR")[:120]
+
+
+def _visual_copy(
+    *,
+    product: Product,
+    intelligence: ProductIntelligence,
+    seo: PinterestSeoBrief,
+    template_key: str,
+) -> dict[str, object]:
+    primary = normalize_keyword(seo.primary_keyword)
+    if not primary:
+        raise AutonomousGenerationError("PRIMARY_SEO_KEYWORD_REQUIRED")
+    primary_display = " ".join(word.capitalize() for word in primary.split())
+    compact_title = _compact_product_identity(product.title) or product.title.strip()
+    brand = (intelligence.brand or product.vendor or "").strip()
+
+    candidates = [
+        {"headline": compact_title, "supporting_text": primary_display},
+        {"headline": primary_display, "supporting_text": compact_title},
+    ]
+    if brand and brand.casefold() not in primary_display.casefold():
+        candidates.append(
+            {"headline": brand, "supporting_text": primary_display}
+        )
+
+    seen: set[tuple[str, str]] = set()
+    for candidate in candidates:
+        key = (candidate["headline"], candidate["supporting_text"])
+        if not all(key) or key in seen:
+            continue
+        seen.add(key)
+        try:
+            layout = creative_text_layout_preflight(
+                template_key=template_key,
+                headline=candidate["headline"],
+                supporting_text=candidate["supporting_text"],
+                product_category=None,
+            )
+        except CreativeRenderError:
+            continue
+        layout_fingerprint = _hash({
+            "template_key": template_key,
+            "headline": candidate["headline"],
+            "supporting_text": candidate["supporting_text"],
+            "layout": layout,
+        })
+        return {
+            **candidate,
+            "layout": layout,
+            "layout_fingerprint": layout_fingerprint,
+        }
+
+    raise AutonomousGenerationError("CREATIVE_TEXT_LAYOUT_UNFIT")
+
+
 def _existing_run(db, portfolio_item_id: str):
     return db.scalar(
         select(PinterestAutonomousGenerationRun)
@@ -224,15 +298,22 @@ def autonomous_generation_readiness(
         blockers.append("CREATIVE_TEMPLATE_UNSUPPORTED")
 
     copy = None
+    visual_copy = None
     if not blockers and product and intelligence and seo:
         try:
             copy = _copy(product=product, intelligence=intelligence, seo=seo)
+            visual_copy = _visual_copy(
+                product=product,
+                intelligence=intelligence,
+                seo=seo,
+                template_key=template_key,
+            )
         except AutonomousGenerationError as exc:
             blockers.append(str(exc))
 
     concept_fp = None
     input_fingerprint = None
-    if product and board and angle and seo and image and copy and board_plan:
+    if product and board and angle and seo and image and copy and visual_copy and board_plan:
         concept_fp = concept_fingerprint(
             product_ids=[product.id],
             content_angle=angle.key,
@@ -256,6 +337,11 @@ def autonomous_generation_readiness(
             "source_image_sha256": image.source_sha256,
             "template_key": template_key,
             "copy": copy,
+            "visual_copy": {
+                "headline": visual_copy["headline"],
+                "supporting_text": visual_copy["supporting_text"],
+                "layout_fingerprint": visual_copy["layout_fingerprint"],
+            },
             "concept_fingerprint": concept_fp,
         })
 
@@ -298,6 +384,18 @@ def autonomous_generation_readiness(
         "source_image_id": image.id if image else None,
         "template_key": template_key,
         "copy": copy,
+        "visual_copy": (
+            {
+                "headline": visual_copy["headline"],
+                "supporting_text": visual_copy["supporting_text"],
+            }
+            if visual_copy
+            else None
+        ),
+        "visual_layout_fingerprint": (
+            visual_copy["layout_fingerprint"] if visual_copy else None
+        ),
+        "visual_layout": visual_copy["layout"] if visual_copy else None,
         "concept_fingerprint": concept_fp,
         "input_fingerprint": input_fingerprint,
         "existing_run_id": existing.id if existing else None,
@@ -353,6 +451,7 @@ def execute_autonomous_generation(
             "seo_fingerprint": seo.seo_fingerprint,
             "concept_fingerprint": ready["concept_fingerprint"],
             "template_key": ready["template_key"],
+            "visual_layout_fingerprint": ready["visual_layout_fingerprint"],
             "provider_called": False,
             "ai_called": False,
         },
@@ -387,7 +486,9 @@ def execute_autonomous_generation(
             "portfolio_item_fingerprint": item.item_fingerprint,
             "seo_brief_id": seo.id,
             "seo_fingerprint": seo.seo_fingerprint,
-            "headline": ready["copy"]["title"],
+            "headline": ready["visual_copy"]["headline"],
+            "visual_copy": ready["visual_copy"],
+            "visual_layout_fingerprint": ready["visual_layout_fingerprint"],
             "content_angle": angle.name,
             "content_angle_key": angle.key,
             "creative_template": CREATIVE_TEMPLATES[ready["template_key"]],
@@ -460,10 +561,19 @@ def execute_autonomous_generation(
         rendered = render_service.render_variant(
             draft.id,
             ready["template_key"],
+            snapshot={
+                "headline": ready["visual_copy"]["headline"],
+                "title": ready["visual_copy"]["supporting_text"],
+                "text_fingerprint": ready["visual_layout_fingerprint"],
+            },
             db=db,
         )
         if rendered.get("status") not in {"RENDERED", "EXISTING"} or not rendered.get("creative_id"):
-            raise AutonomousGenerationError("AUTONOMOUS_CREATIVE_RENDER_FAILED")
+            raise AutonomousGenerationError(
+                _controlled_render_failure_code(
+                    rendered.get("error") or "Creative variant could not be rendered."
+                )
+            )
 
         run = db.get(PinterestAutonomousGenerationRun, run.id)
         run.status = "SUCCEEDED"
@@ -496,13 +606,16 @@ def execute_autonomous_generation(
         if failed is not None and failed.status == "STARTED":
             failed.status = "FAILED"
             failed.completed_at = now
+            failure_code = (
+                str(exc)[:120]
+                if isinstance(exc, AutonomousGenerationError)
+                else _controlled_render_failure_code(exc)
+                if isinstance(exc, CreativeRenderError)
+                else exc.__class__.__name__[:120]
+            )
             failed.safe_metadata = {
                 **(failed.safe_metadata or {}),
-                "failure_code": (
-                    str(exc)
-                    if isinstance(exc, AutonomousGenerationError)
-                    else exc.__class__.__name__
-                )[:120],
+                "failure_code": failure_code,
             }
             db.add(AuditLog(
                 actor=GENERATION_ACTOR,
@@ -516,4 +629,8 @@ def execute_autonomous_generation(
             db.commit()
         if isinstance(exc, AutonomousGenerationError):
             raise
+        if isinstance(exc, CreativeRenderError):
+            raise AutonomousGenerationError(
+                _controlled_render_failure_code(exc)
+            ) from None
         raise AutonomousGenerationError("AUTONOMOUS_GENERATION_FAILED") from None
