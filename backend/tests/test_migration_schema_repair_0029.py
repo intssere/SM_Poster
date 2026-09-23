@@ -219,7 +219,7 @@ def _insert_target_row(connection) -> None:
 def test_fresh_upgrade_reaches_0029_and_is_canonical(
     isolated_database: str,
 ) -> None:
-    _upgrade(isolated_database, "head")
+    _upgrade(isolated_database, "0029")
     assert _revision(isolated_database) == "0029"
     engine = sa.create_engine(isolated_database)
     try:
@@ -227,7 +227,7 @@ def test_fresh_upgrade_reaches_0029_and_is_canonical(
             assert _fingerprint(connection) == FROZEN_FINGERPRINTS[
                 HEAD_EXECUTION_CHECK_RENDERING_TABLE
             ]
-            verify_frozen_schema_at_head(connection)
+            verify_frozen_schema_at_head(connection, revision="0029")
     finally:
         engine.dispose()
 
