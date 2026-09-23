@@ -36,6 +36,11 @@ from app.services.pinterest_phase_b2_operator import (
     execute_phase_b2,
     phase_b2_readiness,
 )
+from app.services.pinterest_autonomous_reconciliation import (
+    AutonomousRunReconciliationError,
+    reconcile_failed_run_chain,
+    reconciliation_readiness,
+)
 from app.services.product_source_hydration import (
     ProductSourceHydrationError,
     hydrate_product_source,
@@ -72,6 +77,23 @@ class PhaseB2Request(BaseModel):
     expected_scheduled_for: datetime
     expected_pinterest_board_record_id: str = Field(min_length=1, max_length=36)
     expected_external_board_id: str = Field(min_length=1, max_length=255)
+
+
+class PhaseB2ReconciliationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    portfolio_item_id: str = Field(min_length=1, max_length=36)
+    expected_item_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_failed_destination_run_id: str = Field(min_length=1, max_length=36)
+    expected_failed_destination_input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_failed_execution_run_id: str = Field(min_length=1, max_length=36)
+    expected_failed_execution_input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_failed_generation_run_id: str = Field(min_length=1, max_length=36)
+    expected_failed_generation_input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_retry_destination_input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_retry_execution_input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_retry_generation_input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_reconciliation_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class ProductSourceHydrationRequest(BaseModel):
@@ -178,6 +200,47 @@ def hydrate_product_source_canary(
             settings=get_settings(),
         )
     except ProductSourceHydrationError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from None
+
+
+@router.get("/canary/phase-b2-reconciliation-readiness")
+def preview_phase_b2_reconciliation(
+    portfolio_item_id: str = Query(..., min_length=1, max_length=36),
+    db: Session = Depends(get_db),
+):
+    try:
+        return reconciliation_readiness(
+            db,
+            portfolio_item_id=portfolio_item_id,
+            settings=get_settings(),
+        )
+    except AutonomousRunReconciliationError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from None
+
+
+@router.post("/canary/phase-b2-reconcile")
+def reconcile_phase_b2_failed_chain(
+    payload: PhaseB2ReconciliationRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return reconcile_failed_run_chain(
+            db,
+            portfolio_item_id=payload.portfolio_item_id,
+            expected_item_fingerprint=payload.expected_item_fingerprint,
+            expected_failed_destination_run_id=payload.expected_failed_destination_run_id,
+            expected_failed_destination_input_fingerprint=payload.expected_failed_destination_input_fingerprint,
+            expected_failed_execution_run_id=payload.expected_failed_execution_run_id,
+            expected_failed_execution_input_fingerprint=payload.expected_failed_execution_input_fingerprint,
+            expected_failed_generation_run_id=payload.expected_failed_generation_run_id,
+            expected_failed_generation_input_fingerprint=payload.expected_failed_generation_input_fingerprint,
+            expected_retry_destination_input_fingerprint=payload.expected_retry_destination_input_fingerprint,
+            expected_retry_execution_input_fingerprint=payload.expected_retry_execution_input_fingerprint,
+            expected_retry_generation_input_fingerprint=payload.expected_retry_generation_input_fingerprint,
+            expected_reconciliation_fingerprint=payload.expected_reconciliation_fingerprint,
+            settings=get_settings(),
+        )
+    except AutonomousRunReconciliationError as exc:
         raise HTTPException(status_code=409, detail=exc.code) from None
 
 
