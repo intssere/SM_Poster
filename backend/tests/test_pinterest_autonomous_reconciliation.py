@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.core.config import Settings
 from app.db.base import Base
 from app.models.domain import (
     PinterestAutonomousDestinationRun,
@@ -21,6 +22,32 @@ EXEC_FP = "b" * 64
 FAILED_GEN_FP = "c" * 64
 RETRY_GEN_FP = "d" * 64
 ITEM_FP = "e" * 64
+
+
+def _settings(**updates):
+    base = Settings(database_url="sqlite:///:memory:")
+    safe = {
+        "publishing_enabled": False,
+        "buffer_publishing_enabled": False,
+        "buffer_single_pin_pilot_enabled": False,
+        "routine_pinterest_scheduler_enabled": False,
+        "routine_pinterest_worker_enabled": False,
+        "routine_buffer_dispatch_enabled": False,
+        "pinterest_write_scope_enabled": False,
+        "pinterest_board_write_scope_enabled": False,
+        "pinterest_board_provisioning_enabled": False,
+        "pinterest_single_pin_pilot_enabled": False,
+        "pinterest_seo_brief_persistence_enabled": False,
+        "pinterest_autonomous_generation_enabled": False,
+        "routine_autonomous_authorization_enabled": False,
+        "pinterest_autonomous_execution_enabled": False,
+        "pinterest_autonomous_board_ensure_enabled": False,
+        "pinterest_analytics_ingestion_enabled": False,
+        "pinterest_learning_snapshot_persistence_enabled": False,
+        "routine_pinterest_dry_run": True,
+    }
+    safe.update(updates)
+    return base.model_copy(update=safe)
 
 
 def _db():
@@ -123,6 +150,7 @@ def test_reconciliation_readiness_binds_failed_and_retry_fingerprints(monkeypatc
     result = reconciliation.reconciliation_readiness(
         db,
         portfolio_item_id=item.id,
+        settings=_settings(),
         now=NOW,
     )
 
@@ -152,6 +180,7 @@ def test_reconciliation_write_is_immutable_and_idempotent(monkeypatch):
     readiness = reconciliation.reconciliation_readiness(
         db,
         portfolio_item_id=item.id,
+        settings=_settings(),
         now=NOW,
     )
     before = {
@@ -190,6 +219,7 @@ def test_reconciliation_write_is_immutable_and_idempotent(monkeypatch):
         expected_retry_execution_input_fingerprint=EXEC_FP,
         expected_retry_generation_input_fingerprint=RETRY_GEN_FP,
         expected_reconciliation_fingerprint=readiness["reconciliation_fingerprint"],
+        settings=_settings(),
         now=NOW,
     )
     first = reconciliation.reconcile_failed_run_chain(db, **kwargs)
@@ -260,6 +290,7 @@ def test_reconciliation_fails_closed_on_provider_side_effect(
     result = reconciliation.reconciliation_readiness(
         db,
         portfolio_item_id=item.id,
+        settings=_settings(),
         now=NOW,
     )
 
@@ -279,6 +310,7 @@ def test_reconciliation_fails_closed_on_downstream_lineage(monkeypatch):
     result = reconciliation.reconciliation_readiness(
         db,
         portfolio_item_id=item.id,
+        settings=_settings(),
         now=NOW,
     )
 
@@ -310,6 +342,7 @@ def test_reconciliation_fails_closed_on_destination_or_execution_input_drift(mon
     result = reconciliation.reconciliation_readiness(
         db,
         portfolio_item_id=item.id,
+        settings=_settings(),
         now=NOW,
     )
 
