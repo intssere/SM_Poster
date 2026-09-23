@@ -990,11 +990,29 @@ def _require_0030_lineage_schema(connection: Any) -> None:
         _refuse("0030 reconciliation foreign key contract mismatch")
 
     checks = {
-        row.get("name"): re.sub(r"\s+", "", row.get("sqltext") or "").lower()
+        row.get("name"): (row.get("sqltext") or "")
         for row in inspector.get_check_constraints(LINEAGE_RECONCILIATION_TABLE)
     }
-    status_check = checks.get("ck_pinterest_autonomous_run_reconciliation_status", "")
-    if "statusin('reconciled')" not in status_check:
+    status_check = checks.get(
+        "ck_pinterest_autonomous_run_reconciliation_status",
+        "",
+    ).lower()
+    normalized_status_check = re.sub(r"\s+", "", status_check)
+    normalized_status_check = re.sub(
+        r"::(?:character varying|varchar|text)",
+        "",
+        normalized_status_check,
+    )
+    normalized_status_check = normalized_status_check.replace("(status)", "status")
+    while (
+        normalized_status_check.startswith("(")
+        and normalized_status_check.endswith(")")
+    ):
+        normalized_status_check = normalized_status_check[1:-1]
+    if normalized_status_check not in {
+        "status='reconciled'",
+        "statusin('reconciled')",
+    }:
         _refuse("0030 reconciliation status check contract mismatch")
 
 
