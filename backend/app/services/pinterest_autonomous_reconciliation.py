@@ -29,6 +29,38 @@ RECONCILIATION_POLICY_VERSION = "PINTEREST_PHASE_B2_RECONCILIATION_V1"
 RECONCILIATION_ACTOR = "phase-b2-reconciliation-v1"
 
 
+_MUST_BE_FALSE_FIELDS = (
+    "publishing_enabled",
+    "buffer_publishing_enabled",
+    "buffer_single_pin_pilot_enabled",
+    "routine_pinterest_scheduler_enabled",
+    "routine_pinterest_worker_enabled",
+    "routine_buffer_dispatch_enabled",
+    "pinterest_write_scope_enabled",
+    "pinterest_board_write_scope_enabled",
+    "pinterest_board_provisioning_enabled",
+    "pinterest_single_pin_pilot_enabled",
+    "pinterest_seo_brief_persistence_enabled",
+    "pinterest_autonomous_generation_enabled",
+    "routine_autonomous_authorization_enabled",
+    "pinterest_autonomous_execution_enabled",
+    "pinterest_autonomous_board_ensure_enabled",
+    "pinterest_analytics_ingestion_enabled",
+    "pinterest_learning_snapshot_persistence_enabled",
+)
+
+
+def _safety_blockers(settings: Settings) -> list[str]:
+    blockers = [
+        f"{name.upper()}_MUST_BE_FALSE"
+        for name in _MUST_BE_FALSE_FIELDS
+        if bool(getattr(settings, name))
+    ]
+    if settings.routine_pinterest_dry_run is not True:
+        blockers.append("ROUTINE_PINTEREST_DRY_RUN_REQUIRED")
+    return blockers
+
+
 class AutonomousRunReconciliationError(RuntimeError):
     def __init__(self, code: str):
         super().__init__(code)
@@ -136,6 +168,7 @@ def reconciliation_readiness(
     )
     if publish_unknown_count:
         blockers.append("PUBLISH_UNKNOWN_PRESENT")
+    blockers.extend(_safety_blockers(settings))
 
     destination_state = destination_readiness(
         db,
@@ -287,6 +320,10 @@ def reconciliation_readiness(
         "existing_reconciliation_id": existing.id if existing else None,
         "evidence": evidence,
         "publish_unknown_count": publish_unknown_count,
+        "gate_state": {
+            name: bool(getattr(settings, name))
+            for name in (*_MUST_BE_FALSE_FIELDS, "routine_pinterest_dry_run")
+        },
         "state_mutated": False,
         "provider_called": False,
         "ai_called": False,
