@@ -831,7 +831,18 @@ def _require_0030_lineage_schema(connection: Any) -> None:
                 "uq_pinterest_auto_destination_item",
                 "uq_pinterest_auto_destination_fingerprint",
             },
-            "input_index": "ix_pinterest_auto_destination_input_fingerprint",
+            "expected_indexes": {
+                "ix_pinterest_auto_destination_input_fingerprint",
+                "ix_pinterest_auto_destination_plan_stage",
+                "ix_pinterest_auto_destination_plan_id",
+                "ix_pinterest_auto_destination_status",
+                "ix_pinterest_auto_destination_stage",
+                "ix_pinterest_auto_destination_status_stage",
+                "ix_pinterest_auto_destination_provisioning_attempt",
+                "ix_pinterest_auto_destination_board_record",
+                "ix_pinterest_auto_destination_execution_run",
+                "ix_pinterest_autonomous_destination_runs_supersedes_run_id",
+            },
         },
         "pinterest_autonomous_execution_runs": {
             "attempt_uq": "uq_pinterest_auto_exec_attempt",
@@ -840,7 +851,21 @@ def _require_0030_lineage_schema(connection: Any) -> None:
                 "uq_pinterest_auto_exec_portfolio_item",
                 "uq_pinterest_auto_exec_input_fingerprint",
             },
-            "input_index": "ix_pinterest_auto_exec_input_fingerprint",
+            "expected_indexes": {
+                "ix_pinterest_auto_exec_input_fingerprint",
+                "ix_pinterest_auto_exec_plan_id",
+                "ix_pinterest_auto_exec_optimizer_app",
+                "ix_pinterest_auto_exec_status",
+                "ix_pinterest_auto_exec_stage",
+                "ix_pinterest_auto_exec_scheduled_for",
+                "ix_pinterest_auto_exec_plan_stage",
+                "ix_pinterest_auto_exec_seo_brief",
+                "ix_pinterest_auto_exec_generation",
+                "ix_pinterest_auto_exec_approval",
+                "ix_pinterest_auto_exec_publication",
+                "ix_pinterest_auto_exec_permit",
+                "ix_pinterest_autonomous_execution_runs_supersedes_run_id",
+            },
         },
         "pinterest_autonomous_generation_runs": {
             "attempt_uq": "uq_pinterest_autonomous_generation_attempt",
@@ -849,7 +874,16 @@ def _require_0030_lineage_schema(connection: Any) -> None:
                 "uq_pinterest_autonomous_generation_item",
                 "uq_pinterest_autonomous_generation_input_fp",
             },
-            "input_index": "ix_pinterest_autonomous_generation_input_fingerprint",
+            "expected_indexes": {
+                "ix_pinterest_autonomous_generation_input_fingerprint",
+                "ix_pinterest_autonomous_generation_runs_portfolio_item_id",
+                "ix_pinterest_autonomous_generation_runs_seo_brief_id",
+                "ix_pinterest_autonomous_generation_runs_status",
+                "ix_pinterest_autonomous_generation_runs_concept_id",
+                "ix_pinterest_autonomous_generation_runs_draft_id",
+                "ix_pinterest_autonomous_generation_runs_creative_id",
+                "ix_pinterest_autonomous_generation_runs_supersedes_run_id",
+            },
         },
     }
     for table, contract in run_contracts.items():
@@ -890,7 +924,17 @@ def _require_0030_lineage_schema(connection: Any) -> None:
             row.get("name"): tuple(row.get("column_names") or ())
             for row in inspector.get_indexes(table)
         }
-        if indexes.get(contract["input_index"]) != ("input_fingerprint",):
+        missing_indexes = sorted(contract["expected_indexes"] - set(indexes))
+        if missing_indexes:
+            _refuse(
+                f"{table} index contract mismatch: "
+                + ", ".join(missing_indexes)
+            )
+        input_indexes = [
+            name for name, columns in indexes.items()
+            if columns == ("input_fingerprint",)
+        ]
+        if not input_indexes:
             _refuse(f"{table} input fingerprint index contract mismatch")
 
     reconciliation_columns = {
