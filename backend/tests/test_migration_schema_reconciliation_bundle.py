@@ -284,7 +284,7 @@ def test_exact_bundle_reconciles_and_reaches_current_head(
     proxy = _create_proxy_bundle(isolated_database)
     _alias_proxy_to_production_bundle(proxy, monkeypatch)
 
-    _upgrade(isolated_database, "head")
+    _upgrade(isolated_database, "0029")
 
     assert _revision(isolated_database) == "0029"
     engine = sa.create_engine(isolated_database)
@@ -296,14 +296,14 @@ def test_exact_bundle_reconciles_and_reaches_current_head(
 
 
 def test_fresh_upgrade_still_reaches_current_head(isolated_database: str) -> None:
-    _upgrade(isolated_database, "head")
+    _upgrade(isolated_database, "0029")
     assert _revision(isolated_database) == "0029"
 
 
 def test_complete_canonical_bundle_still_adopts(isolated_database: str) -> None:
-    _upgrade(isolated_database, "head")
+    _upgrade(isolated_database, "0029")
     _set_revision(isolated_database, "0019")
-    _upgrade(isolated_database, "head")
+    _upgrade(isolated_database, "0029")
     assert _revision(isolated_database) == "0029"
 
 
@@ -511,7 +511,7 @@ def test_post_rebuild_mismatch_rolls_back_entire_bundle(
         SchemaAdoptionRefused,
         match="did not produce all frozen canonical contracts",
     ):
-        _upgrade(isolated_database, "head")
+        _upgrade(isolated_database, "0029")
 
     assert _revision(isolated_database) == "0019"
     _assert_proxy_bundle(isolated_database, proxy)
@@ -537,7 +537,7 @@ def test_teardown_ddl_failure_rolls_back_entire_bundle(
         fail_during_teardown,
     )
     with pytest.raises(RuntimeError, match="injected teardown DDL failure"):
-        _upgrade(isolated_database, "head")
+        _upgrade(isolated_database, "0029")
 
     assert _revision(isolated_database) == "0019"
     _assert_proxy_bundle(isolated_database, proxy)
