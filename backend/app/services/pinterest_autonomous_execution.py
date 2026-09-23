@@ -27,6 +27,11 @@ from app.models.domain import (
 )
 from app.models.routine_publishing import RoutineDispatchPermit
 from app.services.pinterest_autonomous_generation import execute_autonomous_generation
+from app.services.pinterest_autonomous_run_lineage import (
+    latest_run,
+    next_attempt_context,
+    retry_reconciliation,
+)
 from app.services.pinterest_board_strategy import board_strategy
 from app.services.pinterest_optimizer_apply import OPTIMIZER_METADATA_KEY
 from app.services.pinterest_seo_intelligence import persist_seo_brief
@@ -88,11 +93,7 @@ def _optimizer_application(db, plan_id: str) -> PinterestOptimizerApplication | 
 
 
 def _existing_run(db, item_id: str) -> PinterestAutonomousExecutionRun | None:
-    return db.scalar(
-        select(PinterestAutonomousExecutionRun)
-        .where(PinterestAutonomousExecutionRun.portfolio_item_id == item_id)
-        .limit(1)
-    )
+    return latest_run(db, PinterestAutonomousExecutionRun, item_id)
 
 
 def _optimizer_metadata(item: PinterestPortfolioPlanItem) -> dict[str, Any] | None:
@@ -313,11 +314,19 @@ def execution_readiness(
 
     existing = _existing_run(db, item.id)
     already_executed = False
+    retry_reconciliation_record = None
     if existing is not None:
-        if input_fingerprint is None or existing.input_fingerprint != input_fingerprint:
+        if existing.status == "FAILED":
+            retry_reconciliation_record = retry_reconciliation(
+                db,
+                kind="execution",
+                failed_run=existing,
+                retry_input_fingerprint=input_fingerprint,
+            )
+            if retry_reconciliation_record is None:
+                blockers.append("AUTONOMOUS_EXECUTION_FAILED_RECONCILIATION_REQUIRED")
+        elif input_fingerprint is None or existing.input_fingerprint != input_fingerprint:
             blockers.append("AUTONOMOUS_EXECUTION_INPUT_DRIFT")
-        elif existing.status == "FAILED":
-            blockers.append("AUTONOMOUS_EXECUTION_FAILED_RECONCILIATION_REQUIRED")
         elif existing.status == "SUCCEEDED":
             already_executed = True
             if existing.stage != "PERMITTED":
@@ -355,12 +364,21 @@ def execution_readiness(
             "id": existing.id if existing else None,
             "status": existing.status if existing else None,
             "stage": existing.stage if existing else None,
+            "attempt_number": existing.attempt_number if existing else None,
             "seo_brief_id": existing.seo_brief_id if existing else None,
             "generation_run_id": existing.generation_run_id if existing else None,
             "approval_id": existing.approval_id if existing else None,
             "publication_id": existing.publication_id if existing else None,
             "routine_permit_id": existing.routine_permit_id if existing else None,
+            "retry_reconciliation_id": (
+                retry_reconciliation_record.id if retry_reconciliation_record else None
+            ),
         },
+        "next_attempt_number": (
+            existing.attempt_number + 1
+            if existing is not None and retry_reconciliation_record is not None
+            else 1 if existing is None else existing.attempt_number
+        ),
         "state_mutated": False,
         "provider_called": False,
         "ai_called": False,
@@ -554,8 +572,6 @@ def execute_autonomous_item(
         ):
             return existing
         raise AutonomousExecutionError("AUTONOMOUS_EXECUTION_INPUT_DRIFT")
-    if existing is not None and existing.status == "FAILED":
-        raise AutonomousExecutionError("AUTONOMOUS_EXECUTION_FAILED_RECONCILIATION_REQUIRED")
     if settings.pinterest_autonomous_execution_enabled is not True:
         raise AutonomousExecutionError("AUTONOMOUS_EXECUTION_DISABLED")
     if readiness.get("ready") is not True:
@@ -564,19 +580,29 @@ def execute_autonomous_item(
         )
     if not readiness.get("input_fingerprint") or not readiness.get("scheduled_for"):
         raise AutonomousExecutionError("AUTONOMOUS_EXECUTION_IDENTITY_INCOMPLETE")
+    attempt_number, supersedes_run_id, reconciliation_id = next_attempt_context(
+        db,
+        kind="execution",
+        latest=existing,
+        retry_input_fingerprint=readiness["input_fingerprint"],
+    )
+    if existing is not None and existing.status == "FAILED" and reconciliation_id is None:
+        raise AutonomousExecutionError("AUTONOMOUS_EXECUTION_FAILED_RECONCILIATION_REQUIRED")
 
     plan = db.get(PinterestPortfolioPlan, item.plan_id)
     optimizer = _optimizer_application(db, item.plan_id)
     if plan is None or optimizer is None:
         raise AutonomousExecutionError("AUTONOMOUS_EXECUTION_IDENTITY_INCOMPLETE")
 
-    run = existing
+    run = None if existing is not None and existing.status == "FAILED" else existing
     if run is None:
         run = PinterestAutonomousExecutionRun(
             portfolio_item_id=item.id,
             plan_id=plan.id,
             optimizer_application_id=optimizer.id,
             input_fingerprint=readiness["input_fingerprint"],
+            attempt_number=attempt_number,
+            supersedes_run_id=supersedes_run_id,
             status="STARTED",
             stage="STARTED",
             scheduled_for=readiness["scheduled_for"],
@@ -586,6 +612,9 @@ def execute_autonomous_item(
                 "plan_fingerprint": plan.plan_fingerprint,
                 "optimizer_fingerprint": optimizer.optimizer_fingerprint,
                 "board_record_id": readiness["board_routing"]["selected_board_id"],
+                "reconciliation_id": reconciliation_id,
+                "supersedes_run_id": supersedes_run_id,
+                "attempt_number": attempt_number,
                 "provider_called": False,
                 "ai_called": False,
             },
@@ -604,6 +633,9 @@ def execute_autonomous_item(
                 "optimizer_application_id": optimizer.id,
                 "input_fingerprint": run.input_fingerprint,
                 "scheduled_for": run.scheduled_for.isoformat(),
+                "attempt_number": run.attempt_number,
+                "supersedes_run_id": run.supersedes_run_id,
+                "reconciliation_id": reconciliation_id,
             },
         ))
         try:
@@ -615,6 +647,7 @@ def execute_autonomous_item(
                 current
                 and current.status == "STARTED"
                 and current.input_fingerprint == readiness["input_fingerprint"]
+                and current.attempt_number == attempt_number
             ):
                 run = current
             else:
