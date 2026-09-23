@@ -360,6 +360,75 @@ def _responsive_lines(
     raise CreativeRenderError("Creative text cannot fit the selected template.")
 
 
+def _draw_text_panel(
+    canvas: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    *,
+    headline: str,
+    supporting_text: str,
+    product_category: str | None,
+) -> dict[str, Any]:
+    """Draw and validate the deterministic copy panel used by production renders."""
+    local = _local_text_tokens(canvas)
+    draw.rounded_rectangle(TEXT_PANEL_BOX, radius=28, fill=_with_alpha(local["surface"], 236))
+    draw.rectangle((80, 1098, 220, 1106), fill=local["accent"])
+    is_fragrance = product_category == "fragrance"
+    masthead = FRAGRANCE_MASTHEAD_TEXT if is_fragrance else GENERIC_MASTHEAD_TEXT
+    footer = FRAGRANCE_FOOTER_TEXT if is_fragrance else GENERIC_FOOTER_TEXT
+    draw.text((80, 1122), masthead, font=_font(True, 19), fill=local["accent"])
+    headline_lines, headline_font = _responsive_lines(
+        draw, headline, bold=True, max_width=840, max_lines=3, maximum=54, minimum=36
+    )
+    supporting_lines, supporting_font = _responsive_lines(
+        draw, supporting_text, bold=False, max_width=840, max_lines=2, maximum=28, minimum=20
+    )
+    y = 1168
+    for line in headline_lines:
+        draw.text((80, y), line, font=headline_font, fill=local["ink"])
+        y += headline_font.size + 11
+    y += 8
+    for line in supporting_lines:
+        draw.text((80, y), line, font=supporting_font, fill=local["muted"])
+        y += supporting_font.size + 9
+    if y > 1405:
+        raise CreativeRenderError("Creative text overflows the canvas.")
+    draw.text((80, 1418), footer, font=_font(True, 16), fill=local["accent"])
+    return {
+        "headline_lines": headline_lines,
+        "supporting_lines": supporting_lines,
+        "headline_font_size": headline_font.size,
+        "supporting_font_size": supporting_font.size,
+        "final_text_y": y,
+    }
+
+
+def creative_text_layout_preflight(
+    *,
+    template_key: str,
+    headline: str,
+    supporting_text: str,
+    product_category: str | None = None,
+) -> dict[str, Any]:
+    """Validate autonomous visual copy with the exact production text-layout rules."""
+    tokens = TEMPLATES.get(template_key)
+    if not tokens:
+        raise CreativeRenderError("Unsupported creative template.")
+    canvas = Image.new("RGBA", CANVAS, tokens["background"])
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    result = _draw_text_panel(
+        canvas,
+        draw,
+        headline=headline,
+        supporting_text=supporting_text,
+        product_category=product_category,
+    )
+    return {
+        "template_key": template_key,
+        "canvas": {"width": CANVAS[0], "height": CANVAS[1]},
+        **result,
+    }
+
+
 def render_png(
     spec: dict[str, Any],
     source: Image.Image,
@@ -392,32 +461,13 @@ def render_png(
     # consistent visual baseline to retain generous negative space.
     y = image_box[1] if fitted.height < 180 else image_box[3] - fitted.height
     canvas.alpha_composite(fitted, (x, y))
-    local = _local_text_tokens(canvas)
-    draw.rounded_rectangle(TEXT_PANEL_BOX, radius=28, fill=_with_alpha(local["surface"], 236))
-    draw.rectangle((80, 1098, 220, 1106), fill=local["accent"])
-    # A small, high-contrast masthead establishes the brand without competing
-    # with the catalog product or editorial headline.
-    is_fragrance = spec.get("product_category") == "fragrance"
-    masthead = FRAGRANCE_MASTHEAD_TEXT if is_fragrance else GENERIC_MASTHEAD_TEXT
-    footer = FRAGRANCE_FOOTER_TEXT if is_fragrance else GENERIC_FOOTER_TEXT
-    draw.text((80, 1122), masthead, font=_font(True, 19), fill=local["accent"])
-    headline, headline_font = _responsive_lines(
-        draw, spec["headline"], bold=True, max_width=840, max_lines=3, maximum=54, minimum=36
+    _draw_text_panel(
+        canvas,
+        draw,
+        headline=spec["headline"],
+        supporting_text=spec.get("supporting_text", spec.get("subheadline", "")),
+        product_category=spec.get("product_category"),
     )
-    sub, sub_font = _responsive_lines(
-        draw, spec.get("supporting_text", spec.get("subheadline", "")), bold=False, max_width=840, max_lines=2, maximum=28, minimum=20
-    )
-    y = 1168
-    for line in headline:
-        draw.text((80, y), line, font=headline_font, fill=local["ink"])
-        y += headline_font.size + 11
-    y += 8
-    for line in sub:
-        draw.text((80, y), line, font=sub_font, fill=local["muted"])
-        y += sub_font.size + 9
-    if y > 1405:
-        raise CreativeRenderError("Creative text overflows the canvas.")
-    draw.text((80, 1418), footer, font=_font(True, 16), fill=local["accent"])
     output = io.BytesIO()
     canvas.convert("RGB").save(output, format="PNG", optimize=False)
     return output.getvalue()
