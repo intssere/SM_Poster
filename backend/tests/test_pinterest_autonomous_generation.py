@@ -17,6 +17,7 @@ from app.models.domain import (
     PinDraft,
     PinPublication,
     PinterestAutonomousGenerationRun,
+    PinterestAutonomousRunReconciliation,
     PinterestBoard,
     PinterestConnection,
     PinterestPortfolioPlan,
@@ -649,6 +650,83 @@ def test_impossible_visual_layout_fails_before_generation_run(monkeypatch):
     assert db.query(PinConcept).count() == 0
     assert db.query(PinDraft).count() == 0
     assert db.get(PinterestPortfolioPlanItem, seeded["item"].id).status == "PLANNED"
+    db.close()
+
+
+def test_reconciled_failed_generation_creates_superseding_attempt_two():
+    db = _db()
+    seeded = _seed(db)
+    settings = _settings(pinterest_autonomous_generation_enabled=True)
+
+    with pytest.raises(generation.AutonomousGenerationError, match="SYNTHETIC"):
+        generation.execute_autonomous_generation(
+            db,
+            seeded["item"].id,
+            settings=settings,
+            renderer=FakeRenderer(fail=True),
+            now=NOW,
+        )
+
+    failed = db.query(PinterestAutonomousGenerationRun).one()
+    retry_ready = generation.autonomous_generation_readiness(
+        db,
+        seeded["item"].id,
+        settings=settings,
+    )
+    assert "GENERATION_FAILED_RECONCILIATION_REQUIRED" in retry_ready["blockers"]
+
+    reconciliation = PinterestAutonomousRunReconciliation(
+        id="reconciliation-1",
+        portfolio_item_id=seeded["item"].id,
+        failed_destination_run_id="dest-failed-1",
+        failed_execution_run_id="exec-failed-1",
+        failed_generation_run_id=failed.id,
+        failed_destination_input_fingerprint="1" * 64,
+        failed_execution_input_fingerprint="2" * 64,
+        failed_generation_input_fingerprint=failed.input_fingerprint,
+        retry_destination_input_fingerprint="1" * 64,
+        retry_execution_input_fingerprint="2" * 64,
+        retry_generation_input_fingerprint=retry_ready["input_fingerprint"],
+        reconciliation_fingerprint="3" * 64,
+        status="RECONCILED",
+        actor="test",
+        evidence={},
+    )
+    db.add(reconciliation)
+    db.commit()
+
+    ready = generation.autonomous_generation_readiness(
+        db,
+        seeded["item"].id,
+        settings=settings,
+    )
+    assert ready["ready"] is True
+    assert ready["retry_reconciliation_id"] == reconciliation.id
+    assert ready["next_attempt_number"] == 2
+
+    succeeded = generation.execute_autonomous_generation(
+        db,
+        seeded["item"].id,
+        settings=settings,
+        renderer=FakeRenderer(),
+        now=NOW,
+    )
+
+    runs = (
+        db.query(PinterestAutonomousGenerationRun)
+        .order_by(PinterestAutonomousGenerationRun.attempt_number)
+        .all()
+    )
+    assert len(runs) == 2
+    assert runs[0].id == failed.id
+    assert runs[0].status == "FAILED"
+    assert runs[0].attempt_number == 1
+    assert runs[0].supersedes_run_id is None
+    assert runs[1].id == succeeded.id
+    assert runs[1].status == "SUCCEEDED"
+    assert runs[1].attempt_number == 2
+    assert runs[1].supersedes_run_id == failed.id
+    assert runs[1].safe_metadata["reconciliation_id"] == reconciliation.id
     db.close()
 
 
