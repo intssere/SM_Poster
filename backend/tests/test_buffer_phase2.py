@@ -312,7 +312,6 @@ def test_explicit_reconciliation_exact_post_and_atomic_audit(case, status):
         ("url", "pinterest_url"),
         ("media", "media_url"),
         ("alt", "alt_text"),
-        ("id", "provider_operation_id"),
     ],
 )
 def test_reconciliation_snapshot_mismatch_never_changes_outcome(case, field, diagnostic_field):
@@ -341,6 +340,49 @@ def test_reconciliation_snapshot_mismatch_never_changes_outcome(case, field, dia
     assert a.status == "UNKNOWN" and case.p.status == PublicationStatus.PUBLISH_UNKNOWN
     assert a.provider_pin_id is None and case.p.pinterest_pin_id is None
     assert case.calls == ["post"]
+    assert case.db.scalar(select(func.count()).select_from(PublicationReconciliationEvent)) == 0
+
+
+def test_reconciliation_provider_operation_id_mismatch_is_diagnostic_and_fail_closed(case):
+    run(case)
+    case.calls.clear()
+    case.status = "sent"
+
+    class WrongOperationGateway:
+        async def post(self, operation_id):
+            value = post(case)
+            value["id"] = "different-operation"
+            return type("Snapshot", (), {
+                "buffer_post_id": value["id"],
+                "status": value["status"],
+                "channel_id": value["channelId"],
+                "created_at": value["createdAt"],
+                "due_at": value["dueAt"],
+                "sent_at": value["sentAt"],
+                "external_link": value["externalLink"],
+                "channel_service": value["channelService"],
+                "text": value["text"],
+                "pinterest_board_service_id": value["metadata"]["board"]["serviceId"],
+                "pinterest_title": value["metadata"]["title"],
+                "pinterest_url": value["metadata"]["url"],
+                "image_url": value["assets"][0]["source"],
+                "image_alt_text": value["assets"][0]["image"]["altText"],
+            })()
+
+    with pytest.raises(BufferReconciliationError) as error:
+        asyncio.run(reconcile_buffer(
+            case.db,
+            case.p.id,
+            actor="operator",
+            settings=case.settings,
+            gateway=WrongOperationGateway(),
+        ))
+    assert str(error.value) == "BUFFER_POST_SNAPSHOT_MISMATCH"
+    assert error.value.stage == "provider_snapshot"
+    assert error.value.field == "provider_operation_id"
+    a = attempt(case)
+    assert a.status == "UNKNOWN" and case.p.status == PublicationStatus.PUBLISH_UNKNOWN
+    assert a.provider_pin_id is None and case.p.pinterest_pin_id is None
     assert case.db.scalar(select(func.count()).select_from(PublicationReconciliationEvent)) == 0
 
 
