@@ -369,6 +369,10 @@ def test_reconciliation_provider_operation_id_mismatch_is_diagnostic_and_fail_cl
                 "image_alt_text": value["assets"][0]["image"]["altText"],
             })()
 
+    case.p.pinterest_connection_id = None
+    case.p.pinterest_board_record_id = None
+    case.db.flush()
+
     with pytest.raises(BufferReconciliationError) as error:
         asyncio.run(reconcile_buffer(
             case.db,
