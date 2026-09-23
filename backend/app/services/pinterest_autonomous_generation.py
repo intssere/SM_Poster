@@ -32,6 +32,11 @@ from app.services.creative_rendering import (
 from app.services.fingerprints import concept_fingerprint, text_fingerprint
 from app.services.pin_proposals import CREATIVE_TEMPLATES, UNSUPPORTED_CLAIM_PATTERNS
 from app.services.pinterest_board_strategy import board_strategy
+from app.services.pinterest_autonomous_run_lineage import (
+    latest_run,
+    next_attempt_context,
+    retry_reconciliation,
+)
 from app.services.pinterest_seo_intelligence import normalize_keyword
 from app.services.utm import build_pinterest_utm_url
 
@@ -219,11 +224,7 @@ def _visual_copy(
 
 
 def _existing_run(db, portfolio_item_id: str):
-    return db.scalar(
-        select(PinterestAutonomousGenerationRun)
-        .where(PinterestAutonomousGenerationRun.portfolio_item_id == portfolio_item_id)
-        .limit(1)
-    )
+    return latest_run(db, PinterestAutonomousGenerationRun, portfolio_item_id)
 
 
 def autonomous_generation_readiness(
@@ -347,6 +348,7 @@ def autonomous_generation_readiness(
 
     existing = _existing_run(db, item.id)
     already_generated = False
+    retry_reconciliation_record = None
     if existing is not None:
         if input_fingerprint and existing.input_fingerprint == input_fingerprint and existing.status == "SUCCEEDED":
             already_generated = True
@@ -357,11 +359,24 @@ def autonomous_generation_readiness(
         elif existing.status == "STARTED":
             blockers.append("GENERATION_ALREADY_STARTED")
         elif existing.status == "FAILED":
-            blockers.append("GENERATION_FAILED_RECONCILIATION_REQUIRED")
+            retry_reconciliation_record = retry_reconciliation(
+                db,
+                kind="generation",
+                failed_run=existing,
+                retry_input_fingerprint=input_fingerprint,
+            )
+            if retry_reconciliation_record is None:
+                blockers.append("GENERATION_FAILED_RECONCILIATION_REQUIRED")
         else:
             blockers.append("GENERATION_INPUT_DRIFT")
 
-    if concept_fp and existing is None:
+    if concept_fp and (
+        existing is None
+        or (
+            existing.status == "FAILED"
+            and retry_reconciliation_record is not None
+        )
+    ):
         conflict = db.scalar(
             select(PinConcept.id)
             .where(PinConcept.fingerprint == concept_fp)
@@ -400,6 +415,15 @@ def autonomous_generation_readiness(
         "input_fingerprint": input_fingerprint,
         "existing_run_id": existing.id if existing else None,
         "existing_run_status": existing.status if existing else None,
+        "existing_attempt_number": existing.attempt_number if existing else None,
+        "retry_reconciliation_id": (
+            retry_reconciliation_record.id if retry_reconciliation_record else None
+        ),
+        "next_attempt_number": (
+            existing.attempt_number + 1
+            if existing is not None and retry_reconciliation_record is not None
+            else 1 if existing is None else existing.attempt_number
+        ),
         "state_mutated": False,
         "provider_called": False,
         "ai_called": False,
@@ -426,6 +450,14 @@ def execute_autonomous_generation(
         raise AutonomousGenerationError(
             (ready.get("blockers") or ["AUTONOMOUS_GENERATION_BLOCKED"])[0]
         )
+    attempt_number, supersedes_run_id, reconciliation_id = next_attempt_context(
+        db,
+        kind="generation",
+        latest=existing,
+        retry_input_fingerprint=ready["input_fingerprint"],
+    )
+    if existing is not None and existing.status == "FAILED" and reconciliation_id is None:
+        raise AutonomousGenerationError("GENERATION_FAILED_RECONCILIATION_REQUIRED")
 
     item = db.get(PinterestPortfolioPlanItem, portfolio_item_id)
     seo = db.get(PinterestSeoBrief, ready["seo_brief_id"])
@@ -444,6 +476,8 @@ def execute_autonomous_generation(
         portfolio_item_id=item.id,
         seo_brief_id=seo.id,
         input_fingerprint=ready["input_fingerprint"],
+        attempt_number=attempt_number,
+        supersedes_run_id=supersedes_run_id,
         status="STARTED",
         safe_metadata={
             "policy_version": GENERATION_POLICY_VERSION,
@@ -452,6 +486,9 @@ def execute_autonomous_generation(
             "concept_fingerprint": ready["concept_fingerprint"],
             "template_key": ready["template_key"],
             "visual_layout_fingerprint": ready["visual_layout_fingerprint"],
+            "reconciliation_id": reconciliation_id,
+            "supersedes_run_id": supersedes_run_id,
+            "attempt_number": attempt_number,
             "provider_called": False,
             "ai_called": False,
         },
@@ -468,6 +505,9 @@ def execute_autonomous_generation(
             "portfolio_item_id": item.id,
             "seo_brief_id": seo.id,
             "input_fingerprint": run.input_fingerprint,
+            "attempt_number": run.attempt_number,
+            "supersedes_run_id": run.supersedes_run_id,
+            "reconciliation_id": reconciliation_id,
         },
     ))
     try:
@@ -475,9 +515,17 @@ def execute_autonomous_generation(
     except IntegrityError:
         db.rollback()
         current = _existing_run(db, portfolio_item_id)
-        if current and current.input_fingerprint == ready["input_fingerprint"] and current.status == "SUCCEEDED":
-            return current
-        raise AutonomousGenerationError("AUTONOMOUS_GENERATION_ALREADY_EXISTS") from None
+        if (
+            current
+            and current.input_fingerprint == ready["input_fingerprint"]
+            and current.attempt_number == attempt_number
+            and current.status in {"STARTED", "SUCCEEDED"}
+        ):
+            if current.status == "SUCCEEDED":
+                return current
+            run = current
+        else:
+            raise AutonomousGenerationError("AUTONOMOUS_GENERATION_ALREADY_EXISTS") from None
 
     try:
         rationale = {
