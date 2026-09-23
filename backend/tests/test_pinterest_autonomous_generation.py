@@ -214,9 +214,11 @@ class FakeRenderer:
     def __init__(self, fail=False):
         self.fail = fail
         self.calls = []
+        self.snapshots = []
 
-    def render_variant(self, draft_id, template_key, *, db=None):
+    def render_variant(self, draft_id, template_key, *, snapshot=None, db=None):
         self.calls.append((draft_id, template_key))
+        self.snapshots.append(snapshot)
         if self.fail:
             return {"draft_id": draft_id, "status": "FAILED", "error": "synthetic"}
         template = db.scalar(
@@ -288,6 +290,10 @@ def test_generation_readiness_happy_path_binds_seo_board_image_and_template():
     assert "arabian fragrance" in generation.normalize_keyword(
         f"{result['copy']['title']} {result['copy']['description']}"
     )
+    assert result["visual_copy"]["headline"] == "Afnan 9PM Eau de Parfum"
+    assert result["visual_copy"]["supporting_text"] == "Arabian Fragrance"
+    assert len(result["visual_layout_fingerprint"]) == 64
+    assert result["visual_layout"]["final_text_y"] <= 1405
     assert len(result["input_fingerprint"]) == 64
     assert result["state_mutated"] is False
     assert result["provider_called"] is False
@@ -412,6 +418,16 @@ def test_successful_generation_creates_exact_lineage_and_stops_before_authorizat
     assert db.get(PinterestPortfolioPlanItem, seeded["item"].id).status == "GENERATED"
     assert db.query(PinPublication).count() == 0
     assert renderer.calls == [(draft.id, "product_classification")]
+    assert renderer.snapshots == [{
+        "headline": concept.rationale["visual_copy"]["headline"],
+        "title": concept.rationale["visual_copy"]["supporting_text"],
+        "text_fingerprint": concept.rationale["visual_layout_fingerprint"],
+    }]
+    assert draft.title == generation._copy(
+        product=seeded["product"],
+        intelligence=seeded["intelligence"],
+        seo=seeded["seo"],
+    )["title"]
     db.close()
 
 
@@ -504,12 +520,12 @@ def test_input_drift_after_success_blocks_regeneration():
     db.close()
 
 
-def test_renderer_failure_records_failed_run_and_rolls_back_content_lineage():
+def test_renderer_failure_records_exact_code_and_rolls_back_content_lineage():
     db = _db()
     seeded = _seed(db)
     settings = _settings(pinterest_autonomous_generation_enabled=True)
 
-    with pytest.raises(generation.AutonomousGenerationError, match="AUTONOMOUS_CREATIVE_RENDER_FAILED"):
+    with pytest.raises(generation.AutonomousGenerationError, match="SYNTHETIC"):
         generation.execute_autonomous_generation(
             db,
             seeded["item"].id,
@@ -520,6 +536,7 @@ def test_renderer_failure_records_failed_run_and_rolls_back_content_lineage():
 
     run = db.query(PinterestAutonomousGenerationRun).one()
     assert run.status == "FAILED"
+    assert run.safe_metadata["failure_code"] == "SYNTHETIC"
     assert run.concept_id is None
     assert run.draft_id is None
     assert run.creative_id is None
@@ -527,6 +544,111 @@ def test_renderer_failure_records_failed_run_and_rolls_back_content_lineage():
     assert db.query(PinDraft).count() == 0
     assert db.get(PinterestPortfolioPlanItem, seeded["item"].id).status == "PLANNED"
     assert db.query(PinPublication).count() == 0
+    db.close()
+
+
+def test_controlled_creative_render_error_is_preserved_as_stable_code():
+    class RaisingRenderer(FakeRenderer):
+        def render_variant(self, draft_id, template_key, *, snapshot=None, db=None):
+            raise generation.CreativeRenderError("Creative storage is unavailable.")
+
+    db = _db()
+    seeded = _seed(db)
+
+    with pytest.raises(
+        generation.AutonomousGenerationError,
+        match="CREATIVE_STORAGE_IS_UNAVAILABLE",
+    ):
+        generation.execute_autonomous_generation(
+            db,
+            seeded["item"].id,
+            settings=_settings(pinterest_autonomous_generation_enabled=True),
+            renderer=RaisingRenderer(),
+            now=NOW,
+        )
+
+    run = db.query(PinterestAutonomousGenerationRun).one()
+    assert run.status == "FAILED"
+    assert run.safe_metadata["failure_code"] == "CREATIVE_STORAGE_IS_UNAVAILABLE"
+    assert db.query(PinConcept).count() == 0
+    assert db.query(PinDraft).count() == 0
+    db.close()
+
+
+def test_slot20_style_long_pin_title_uses_compact_preflighted_visual_copy():
+    db = _db()
+    seeded = _seed(db)
+    seeded["product"].title = "New Brand Official Eau de Toilette Spray for Men – 3.3 oz"
+    seeded["product"].vendor = "New Brand"
+    seeded["intelligence"].brand = "New Brand"
+    seeded["intelligence"].fragrance_family = None
+    seeded["seo"].primary_keyword = "new brand perfume"
+    seeded["seo"].secondary_keywords = []
+    seeded["angle"].key = "new-arrival"
+    seeded["angle"].name = "New Arrival"
+    seeded["item"].angle_key_snapshot = "new-arrival"
+    db.commit()
+
+    result = generation.autonomous_generation_readiness(
+        db,
+        seeded["item"].id,
+        settings=_settings(),
+    )
+
+    assert result["ready"] is True
+    assert result["blockers"] == []
+    assert result["template_key"] == "editorial_product_pick"
+    assert result["copy"]["title"] == (
+        "New Brand Official Eau de Toilette Spray for Men – 3.3 oz | "
+        "New Brand Perfume"
+    )
+    assert result["visual_copy"] == {
+        "headline": "New Brand Official Eau de Toilette Spray for Men",
+        "supporting_text": "New Brand Perfume",
+    }
+    assert result["visual_copy"]["headline"] != result["copy"]["title"]
+    assert result["visual_copy"]["supporting_text"] != result["copy"]["title"]
+    assert result["visual_layout"]["final_text_y"] <= 1405
+    assert len(result["visual_layout_fingerprint"]) == 64
+    db.close()
+
+
+def test_impossible_visual_layout_fails_before_generation_run(monkeypatch):
+    db = _db()
+    seeded = _seed(db)
+
+    def reject_layout(**kwargs):
+        raise generation.CreativeRenderError(
+            "Creative text cannot fit the selected template."
+        )
+
+    monkeypatch.setattr(generation, "creative_text_layout_preflight", reject_layout)
+
+    readiness = generation.autonomous_generation_readiness(
+        db,
+        seeded["item"].id,
+        settings=_settings(),
+    )
+    assert readiness["ready"] is False
+    assert "CREATIVE_TEXT_LAYOUT_UNFIT" in readiness["blockers"]
+    assert readiness["input_fingerprint"] is None
+
+    with pytest.raises(
+        generation.AutonomousGenerationError,
+        match="CREATIVE_TEXT_LAYOUT_UNFIT",
+    ):
+        generation.execute_autonomous_generation(
+            db,
+            seeded["item"].id,
+            settings=_settings(pinterest_autonomous_generation_enabled=True),
+            renderer=FakeRenderer(),
+            now=NOW,
+        )
+
+    assert db.query(PinterestAutonomousGenerationRun).count() == 0
+    assert db.query(PinConcept).count() == 0
+    assert db.query(PinDraft).count() == 0
+    assert db.get(PinterestPortfolioPlanItem, seeded["item"].id).status == "PLANNED"
     db.close()
 
 
