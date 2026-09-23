@@ -302,8 +302,20 @@ def test_explicit_reconciliation_exact_post_and_atomic_audit(case, status):
         assert events == [] and a.status == "UNKNOWN" and case.p.status == PublicationStatus.PUBLISH_UNKNOWN
 
 
-@pytest.mark.parametrize("field", ["channelId", "text", "board", "title", "url", "media", "alt", "id"])
-def test_reconciliation_snapshot_mismatch_never_changes_outcome(case, field):
+@pytest.mark.parametrize(
+    "field,diagnostic_field",
+    [
+        ("channelId", "buffer_channel_id"),
+        ("text", "description"),
+        ("board", "board_id"),
+        ("title", "title"),
+        ("url", "pinterest_url"),
+        ("media", "media_url"),
+        ("alt", "alt_text"),
+        ("id", "provider_operation_id"),
+    ],
+)
+def test_reconciliation_snapshot_mismatch_never_changes_outcome(case, field, diagnostic_field):
     run(case)
     case.calls.clear()
     case.status = "sent"
@@ -314,7 +326,17 @@ def test_reconciliation_snapshot_mismatch_never_changes_outcome(case, field):
         elif field == "media": p["assets"][0]["source"] = "https://cdn.shopify.com/wrong.jpg"
         else: p["assets"][0]["image"]["altText"] = "wrong"
     case.change_post = change
-    with pytest.raises(BufferReconciliationError): run(case, True)
+    with pytest.raises(BufferReconciliationError) as error:
+        run(case, True)
+    assert str(error.value) == "BUFFER_POST_SNAPSHOT_MISMATCH"
+    assert error.value.stage == "provider_snapshot"
+    assert error.value.field == diagnostic_field
+    assert error.value.safe_diagnostic() == {
+        "code": "BUFFER_POST_SNAPSHOT_MISMATCH",
+        "stage": "provider_snapshot",
+        "field": diagnostic_field,
+    }
+    assert SECRET not in repr(error.value.safe_diagnostic())
     a = attempt(case)
     assert a.status == "UNKNOWN" and case.p.status == PublicationStatus.PUBLISH_UNKNOWN
     assert a.provider_pin_id is None and case.p.pinterest_pin_id is None
