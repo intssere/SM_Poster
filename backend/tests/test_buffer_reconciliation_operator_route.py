@@ -108,7 +108,11 @@ def test_buffer_reconciliation_route_maps_bounded_service_failure_without_retry(
 
     async def fake_reconcile(db, publication_id, *, actor):
         calls.append((publication_id, actor))
-        raise route.BufferReconciliationError("BUFFER_POST_SNAPSHOT_MISMATCH")
+        raise route.BufferReconciliationError(
+            "BUFFER_POST_SNAPSHOT_MISMATCH",
+            stage="provider_snapshot",
+            field="title",
+        )
 
     monkeypatch.setattr(route, "current_user", lambda request: "operator")
     monkeypatch.setattr(route, "reconcile_buffer", fake_reconcile)
@@ -122,4 +126,8 @@ def test_buffer_reconciliation_route_maps_bounded_service_failure_without_retry(
         ))
     assert error.value.status_code == 409
     assert error.value.detail == "BUFFER_POST_SNAPSHOT_MISMATCH"
+    assert error.value.headers == {
+        "X-Buffer-Reconciliation-Stage": "provider_snapshot",
+        "X-Buffer-Reconciliation-Field": "title",
+    }
     assert calls == [("publication", "operator")]
