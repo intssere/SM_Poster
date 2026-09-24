@@ -434,7 +434,8 @@ def _publication_matches(
     scheduled_for: datetime,
 ) -> bool:
     return bool(
-        publication.approval_id == approval.id
+        publication.board_id is None
+        and publication.approval_id == approval.id
         and publication.draft_id == generation.draft_id
         and publication.creative_id == generation.creative_id
         and publication.pinterest_connection_id == connection.id
@@ -776,7 +777,7 @@ def execute_autonomous_item(
                 try:
                     detached = _publication_service(db).create_snapshot(
                         approval_id=approval.id,
-                        board_id=item.local_board_id,
+                        board_id=None,
                         pinterest_connection_id=connection.id,
                         pinterest_board_record_id=provider_board.id,
                         scheduled_for=run.scheduled_for,
