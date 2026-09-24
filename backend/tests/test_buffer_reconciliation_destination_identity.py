@@ -1,4 +1,5 @@
 import asyncio
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -274,10 +275,10 @@ def _assert_pre_provider_rejection(case):
 
 
 def _orm_column_state(row):
-    return {
+    return deepcopy({
         column.key: getattr(row, column.key)
         for column in row.__mapper__.column_attrs
-    }
+    })
 
 
 def test_provider_free_preflight_attestation_is_read_only_and_never_constructs_gateway(
