@@ -743,7 +743,7 @@ def test_crash_recovery_discovers_committed_publication_before_item_link(monkeyp
         draft_id=generation.draft_id,
         creative_id=generation.creative_id,
         approval_id=approval.id,
-        board_id=seeded["board"].id,
+        board_id=None,
         pinterest_board_id=seeded["provider_board"].external_board_id,
         pinterest_connection_id=seeded["connection"].id,
         pinterest_board_record_id=seeded["provider_board"].id,
