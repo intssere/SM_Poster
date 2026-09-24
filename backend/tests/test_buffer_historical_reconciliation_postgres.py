@@ -53,6 +53,7 @@ SETTINGS = SimpleNamespace(
 )
 PIN_ID = "1093811828280487079"
 OPERATION_ID = "6ab408353c9d972a44060ca0"
+EXTERNAL_BOARD_ID = "external-board-1"
 
 
 def _admin_url(url: str) -> str:
@@ -65,7 +66,7 @@ def _admin_url(url: str) -> str:
 def isolated_postgres() -> Iterator[str]:
     if not POSTGRES_URL:
         pytest.skip("TASK58_POSTGRES_URL is required")
-    database = f"task5818_{uuid4().hex[:16]}"
+    database = f"task5819_{uuid4().hex[:16]}"
     admin = sa.create_engine(
         _admin_url(POSTGRES_URL),
         isolation_level="AUTOCOMMIT",
@@ -121,7 +122,7 @@ class ExactGateway:
         )
 
 
-def _historical_case(url: str):
+def _historical_case(url: str, *, legacy_board_external_id=EXTERNAL_BOARD_ID):
     engine = sa.create_engine(url)
     Session = sessionmaker(
         bind=engine,
@@ -161,7 +162,7 @@ def _historical_case(url: str):
         slug="arabian-fragrance",
         rules={},
         active=True,
-        pinterest_board_id="external-board-1",
+        pinterest_board_id=legacy_board_external_id,
     )
     angle = ContentAngle(
         id="angle-1",
@@ -263,7 +264,7 @@ def _historical_case(url: str):
     provider_board = PinterestBoard(
         id="pinterest-board-row-1",
         connection_id=connection.id,
-        external_board_id=board.pinterest_board_id,
+        external_board_id=EXTERNAL_BOARD_ID,
         name="Arabian Fragrance",
         privacy="PUBLIC",
         is_active=True,
@@ -364,6 +365,82 @@ def _historical_case(url: str):
     db.add(permit)
     db.commit()
     return engine, db, publication, attempt, permit
+
+
+def test_postgres_historical_missing_legacy_board_external_id_reconciles(
+    isolated_postgres: str,
+) -> None:
+    engine, db, publication, attempt, permit = _historical_case(
+        isolated_postgres,
+        legacy_board_external_id=None,
+    )
+    try:
+        publication_fingerprint = publication.publication_fingerprint
+        request_fingerprint = attempt.request_fingerprint
+        gateway = ExactGateway(publication)
+
+        result = asyncio.run(
+            reconcile_buffer(
+                db,
+                publication.id,
+                actor="operator",
+                settings=SETTINGS,
+                gateway=gateway,
+            )
+        )
+        db.refresh(attempt)
+        db.refresh(permit)
+
+        assert gateway.calls == [OPERATION_ID]
+        assert result.status == PublicationStatus.PUBLISHED
+        assert result.pinterest_pin_id == PIN_ID
+        assert result.publication_fingerprint == publication_fingerprint
+        assert attempt.request_fingerprint == request_fingerprint
+        assert attempt.status == "SUCCEEDED"
+        assert permit.status == "CONSUMED"
+        assert db.query(PublicationAttempt).filter_by(
+            publication_id=publication.id
+        ).count() == 1
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_postgres_historical_non_null_legacy_board_mismatch_rejects_before_provider_read(
+    isolated_postgres: str,
+) -> None:
+    engine, db, publication, attempt, _permit = _historical_case(
+        isolated_postgres,
+        legacy_board_external_id="different-external-board",
+    )
+    try:
+        gateway = ExactGateway(publication)
+
+        with pytest.raises(
+            BufferReconciliationError,
+            match="^BUFFER_POST_SNAPSHOT_MISMATCH$",
+        ) as error:
+            asyncio.run(
+                reconcile_buffer(
+                    db,
+                    publication.id,
+                    actor="operator",
+                    settings=SETTINGS,
+                    gateway=gateway,
+                )
+            )
+
+        assert error.value.stage == "pre_provider"
+        assert error.value.field == "destination_identity"
+        assert gateway.calls == []
+        db.refresh(publication)
+        db.refresh(attempt)
+        assert publication.status == PublicationStatus.PUBLISH_UNKNOWN
+        assert attempt.status == "UNKNOWN"
+        assert attempt.provider_pin_id is None
+    finally:
+        db.close()
+        engine.dispose()
 
 
 def test_postgres_historical_phase_c_reconciles_without_lineage_rewrite(
