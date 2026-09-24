@@ -441,8 +441,19 @@ async def reconcile_buffer(db, publication_id, *, actor, settings=None, gateway=
             field=mismatch,
         )
     pin = pinterest_pin_id(snapshot.external_link) if snapshot.status == "sent" else None
+    retained_persisted_external_link = False
     if snapshot.status == "sent" and not pin:
-        raise BufferReconciliationError("BUFFER_SENT_LINK_UNVERIFIED")
+        destination_mode = _destination_identity_mode(db, publication, attempt=attempt)
+        persisted_pin = pinterest_pin_id(attempt.provider_external_link)
+        if (
+            destination_mode == HISTORICAL_MIXED_DESTINATION_MODE
+            and persisted_pin is not None
+            and known == {persisted_pin}
+        ):
+            pin = persisted_pin
+            retained_persisted_external_link = True
+        else:
+            raise BufferReconciliationError("BUFFER_SENT_LINK_UNVERIFIED")
     if pin:
         if known and known != {pin}:
             raise BufferReconciliationError("KNOWN_PROVIDER_PIN_MISMATCH")
@@ -464,8 +475,16 @@ async def reconcile_buffer(db, publication_id, *, actor, settings=None, gateway=
                 published_at=now if pin else publication.published_at))
         if result.rowcount != 1:
             raise BufferReconciliationError("RECONCILIATION_CONFLICT")
-        values = dict(provider_operation_status=snapshot.status, provider_external_link=snapshot.external_link,
-                      provider_last_observed_at=now, error_code=code)
+        values = dict(
+            provider_operation_status=snapshot.status,
+            provider_external_link=(
+                attempt.provider_external_link
+                if retained_persisted_external_link
+                else snapshot.external_link
+            ),
+            provider_last_observed_at=now,
+            error_code=code,
+        )
         if terminal:
             values.update(status="SUCCEEDED" if pin else "FAILED", completed_at=now, provider_pin_id=pin)
         result = db.execute(update(PublicationAttempt).where(PublicationAttempt.id == attempt.id,
