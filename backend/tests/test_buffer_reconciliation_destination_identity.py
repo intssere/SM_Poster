@@ -10,6 +10,7 @@ from app.models.domain import (
     Board,
     ContentRevision,
     PinApproval,
+    PinConcept,
     PinCreative,
     PinDraft,
     PinterestBoard,
@@ -265,6 +266,74 @@ def _assert_pre_provider_rejection(case):
     assert case.db.scalars(select(PublicationReconciliationEvent).where(
         PublicationReconciliationEvent.publication_id == case.publication.id
     )).all() == []
+
+
+def test_historical_phase_c_missing_legacy_board_external_id_reconciles(tmp_path):
+    case = _historical_phase_c_case(tmp_path)
+    try:
+        local_board = case.db.get(Board, case.legacy_board_id)
+        local_board.pinterest_board_id = None
+        case.db.commit()
+
+        original_fingerprint = case.publication.publication_fingerprint
+        original_request = case.attempt.request_fingerprint
+        original_attempt_count = case.db.query(PublicationAttempt).filter_by(
+            publication_id=case.publication.id
+        ).count()
+
+        gateway = ExactGateway(case.publication)
+        result = _run(case, gateway)
+        case.db.refresh(case.attempt)
+        case.db.refresh(case.permit)
+
+        assert gateway.calls == [PILOT4_OPERATION]
+        assert result.status == PublicationStatus.PUBLISHED
+        assert result.publication_fingerprint == original_fingerprint
+        assert case.attempt.request_fingerprint == original_request
+        assert case.db.query(PublicationAttempt).filter_by(
+            publication_id=case.publication.id
+        ).count() == original_attempt_count
+        assert case.permit.status == "CONSUMED"
+        assert case.attempt.status == "SUCCEEDED"
+        assert case.attempt.provider_pin_id == PILOT4_PIN
+    finally:
+        case.db.close()
+        case.engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "legacy_board_inactive",
+        "concept_board_route",
+        "concept_store_route",
+        "legacy_non_null_mismatch",
+    ],
+)
+def test_historical_missing_legacy_board_id_still_fails_closed_on_route_drift(
+    tmp_path,
+    drift,
+):
+    case = _historical_phase_c_case(tmp_path)
+    try:
+        local_board = case.db.get(Board, case.legacy_board_id)
+        concept = case.db.get(PinConcept, case.draft.concept_id)
+        local_board.pinterest_board_id = None
+
+        if drift == "legacy_board_inactive":
+            local_board.active = False
+        elif drift == "concept_board_route":
+            concept.board_id = "other-board"
+        elif drift == "concept_store_route":
+            concept.store_id = "other-store"
+        else:
+            local_board.pinterest_board_id = "different-external-board"
+
+        case.db.commit()
+        _assert_pre_provider_rejection(case)
+    finally:
+        case.db.close()
+        case.engine.dispose()
 
 
 def test_historical_phase_c_mixed_destination_reconciles_without_identity_rewrite(tmp_path):
