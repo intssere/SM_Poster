@@ -600,6 +600,127 @@ def test_historical_phase_c_compatibility_fails_closed_before_provider_read(tmp_
         case.engine.dispose()
 
 
+@pytest.mark.parametrize(
+    "fresh_external_link",
+    [
+        None,
+        "https://pin.it/example-short-link",
+        "https://www.pinterest.com/not-a-pin-path",
+    ],
+)
+def test_historical_phase_c_sent_snapshot_can_retain_exact_persisted_pin_identity(
+    tmp_path,
+    fresh_external_link,
+):
+    case = _historical_phase_c_case(tmp_path)
+    try:
+        local_board = case.db.get(Board, case.legacy_board_id)
+        local_board.pinterest_board_id = None
+        case.db.commit()
+
+        original_external_link = case.attempt.provider_external_link
+        original_attempt_count = case.db.query(PublicationAttempt).filter_by(
+            publication_id=case.publication.id
+        ).count()
+
+        class HistoricalSentGateway(ExactGateway):
+            async def post(self, operation_id):
+                snapshot = await super().post(operation_id)
+                return BufferPostSnapshot(
+                    buffer_post_id=snapshot.buffer_post_id,
+                    status=snapshot.status,
+                    channel_id=snapshot.channel_id,
+                    created_at=snapshot.created_at,
+                    due_at=snapshot.due_at,
+                    sent_at=snapshot.sent_at,
+                    external_link=fresh_external_link,
+                    channel_service=snapshot.channel_service,
+                    text=snapshot.text,
+                    pinterest_board_service_id=snapshot.pinterest_board_service_id,
+                    pinterest_title=snapshot.pinterest_title,
+                    pinterest_url=snapshot.pinterest_url,
+                    image_url=snapshot.image_url,
+                    image_alt_text=snapshot.image_alt_text,
+                )
+
+        gateway = HistoricalSentGateway(case.publication)
+        result = _run(case, gateway)
+        case.db.refresh(case.attempt)
+        case.db.refresh(case.permit)
+
+        assert gateway.calls == [PILOT4_OPERATION]
+        assert result.status == PublicationStatus.PUBLISHED
+        assert result.pinterest_pin_id == PILOT4_PIN
+        assert case.attempt.status == "SUCCEEDED"
+        assert case.attempt.provider_pin_id == PILOT4_PIN
+        assert case.attempt.provider_external_link == original_external_link
+        assert case.db.query(PublicationAttempt).filter_by(
+            publication_id=case.publication.id
+        ).count() == original_attempt_count
+        assert case.permit.status == "CONSUMED"
+
+        events = case.db.scalars(
+            select(PublicationReconciliationEvent).where(
+                PublicationReconciliationEvent.publication_id == case.publication.id
+            )
+        ).all()
+        assert len(events) == 1
+        assert events[0].provider_pin_id == PILOT4_PIN
+    finally:
+        case.db.close()
+        case.engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "fresh_external_link",
+    [
+        None,
+        "https://pin.it/example-short-link",
+        "https://www.pinterest.com/not-a-pin-path",
+    ],
+)
+def test_modern_sent_snapshot_without_parseable_pin_still_fails_closed(
+    tmp_path,
+    fresh_external_link,
+):
+    case = _pilot4_case(tmp_path)
+    try:
+        class ModernSentGateway(ExactGateway):
+            async def post(self, operation_id):
+                snapshot = await super().post(operation_id)
+                return BufferPostSnapshot(
+                    buffer_post_id=snapshot.buffer_post_id,
+                    status=snapshot.status,
+                    channel_id=snapshot.channel_id,
+                    created_at=snapshot.created_at,
+                    due_at=snapshot.due_at,
+                    sent_at=snapshot.sent_at,
+                    external_link=fresh_external_link,
+                    channel_service=snapshot.channel_service,
+                    text=snapshot.text,
+                    pinterest_board_service_id=snapshot.pinterest_board_service_id,
+                    pinterest_title=snapshot.pinterest_title,
+                    pinterest_url=snapshot.pinterest_url,
+                    image_url=snapshot.image_url,
+                    image_alt_text=snapshot.image_alt_text,
+                )
+
+        gateway = ModernSentGateway(case.publication)
+        with pytest.raises(BufferReconciliationError, match="^BUFFER_SENT_LINK_UNVERIFIED$"):
+            _run(case, gateway)
+
+        assert gateway.calls == [PILOT4_OPERATION]
+        case.db.refresh(case.publication)
+        case.db.refresh(case.attempt)
+        assert case.publication.status == PublicationStatus.PUBLISH_UNKNOWN
+        assert case.publication.pinterest_pin_id is None
+        assert case.attempt.status == "UNKNOWN"
+        assert case.attempt.provider_pin_id is None
+    finally:
+        case.db.close()
+        case.engine.dispose()
+
+
 def test_historical_phase_c_persisted_pin_conflict_fails_after_one_exact_read(tmp_path):
     case = _historical_phase_c_case(tmp_path)
     try:
