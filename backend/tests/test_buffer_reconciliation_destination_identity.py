@@ -305,6 +305,8 @@ def test_historical_phase_c_mixed_destination_reconciles_without_identity_rewrit
     [
         "publication_fingerprint",
         "request_fingerprint",
+        "post_cutoff_created_at",
+        "persisted_pin_invalid",
         "legacy_board",
         "modern_board",
         "approval_actor",
@@ -325,6 +327,10 @@ def test_historical_phase_c_compatibility_fails_closed_before_provider_read(tmp_
             case.publication.publication_fingerprint = "x" * 64
         elif drift == "request_fingerprint":
             case.attempt.request_fingerprint = "y" * 64
+        elif drift == "post_cutoff_created_at":
+            case.publication.created_at = datetime(2026, 9, 24, 7, 40, 8, tzinfo=timezone.utc)
+        elif drift == "persisted_pin_invalid":
+            case.attempt.provider_external_link = "https://example.com/not-a-pin"
         elif drift == "legacy_board":
             local_board = case.db.get(Board, case.legacy_board_id)
             local_board.pinterest_board_id = "different-external-board"
@@ -352,6 +358,28 @@ def test_historical_phase_c_compatibility_fails_closed_before_provider_read(tmp_
         case.db.commit()
 
         _assert_pre_provider_rejection(case)
+    finally:
+        case.db.close()
+        case.engine.dispose()
+
+
+def test_historical_phase_c_persisted_pin_conflict_fails_after_one_exact_read(tmp_path):
+    case = _historical_phase_c_case(tmp_path)
+    try:
+        case.attempt.provider_external_link = "https://www.pinterest.com/pin/9999999999999999999"
+        case.db.commit()
+        gateway = ExactGateway(case.publication)
+
+        with pytest.raises(BufferReconciliationError, match="KNOWN_PROVIDER_PIN_MISMATCH"):
+            _run(case, gateway)
+
+        assert gateway.calls == [PILOT4_OPERATION]
+        case.db.refresh(case.publication)
+        case.db.refresh(case.attempt)
+        assert case.publication.status == PublicationStatus.PUBLISH_UNKNOWN
+        assert case.publication.pinterest_pin_id is None
+        assert case.attempt.status == "UNKNOWN"
+        assert case.attempt.provider_pin_id is None
     finally:
         case.db.close()
         case.engine.dispose()
