@@ -164,6 +164,7 @@ def _historical_case(url: str):
         utm_url=draft.utm_url,
         publication_fingerprint="pending",
         status=PublicationStatus.PUBLISH_UNKNOWN,
+        created_at=NOW,
         scheduled_for=scheduled_for,
         error_code="BUFFER_SENT_LINK_UNVERIFIED",
     )
