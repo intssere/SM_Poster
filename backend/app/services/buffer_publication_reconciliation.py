@@ -111,6 +111,33 @@ def _legacy_board_identity_valid(db, publication):
     )
 
 
+def _historical_legacy_route_valid(db, publication):
+    """Validate the immutable local route for pre-58.17 mixed publications.
+
+    Historical autonomous publications could carry the local Board identity
+    before that Board had an external Pinterest ID. The local route itself must
+    still be exact. If an external ID is present, it must match the immutable
+    publication board snapshot; absence is tolerated only on this historical
+    reconciliation compatibility path.
+    """
+    board = db.get(Board, publication.board_id) if publication.board_id else None
+    draft = db.get(PinDraft, publication.draft_id) if publication.draft_id else None
+    concept = db.get(PinConcept, draft.concept_id) if draft else None
+    if (
+        board is None
+        or not board.active
+        or not publication.pinterest_board_id_snapshot
+        or concept is None
+        or concept.board_id != publication.board_id
+        or concept.store_id != board.store_id
+    ):
+        return False
+    return bool(
+        not board.pinterest_board_id
+        or board.pinterest_board_id == publication.pinterest_board_id_snapshot
+    )
+
+
 def _modern_destination_lineage_valid(db, publication):
     connection = db.get(PinterestConnection, publication.pinterest_connection_id)
     board_record = db.get(PinterestBoard, publication.pinterest_board_record_id)
@@ -188,7 +215,7 @@ def _historical_mixed_destination_identity_valid(db, publication, attempt):
         or not attempt.provider_operation_id
         or pinterest_pin_id(attempt.provider_external_link) is None
         or attempt.request_fingerprint != request_fingerprint_for(publication)
-        or not _legacy_board_identity_valid(db, publication)
+        or not _historical_legacy_route_valid(db, publication)
         or not _modern_destination_lineage_valid(db, publication)
         or not _historical_publication_fingerprint_valid(publication)
     ):
