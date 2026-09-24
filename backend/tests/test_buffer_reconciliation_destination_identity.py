@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.integrations.buffer.gateway import BufferPostSnapshot
 from app.models.domain import (
+    Board,
     ContentRevision,
     PinApproval,
     PinCreative,
@@ -17,8 +18,12 @@ from app.models.domain import (
     PublicationReconciliationEvent,
     PublicationStatus,
 )
+from app.models.routine_publishing import RoutineDispatchPermit
 from app.services.buffer_publication_reconciliation import BufferReconciliationError, reconcile_buffer
+from app.services.fingerprints import publication_identity_fingerprint
 from app.services.publication_scheduler import request_fingerprint_for
+from app.services.routine_autonomous_authorization import AUTONOMOUS_ACTOR, AUTONOMOUS_NOTE_PREFIX
+from app.services.routine_buffer_dispatch import RoutineDispatchError, claim_for_routine
 from test_manual_publication_dispatch import _db, _ready_publication
 
 
@@ -179,6 +184,61 @@ def _pilot4_case(tmp_path, *, revised=False):
     )
 
 
+def _historical_phase_c_case(tmp_path):
+    case = _pilot4_case(tmp_path)
+    publication = case.publication
+    approval = case.approval
+    attempt = case.attempt
+
+    publication.board_id = case.legacy_board_id
+    publication.created_at = datetime(2026, 9, 23, 17, 0, tzinfo=timezone.utc)
+    approval.decided_by = AUTONOMOUS_ACTOR
+    approval.note = f"{AUTONOMOUS_NOTE_PREFIX}historical-phase-c"
+
+    publication.publication_fingerprint = publication_identity_fingerprint(
+        draft_id=publication.draft_id,
+        revision_id=publication.revision_id,
+        creative_id=publication.creative_id,
+        source_image_id=publication.source_image_id,
+        board_id=publication.board_id,
+        integration_account_id=publication.integration_account_id,
+        destination_url=publication.destination_url,
+        utm_url=publication.utm_url,
+        pinterest_connection_id=publication.pinterest_connection_id,
+        pinterest_board_record_id=publication.pinterest_board_record_id,
+        pinterest_board_id_snapshot=publication.pinterest_board_id_snapshot,
+    )
+    attempt.request_fingerprint = request_fingerprint_for(publication)
+
+    now = datetime.now(timezone.utc)
+    permit = RoutineDispatchPermit(
+        id="historical-phase-c-permit",
+        publication_id=publication.id,
+        dispatch_provider="buffer",
+        approval_id=publication.approval_id,
+        pinterest_board_record_id=publication.pinterest_board_record_id,
+        publication_fingerprint=publication.publication_fingerprint,
+        request_fingerprint=attempt.request_fingerprint,
+        scheduled_for_snapshot=publication.scheduled_for,
+        quality_policy_version="PINTEREST_QUALITY_V1",
+        quality_snapshot={},
+        duplicate_snapshot={},
+        readiness_snapshot={"dispatch_provider": "buffer"},
+        authorized_by=AUTONOMOUS_ACTOR,
+        authorized_at=now - timedelta(minutes=5),
+        expires_at=now + timedelta(hours=1),
+        status="CONSUMED",
+        consumed_at=now - timedelta(minutes=4),
+    )
+    case.db.add(permit)
+    case.db.commit()
+    case.db.refresh(publication)
+    case.db.refresh(attempt)
+    case.db.refresh(permit)
+    case.permit = permit
+    return case
+
+
 def _run(case, gateway):
     return asyncio.run(reconcile_buffer(
         case.db,
@@ -205,6 +265,151 @@ def _assert_pre_provider_rejection(case):
     assert case.db.scalars(select(PublicationReconciliationEvent).where(
         PublicationReconciliationEvent.publication_id == case.publication.id
     )).all() == []
+
+
+def test_historical_phase_c_mixed_destination_reconciles_without_identity_rewrite(tmp_path):
+    case = _historical_phase_c_case(tmp_path)
+    try:
+        publication = case.publication
+        attempt = case.attempt
+        original_board_id = publication.board_id
+        original_publication_fingerprint = publication.publication_fingerprint
+        original_request_fingerprint = attempt.request_fingerprint
+        original_attempt_count = case.db.query(PublicationAttempt).filter_by(
+            publication_id=publication.id
+        ).count()
+
+        gateway = ExactGateway(publication)
+        result = _run(case, gateway)
+        case.db.refresh(attempt)
+        case.db.refresh(case.permit)
+
+        assert gateway.calls == [PILOT4_OPERATION]
+        assert result.status == PublicationStatus.PUBLISHED
+        assert result.board_id == original_board_id
+        assert result.publication_fingerprint == original_publication_fingerprint
+        assert attempt.request_fingerprint == original_request_fingerprint
+        assert case.db.query(PublicationAttempt).filter_by(
+            publication_id=publication.id
+        ).count() == original_attempt_count
+        assert case.permit.status == "CONSUMED"
+        assert attempt.status == "SUCCEEDED"
+        assert attempt.provider_pin_id == PILOT4_PIN
+    finally:
+        case.db.close()
+        case.engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "publication_fingerprint",
+        "request_fingerprint",
+        "post_cutoff_created_at",
+        "persisted_pin_invalid",
+        "legacy_board",
+        "modern_board",
+        "approval_actor",
+        "approval_note",
+        "provider_status",
+        "publication_error",
+        "attempt_error",
+        "permit_status",
+        "permit_fingerprint",
+        "permit_request",
+        "permit_board",
+    ],
+)
+def test_historical_phase_c_compatibility_fails_closed_before_provider_read(tmp_path, drift):
+    case = _historical_phase_c_case(tmp_path)
+    try:
+        if drift == "publication_fingerprint":
+            case.publication.publication_fingerprint = "x" * 64
+        elif drift == "request_fingerprint":
+            case.attempt.request_fingerprint = "y" * 64
+        elif drift == "post_cutoff_created_at":
+            case.publication.created_at = datetime(2026, 9, 24, 7, 40, 8, tzinfo=timezone.utc)
+        elif drift == "persisted_pin_invalid":
+            case.attempt.provider_external_link = "https://example.com/not-a-pin"
+        elif drift == "legacy_board":
+            local_board = case.db.get(Board, case.legacy_board_id)
+            local_board.pinterest_board_id = "different-external-board"
+        elif drift == "modern_board":
+            case.board.external_board_id = "different-external-board"
+        elif drift == "approval_actor":
+            case.approval.decided_by = "operator"
+        elif drift == "approval_note":
+            case.approval.note = "manual"
+        elif drift == "provider_status":
+            case.attempt.provider_operation_status = "pending"
+        elif drift == "publication_error":
+            case.publication.error_code = "PUBLISH_UNKNOWN"
+        elif drift == "attempt_error":
+            case.attempt.error_code = "PUBLISH_UNKNOWN"
+        elif drift == "permit_status":
+            case.permit.status = "ACTIVE"
+            case.permit.consumed_at = None
+        elif drift == "permit_fingerprint":
+            case.permit.publication_fingerprint = "z" * 64
+        elif drift == "permit_request":
+            case.permit.request_fingerprint = "q" * 64
+        else:
+            case.permit.pinterest_board_record_id = "different-board-record"
+        case.db.commit()
+
+        _assert_pre_provider_rejection(case)
+    finally:
+        case.db.close()
+        case.engine.dispose()
+
+
+def test_historical_phase_c_persisted_pin_conflict_fails_after_one_exact_read(tmp_path):
+    case = _historical_phase_c_case(tmp_path)
+    try:
+        case.attempt.provider_external_link = "https://www.pinterest.com/pin/9999999999999999999"
+        case.db.commit()
+        gateway = ExactGateway(case.publication)
+
+        with pytest.raises(BufferReconciliationError, match="KNOWN_PROVIDER_PIN_MISMATCH"):
+            _run(case, gateway)
+
+        assert gateway.calls == [PILOT4_OPERATION]
+        case.db.refresh(case.publication)
+        case.db.refresh(case.attempt)
+        assert case.publication.status == PublicationStatus.PUBLISH_UNKNOWN
+        assert case.publication.pinterest_pin_id is None
+        assert case.attempt.status == "UNKNOWN"
+        assert case.attempt.provider_pin_id is None
+    finally:
+        case.db.close()
+        case.engine.dispose()
+
+
+def test_historical_phase_c_consumed_permit_cannot_redispatch(tmp_path):
+    case = _historical_phase_c_case(tmp_path)
+    try:
+        before_attempts = case.db.query(PublicationAttempt).filter_by(
+            publication_id=case.publication.id
+        ).count()
+
+        with pytest.raises(RoutineDispatchError, match="ROUTINE_PERMIT_CONSUMED"):
+            claim_for_routine(
+                case.db,
+                case.publication,
+                case.permit,
+                now=datetime.now(timezone.utc),
+            )
+
+        case.db.refresh(case.publication)
+        case.db.refresh(case.permit)
+        assert case.publication.status == PublicationStatus.PUBLISH_UNKNOWN
+        assert case.permit.status == "CONSUMED"
+        assert case.db.query(PublicationAttempt).filter_by(
+            publication_id=case.publication.id
+        ).count() == before_attempts
+    finally:
+        case.db.close()
+        case.engine.dispose()
 
 
 def test_true_pilot4_original_modern_destination_reconciles_exact_sent_post_once(tmp_path):

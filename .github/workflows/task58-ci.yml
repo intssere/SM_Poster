@@ -104,6 +104,8 @@ jobs:
           tests/test_production_startup_readiness.py
           tests/test_routine_scheduler_postgres_lease.py
           tests/test_pinterest_autonomous_execution.py
+          tests/test_buffer_reconciliation_destination_identity.py
+          tests/test_buffer_historical_reconciliation_postgres.py
           tests/test_pinterest_optimizer_apply.py
           tests/test_pinterest_adaptive_optimizer.py
           tests/test_pinterest_optimizer_cap_contract_postgres.py
