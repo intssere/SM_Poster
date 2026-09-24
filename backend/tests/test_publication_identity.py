@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import select
 
 from app.models.domain import (
@@ -274,15 +275,41 @@ def test_direct_pinterest_snapshot_derives_public_digest_url(monkeypatch):
     db, proposals, draft, creative = _prepared("direct-media")
     creative.render_status = "RENDERED"; creative.sha256 = "a" * 64; creative.rendered_url = f"/api/pins/creatives/{creative.id}/image"
     db.commit(); proposals.decide(draft.id, "APPROVED", reviewed_creative_id=creative.id)
-    approval = db.scalar(select(PinApproval).where(PinApproval.draft_id == draft.id)); board = db.scalar(select(Board).where(Board.id.is_not(None)))
+    approval = db.scalar(select(PinApproval).where(PinApproval.draft_id == draft.id))
     connection = PinterestConnection(external_user_id="direct-media-user", access_token_ciphertext="synthetic", refresh_token_ciphertext="synthetic", granted_scopes=["user_accounts:read", "boards:read", "pins:read"], status="CONNECTED")
     db.add(connection); db.flush(); pinterest_board = PinterestBoard(connection_id=connection.id, external_board_id="direct-media-board", name="Fragrance", is_active=True, is_eligible=True, routing_label="fragrance"); db.add(pinterest_board); db.commit()
     monkeypatch.setenv("PUBLIC_MEDIA_BASE_URL", "https://media.example.com"); get_settings.cache_clear()
     try:
-        publication = PublicationIdentityService(proposals.session_factory).create_snapshot(approval_id=approval.id, board_id=board.id, pinterest_connection_id=connection.id, pinterest_board_record_id=pinterest_board.id)
+        publication = PublicationIdentityService(proposals.session_factory).create_snapshot(approval_id=approval.id, board_id=None, pinterest_connection_id=connection.id, pinterest_board_record_id=pinterest_board.id)
         assert publication.media_url_snapshot == f"https://media.example.com/api/pins/public-creatives/{creative.id}/{creative.sha256}.png"
+        assert publication.board_id is None
+        assert publication.pinterest_connection_id == connection.id
+        assert publication.pinterest_board_record_id == pinterest_board.id
     finally:
         get_settings.cache_clear(); db.close()
+
+
+def test_direct_pinterest_snapshot_rejects_mixed_legacy_board_identity():
+    db, proposals, draft, creative = _prepared("direct-mixed")
+    creative.render_status = "RENDERED"; creative.sha256 = "a" * 64; creative.rendered_url = f"/api/pins/creatives/{creative.id}/image"
+    db.commit(); proposals.decide(draft.id, "APPROVED", reviewed_creative_id=creative.id)
+    approval = db.scalar(select(PinApproval).where(PinApproval.draft_id == draft.id))
+    board = db.scalar(select(Board).where(Board.id.is_not(None)))
+    connection = PinterestConnection(external_user_id="direct-mixed-user", access_token_ciphertext="synthetic", refresh_token_ciphertext="synthetic", granted_scopes=["user_accounts:read", "boards:read", "pins:read"], status="CONNECTED")
+    db.add(connection); db.flush(); pinterest_board = PinterestBoard(connection_id=connection.id, external_board_id="direct-mixed-board", name="Fragrance", is_active=True, is_eligible=True, routing_label="fragrance"); db.add(pinterest_board); db.commit()
+    try:
+        with pytest.raises(
+            PublicationIdentityError,
+            match="Modern Pinterest destinations cannot include a legacy board identity",
+        ):
+            PublicationIdentityService(proposals.session_factory).create_snapshot(
+                approval_id=approval.id,
+                board_id=board.id,
+                pinterest_connection_id=connection.id,
+                pinterest_board_record_id=pinterest_board.id,
+            )
+    finally:
+        db.close()
 
 
 def test_public_media_config_change_does_not_mutate_existing_snapshot(monkeypatch):

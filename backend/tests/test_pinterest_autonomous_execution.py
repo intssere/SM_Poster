@@ -390,6 +390,7 @@ class _FakePublicationService:
         scheduled_for=None,
     ):
         self.calls += 1
+        assert board_id is None
         approval = self.db.get(PinApproval, approval_id)
         creative = self.db.get(PinCreative, approval.creative_id)
         row = PinPublication(
@@ -742,7 +743,7 @@ def test_crash_recovery_discovers_committed_publication_before_item_link(monkeyp
         draft_id=generation.draft_id,
         creative_id=generation.creative_id,
         approval_id=approval.id,
-        board_id=seeded["board"].id,
+        board_id=None,
         pinterest_board_id=seeded["provider_board"].external_board_id,
         pinterest_connection_id=seeded["connection"].id,
         pinterest_board_record_id=seeded["provider_board"].id,
@@ -772,6 +773,60 @@ def test_crash_recovery_discovers_committed_publication_before_item_link(monkeyp
     item = db.get(PinterestPortfolioPlanItem, seeded["item1"].id)
     assert item.publication_id == publication.id
     assert item.status == "SCHEDULED"
+    db.close(); engine.dispose()
+
+
+def test_publication_recovery_rejects_mixed_destination_identity(monkeypatch):
+    engine, db = _db()
+    seeded = _seed(db, two_same_day=False)
+    settings = _settings()
+    ready = execution.execution_readiness(db, seeded["item1"].id, settings=settings, now=NOW)
+    seo = _fake_seo(db, seeded["item1"].id, settings=settings)
+    generation = _fake_generation(db, seeded["item1"].id, settings=settings, now=NOW)
+    approval = _fake_authorize(db, generation.draft_id, settings=settings, now=NOW)
+
+    run = PinterestAutonomousExecutionRun(
+        id="exec-mixed-recovery",
+        portfolio_item_id=seeded["item1"].id,
+        plan_id=seeded["plan"].id,
+        optimizer_application_id=seeded["app"].id,
+        input_fingerprint=ready["input_fingerprint"],
+        status="STARTED",
+        stage="AUTHORIZED",
+        seo_brief_id=seo.id,
+        generation_run_id=generation.id,
+        approval_id=approval.id,
+        scheduled_for=ready["scheduled_for"],
+        safe_metadata={},
+        started_at=NOW,
+    )
+    publication = PinPublication(
+        id="publication-mixed-recovery",
+        draft_id=generation.draft_id,
+        creative_id=generation.creative_id,
+        approval_id=approval.id,
+        board_id=seeded["board"].id,
+        pinterest_board_id=seeded["provider_board"].external_board_id,
+        pinterest_connection_id=seeded["connection"].id,
+        pinterest_board_record_id=seeded["provider_board"].id,
+        pinterest_board_id_snapshot=seeded["provider_board"].external_board_id,
+        publication_fingerprint="f" * 64,
+        status=PublicationStatus.SCHEDULED,
+        scheduled_for=ready["scheduled_for"],
+    )
+    db.add_all([run, publication])
+    db.commit()
+
+    with pytest.raises(execution.AutonomousExecutionError, match="PUBLICATION_RECOVERY_DRIFT"):
+        execution.execute_autonomous_item(
+            db,
+            seeded["item1"].id,
+            settings=settings,
+            now=NOW,
+        )
+
+    failed = db.get(PinterestAutonomousExecutionRun, run.id)
+    assert failed.status == "FAILED"
     db.close(); engine.dispose()
 
 

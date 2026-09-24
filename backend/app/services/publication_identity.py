@@ -93,7 +93,7 @@ class PublicationIdentityService:
         self,
         *,
         approval_id: str,
-        board_id: str,
+        board_id: str | None,
         integration_account_id: str | None = None,
         pinterest_connection_id: str | None = None,
         pinterest_board_record_id: str | None = None,
@@ -120,18 +120,22 @@ class PublicationIdentityService:
             if approval.approved_version_id != expected_version:
                 raise PublicationIdentityError("Approval version identity is inconsistent.")
 
-            board = db.get(Board, board_id)
             pinterest_board = None
             connection = None
             if bool(pinterest_connection_id) != bool(pinterest_board_record_id):
                 raise PublicationIdentityError("Pinterest connection and board identities are both required.")
-            if pinterest_connection_id and pinterest_board_record_id:
+            modern_destination = bool(pinterest_connection_id and pinterest_board_record_id)
+            if modern_destination and board_id:
+                raise PublicationIdentityError(
+                    "Modern Pinterest destinations cannot include a legacy board identity."
+                )
+            board = db.get(Board, board_id) if board_id else None
+            if modern_destination:
                 from app.models.domain import PinterestBoard, PinterestConnection
-                connection = db.get(PinterestConnection, pinterest_connection_id) if pinterest_connection_id else None
-                pinterest_board = db.get(PinterestBoard, pinterest_board_record_id) if pinterest_board_record_id else None
+                connection = db.get(PinterestConnection, pinterest_connection_id)
+                pinterest_board = db.get(PinterestBoard, pinterest_board_record_id)
                 if not connection or connection.status != "CONNECTED" or not pinterest_board or pinterest_board.connection_id != connection.id or not pinterest_board.is_active or not pinterest_board.is_eligible:
                     raise PublicationIdentityError("Pinterest destination is not eligible.")
-                board = board  # legacy board may be absent for authoritative Pinterest destinations
             concept = db.get(PinConcept, draft.concept_id)
             template = db.get(CreativeTemplate, creative.template_id)
             if (not board and not pinterest_board) or not concept or (board and board.store_id != concept.store_id):
