@@ -29,12 +29,15 @@ from app.models.domain import (
     Product,
     ProductImage,
     PublicationAttempt,
+    PublicationReconciliationEvent,
     PublicationStatus,
     Store,
 )
 from app.models.routine_publishing import RoutineDispatchPermit
+from app.services import buffer_publication_reconciliation as reconciliation_service
 from app.services.buffer_publication_reconciliation import (
     BufferReconciliationError,
+    attest_buffer_reconciliation_preflight,
     reconcile_buffer,
 )
 from app.services.fingerprints import publication_identity_fingerprint
