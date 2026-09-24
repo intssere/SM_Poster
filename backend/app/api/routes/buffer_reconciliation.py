@@ -5,7 +5,11 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import current_user
 from app.db.session import get_db
-from app.services.buffer_publication_reconciliation import BufferReconciliationError, reconcile_buffer
+from app.services.buffer_publication_reconciliation import (
+    BufferReconciliationError,
+    attest_buffer_reconciliation_preflight,
+    reconcile_buffer,
+)
 from app.services.pinterest_publisher import PublicationReconciliationError
 
 
@@ -20,6 +24,19 @@ class BufferReconciliationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     confirmed: bool
     confirmation_text_version: str
+
+
+@router.get("/{publication_id}/reconcile-buffer/preflight")
+def attest_known_buffer_operation_preflight(
+    publication_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Evaluate exact pre-provider guards without provider I/O or persistence."""
+    actor = current_user(request)
+    if not actor:
+        raise HTTPException(401, "Authentication required")
+    return attest_buffer_reconciliation_preflight(db, publication_id)
 
 
 @router.post("/{publication_id}/reconcile-buffer")
