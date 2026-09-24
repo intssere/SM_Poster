@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -15,12 +15,22 @@ from sqlalchemy.orm import sessionmaker
 from app.db.base import Base
 from app.integrations.buffer.gateway import BufferPostSnapshot
 from app.models.domain import (
+    Board,
+    ContentAngle,
     CreativeTemplate,
+    DraftStatus,
+    PinApproval,
+    PinConcept,
     PinCreative,
     PinDraft,
     PinPublication,
+    PinterestBoard,
+    PinterestConnection,
+    Product,
+    ProductImage,
     PublicationAttempt,
     PublicationStatus,
+    Store,
 )
 from app.models.routine_publishing import RoutineDispatchPermit
 from app.services.buffer_publication_reconciliation import (
@@ -29,17 +39,14 @@ from app.services.buffer_publication_reconciliation import (
 )
 from app.services.fingerprints import publication_identity_fingerprint
 from app.services.publication_scheduler import request_fingerprint_for
-from app.services.routine_autonomous_authorization import AUTONOMOUS_ACTOR
-from test_pinterest_autonomous_execution import (
-    NOW,
-    _fake_authorize,
-    _fake_generation,
-    _fake_seo,
-    _seed,
+from app.services.routine_autonomous_authorization import (
+    AUTONOMOUS_ACTOR,
+    AUTONOMOUS_NOTE_PREFIX,
 )
 
 
 POSTGRES_URL = os.getenv("TASK58_POSTGRES_URL")
+NOW = datetime(2026, 9, 23, 17, 0, tzinfo=timezone.utc)
 SETTINGS = SimpleNamespace(
     buffer_organization_id="org",
     buffer_pinterest_channel_id="channel",
@@ -124,19 +131,149 @@ def _historical_case(url: str):
     )
     db = Session()
 
-    seeded = _seed(db, two_same_day=False)
-    board = seeded["board"]
-    provider_board = seeded["provider_board"]
-    connection = seeded["connection"]
-    board.pinterest_board_id = provider_board.external_board_id
-    db.commit()
+    store = Store(
+        id="store-1",
+        name="Diamond Shelf",
+        shop_domain="diamondshelf.us",
+        market="US",
+    )
+    db.add(store)
+    db.flush()
 
-    _fake_seo(db, seeded["item1"].id)
-    generation = _fake_generation(db, seeded["item1"].id, now=NOW)
-    approval = _fake_authorize(db, generation.draft_id, now=NOW)
-    draft = db.get(PinDraft, generation.draft_id)
-    creative = db.get(PinCreative, generation.creative_id)
-    template = db.get(CreativeTemplate, creative.template_id)
+    product = Product(
+        id="product-1",
+        store_id=store.id,
+        shopify_product_id="shop-1",
+        handle="phase-c-product",
+        title="Phase C Product",
+        vendor="Test Vendor",
+        product_url="https://diamondshelf.us/products/phase-c-product",
+        status="ACTIVE",
+        inventory_total=10,
+    )
+    db.add(product)
+    db.flush()
+
+    board = Board(
+        id="board-1",
+        store_id=store.id,
+        name="Arabian Fragrance",
+        slug="arabian-fragrance",
+        rules={},
+        active=True,
+        pinterest_board_id="external-board-1",
+    )
+    angle = ContentAngle(
+        id="angle-1",
+        key="arabian-fragrance-discovery",
+        name="Arabian Fragrance Discovery",
+        rules={},
+        active=True,
+    )
+    template = CreativeTemplate(
+        id="template-1",
+        key="product_classification",
+        version=1,
+        name="Product Classification",
+        active=True,
+    )
+    db.add_all([board, angle, template])
+    db.flush()
+
+    image = ProductImage(
+        id="image-1",
+        product_id=product.id,
+        source_url="https://cdn.example/phase-c.png",
+        source_sha256="a" * 64,
+        is_primary=True,
+        editorial_eligible=True,
+    )
+    db.add(image)
+    db.flush()
+
+    concept = PinConcept(
+        id="concept-1",
+        store_id=store.id,
+        product_id=product.id,
+        content_angle_id=angle.id,
+        board_id=board.id,
+        fingerprint="b" * 64,
+        rationale={"unsupported_claims": []},
+    )
+    db.add(concept)
+    db.flush()
+
+    draft = PinDraft(
+        id="draft-1",
+        concept_id=concept.id,
+        version=1,
+        title="Arabian fragrance discovery",
+        description="Explore Arabian fragrance at Diamond Shelf.",
+        alt_text="Arabian fragrance bottle",
+        destination_url=product.product_url,
+        utm_url=f"{product.product_url}?utm_source=pinterest",
+        text_fingerprint="c" * 64,
+        status=DraftStatus.APPROVED,
+    )
+    db.add(draft)
+    db.flush()
+
+    creative = PinCreative(
+        id="creative-1",
+        draft_id=draft.id,
+        template_id=template.id,
+        source_image_id=image.id,
+        rendered_url="https://diamondshelf.replit.app/media/phase-c.png",
+        sha256="d" * 64,
+        creative_fingerprint="e" * 64,
+        width=1000,
+        height=1500,
+        render_status="RENDERED",
+    )
+    db.add(creative)
+    db.flush()
+
+    approval = PinApproval(
+        id="approval-1",
+        draft_id=draft.id,
+        revision_id=None,
+        creative_id=creative.id,
+        approved_version_id="original",
+        decision="APPROVED",
+        decided_by=AUTONOMOUS_ACTOR,
+        note=f"{AUTONOMOUS_NOTE_PREFIX}postgres-phase-c",
+    )
+    db.add(approval)
+    db.flush()
+
+    connection = PinterestConnection(
+        id="connection-1",
+        provider="pinterest",
+        external_user_id="pinterest-user-1",
+        username="diamond-shelf",
+        granted_scopes=["user_accounts:read", "boards:read", "pins:read"],
+        access_token_ciphertext="cipher-a",
+        refresh_token_ciphertext="cipher-r",
+        status="CONNECTED",
+        boards_last_synced_at=NOW,
+    )
+    db.add(connection)
+    db.flush()
+
+    provider_board = PinterestBoard(
+        id="pinterest-board-row-1",
+        connection_id=connection.id,
+        external_board_id=board.pinterest_board_id,
+        name="Arabian Fragrance",
+        privacy="PUBLIC",
+        is_active=True,
+        is_eligible=True,
+        routing_label=board.slug,
+        last_seen_at=NOW,
+        last_synced_at=NOW,
+    )
+    db.add(provider_board)
+    db.flush()
 
     scheduled_for = NOW - timedelta(minutes=1)
     publication = PinPublication(
