@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
@@ -6,6 +7,9 @@ from app.core.auth import current_user
 from app.db.session import get_db
 from app.services.buffer_publication_reconciliation import BufferReconciliationError, reconcile_buffer
 from app.services.pinterest_publisher import PublicationReconciliationError
+
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/publications", tags=["publications"])
@@ -41,7 +45,22 @@ async def reconcile_known_buffer_operation(
     try:
         row = await reconcile_buffer(db, publication_id, actor=actor)
     except BufferReconciliationError as exc:
-        raise HTTPException(409, str(exc)) from None
+        diagnostic = exc.safe_diagnostic()
+        logger.warning(
+            "buffer_reconciliation_rejected",
+            extra={
+                "buffer_reconciliation_code": diagnostic.get("code"),
+                "buffer_reconciliation_stage": diagnostic.get("stage"),
+                "buffer_reconciliation_field": diagnostic.get("field"),
+                "buffer_publication_id": publication_id,
+            },
+        )
+        headers = {}
+        if diagnostic.get("stage"):
+            headers["X-Buffer-Reconciliation-Stage"] = diagnostic["stage"]
+        if diagnostic.get("field"):
+            headers["X-Buffer-Reconciliation-Field"] = diagnostic["field"]
+        raise HTTPException(409, str(exc), headers=headers) from None
     except PublicationReconciliationError as exc:
         raise HTTPException(500, str(exc)) from None
     return {

@@ -191,8 +191,10 @@ def _run(case, gateway):
 
 def _assert_pre_provider_rejection(case):
     gateway = ExactGateway(case.publication)
-    with pytest.raises(BufferReconciliationError, match="^BUFFER_POST_SNAPSHOT_MISMATCH$"):
+    with pytest.raises(BufferReconciliationError, match="^BUFFER_POST_SNAPSHOT_MISMATCH$") as error:
         _run(case, gateway)
+    assert error.value.stage == "pre_provider"
+    assert error.value.field is not None
     assert gateway.calls == []
     case.db.refresh(case.publication)
     case.db.refresh(case.attempt)
@@ -240,6 +242,81 @@ def test_true_pilot4_original_modern_destination_reconciles_exact_sent_post_once
         with pytest.raises(BufferReconciliationError, match="RECONCILIATION_REQUIRES_PUBLISH_UNKNOWN"):
             _run(case, second_gateway)
         assert second_gateway.calls == []
+    finally:
+        case.db.close()
+        case.engine.dispose()
+
+
+def test_phase_c_exact_sent_snapshot_with_verified_pinterest_link_reconciles(tmp_path):
+    case = _pilot4_case(tmp_path)
+    try:
+        publication = case.publication
+        draft = case.draft
+        title = "New Brand Official Eau de Toilette Spray for Men – 3.3 oz | New Brand Perfume"
+        description = (
+            "New Brand Perfume: explore New Brand Official Eau de Toilette Spray for Men – "
+            "3.3 oz at Diamond Shelf. Catalog audience: men."
+        )
+        alt_text = (
+            "New Brand Official Eau de Toilette Spray for Men – 3.3 oz product image "
+            "for Diamond Shelf"
+        )
+        destination = "https://diamondshelf.us/products/amofic34s"
+        utm = (
+            "https://diamondshelf.us/products/amofic34s?"
+            "utm_source=pinterest&utm_medium=organic_social&"
+            "utm_campaign=pinterest-autonomous-v1&utm_content=amofic34s-new-arrival"
+        )
+        media = (
+            "https://diamondshelf.replit.app/api/pins/public-creatives/"
+            "d33619c2-95c0-499f-9d24-1ff64e4b2c4d/"
+            "d05dfbc5c64cef64039c574853eed8b72998193c622a631423979628cb043344.png"
+        )
+        publication.title_snapshot = draft.title = title
+        publication.description_snapshot = draft.description = description
+        publication.alt_text_snapshot = draft.alt_text = alt_text
+        publication.destination_url = draft.destination_url = destination
+        publication.utm_url = draft.utm_url = utm
+        publication.media_url_snapshot = media
+        case.attempt.provider_operation_id = "6ab408353c9d972a44060ca0"
+        case.attempt.provider_external_link = "https://www.pinterest.com/pin/1093811828280487079"
+        case.attempt.request_fingerprint = request_fingerprint_for(publication)
+        case.db.commit()
+
+        class PhaseCGateway:
+            def __init__(self):
+                self.calls = []
+
+            async def post(self, operation_id):
+                self.calls.append(operation_id)
+                return BufferPostSnapshot(
+                    buffer_post_id=operation_id,
+                    status="sent",
+                    channel_id="channel",
+                    created_at="2026-09-23T17:11:09.782Z",
+                    due_at=None,
+                    sent_at="2026-09-23T17:11:10.000Z",
+                    external_link="https://www.pinterest.com/pin/1093811828280487079",
+                    channel_service="pinterest",
+                    text=description,
+                    pinterest_board_service_id=publication.pinterest_board_id_snapshot,
+                    pinterest_title=title,
+                    pinterest_url=utm,
+                    image_url=media,
+                    image_alt_text=alt_text,
+                )
+
+        gateway = PhaseCGateway()
+        result = _run(case, gateway)
+        case.db.refresh(case.attempt)
+
+        assert gateway.calls == ["6ab408353c9d972a44060ca0"]
+        assert result.status == PublicationStatus.PUBLISHED
+        assert result.error_code is None
+        assert result.pinterest_pin_id == "1093811828280487079"
+        assert case.attempt.status == "SUCCEEDED"
+        assert case.attempt.provider_operation_id == "6ab408353c9d972a44060ca0"
+        assert case.attempt.provider_pin_id == "1093811828280487079"
     finally:
         case.db.close()
         case.engine.dispose()

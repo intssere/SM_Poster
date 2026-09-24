@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import logging
 
 from sqlalchemy import select, update
 
@@ -19,6 +20,9 @@ from app.services.pinterest_publisher import PublicationReconciliationError, nor
 from app.services.routine_buffer_preflight import RoutineExecutionEvidence, evidence_matches
 from app.services.routine_dispatch_authorization import active_permit, validate_permit
 from app.services.routine_publishing_control import get_control, pause_on_unknown
+
+
+logger = logging.getLogger(__name__)
 
 
 class RoutineDispatchError(RuntimeError):
@@ -299,7 +303,18 @@ async def dispatch_routine_buffer(
     if result is not None and result.status == "sent":
         try:
             await reconcile_buffer(db, publication_id, actor="routine-worker", settings=settings, gateway=gateway)
-        except BufferReconciliationError:
+        except BufferReconciliationError as exc:
+            diagnostic = exc.safe_diagnostic()
+            logger.warning(
+                "routine_buffer_reconciliation_rejected",
+                extra={
+                    "buffer_publication_id": publication_id,
+                    "buffer_attempt_id": attempt_id,
+                    "buffer_reconciliation_code": diagnostic.get("code"),
+                    "buffer_reconciliation_stage": diagnostic.get("stage"),
+                    "buffer_reconciliation_field": diagnostic.get("field"),
+                },
+            )
             try:
                 db.execute(update(PinPublication).where(
                     PinPublication.id == publication_id,
