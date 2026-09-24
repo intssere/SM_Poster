@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.integrations.buffer.gateway import BufferPostSnapshot
 from app.models.domain import (
+    Board,
     ContentRevision,
     PinApproval,
     PinCreative,
@@ -190,6 +191,7 @@ def _historical_phase_c_case(tmp_path):
     attempt = case.attempt
 
     publication.board_id = case.legacy_board_id
+    publication.created_at = datetime(2026, 9, 23, 17, 0, tzinfo=timezone.utc)
     approval.decided_by = AUTONOMOUS_ACTOR
     approval.note = f"{AUTONOMOUS_NOTE_PREFIX}historical-phase-c"
 
@@ -324,7 +326,8 @@ def test_historical_phase_c_compatibility_fails_closed_before_provider_read(tmp_
         elif drift == "request_fingerprint":
             case.attempt.request_fingerprint = "y" * 64
         elif drift == "legacy_board":
-            case.publication.board_id = "different-board"
+            local_board = case.db.get(Board, case.legacy_board_id)
+            local_board.pinterest_board_id = "different-external-board"
         elif drift == "modern_board":
             case.board.external_board_id = "different-external-board"
         elif drift == "approval_actor":
