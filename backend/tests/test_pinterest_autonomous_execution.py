@@ -390,6 +390,7 @@ class _FakePublicationService:
         scheduled_for=None,
     ):
         self.calls += 1
+        assert board_id is None
         approval = self.db.get(PinApproval, approval_id)
         creative = self.db.get(PinCreative, approval.creative_id)
         row = PinPublication(
