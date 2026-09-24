@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
+from app.api.routes import buffer_reconciliation as reconciliation_route
 from app.integrations.buffer.gateway import BufferPostSnapshot
 from app.models.domain import (
     Board,
@@ -279,6 +280,53 @@ def _orm_column_state(row):
         column.key: getattr(row, column.key)
         for column in row.__mapper__.column_attrs
     })
+
+
+def test_provider_free_preflight_route_requires_auth_and_delegates_only_to_attestation(
+    monkeypatch,
+):
+    calls = []
+    expected = {
+        "eligible": True,
+        "pre_provider_eligible": True,
+        "provider_free": True,
+        "read_only": True,
+        "reconciliation_performed": False,
+        "code": None,
+        "stage": None,
+        "field": None,
+    }
+
+    def fake_attest(db, publication_id):
+        calls.append((db, publication_id))
+        return expected
+
+    monkeypatch.setattr(reconciliation_route, "attest_buffer_reconciliation_preflight", fake_attest)
+    monkeypatch.setattr(reconciliation_route, "current_user", lambda request: None)
+
+    with pytest.raises(Exception) as error:
+        reconciliation_route.attest_known_buffer_operation_preflight(
+            "publication",
+            object(),
+            object(),
+        )
+    assert getattr(error.value, "status_code", None) == 401
+    assert calls == []
+
+    db = object()
+    monkeypatch.setattr(
+        reconciliation_route,
+        "current_user",
+        lambda request: "operator@example.test",
+    )
+    observed = reconciliation_route.attest_known_buffer_operation_preflight(
+        "publication",
+        object(),
+        db,
+    )
+
+    assert observed == expected
+    assert calls == [(db, "publication")]
 
 
 def test_provider_free_preflight_attestation_is_read_only_and_never_constructs_gateway(
