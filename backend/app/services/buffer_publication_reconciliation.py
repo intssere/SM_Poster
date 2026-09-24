@@ -31,6 +31,18 @@ from app.services.routine_autonomous_authorization import (
 )
 
 
+TASK58_17_MERGED_AT = datetime(2026, 9, 24, 7, 40, 8, tzinfo=timezone.utc)
+HISTORICAL_MIXED_DESTINATION_MODE = "historical_mixed_modern_v1"
+
+
+def _utc(value):
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 class BufferReconciliationError(RuntimeError):
     """A bounded failure; never contains a provider body or credential."""
 
@@ -166,13 +178,15 @@ def _historical_mixed_destination_identity_valid(db, publication, attempt):
     """
     if (
         publication.board_id is None
+        or _utc(publication.created_at) is None
+        or _utc(publication.created_at) >= TASK58_17_MERGED_AT
         or not publication.pinterest_connection_id
         or not publication.pinterest_board_record_id
         or publication.error_code != "BUFFER_SENT_LINK_UNVERIFIED"
         or attempt.error_code != "BUFFER_SENT_LINK_UNVERIFIED"
         or attempt.provider_operation_status != "sent"
         or not attempt.provider_operation_id
-        or not attempt.provider_external_link
+        or pinterest_pin_id(attempt.provider_external_link) is None
         or attempt.request_fingerprint != request_fingerprint_for(publication)
         or not _legacy_board_identity_valid(db, publication)
         or not _modern_destination_lineage_valid(db, publication)
@@ -222,7 +236,7 @@ def _destination_identity_mode(db, publication, *, attempt=None):
         if attempt is not None and _historical_mixed_destination_identity_valid(
             db, publication, attempt
         ):
-            return "historical_mixed_modern_v1"
+            return HISTORICAL_MIXED_DESTINATION_MODE
         return None
     return "legacy" if _legacy_board_identity_valid(db, publication) else None
 
@@ -306,6 +320,10 @@ def _entry(db, publication_id, settings, *, stage="pre_provider"):
 
     metadata = attempt.safe_response_metadata or {}
     destination_mode = _destination_identity_mode(db, publication, attempt=attempt)
+    if destination_mode == HISTORICAL_MIXED_DESTINATION_MODE:
+        known.add(pinterest_pin_id(attempt.provider_external_link))
+        if len(known) > 1:
+            raise BufferReconciliationError("CONFLICTING_KNOWN_PROVIDER_PIN_IDS")
     guards = (
         ("publication_fingerprint", bool(publication.publication_fingerprint)),
         ("creative_id", bool(publication.creative_id)),
