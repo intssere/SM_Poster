@@ -418,9 +418,9 @@ def test_postgres_provider_free_preflight_attestation_is_read_only(
         assert result["code"] is None
         assert result["stage"] is None
         assert result["field"] is None
-        assert db.new == set()
-        assert db.dirty == set()
-        assert db.deleted == set()
+        assert not db.new
+        assert not db.dirty
+        assert not db.deleted
 
         db.expire_all()
         publication_after = db.get(PinPublication, publication.id)
