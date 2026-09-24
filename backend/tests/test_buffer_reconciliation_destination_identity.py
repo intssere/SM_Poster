@@ -373,9 +373,9 @@ def test_provider_free_preflight_attestation_is_read_only_and_never_constructs_g
             "stage": None,
             "field": None,
         }
-        assert case.db.new == set()
-        assert case.db.dirty == set()
-        assert case.db.deleted == set()
+        assert not case.db.new
+        assert not case.db.dirty
+        assert not case.db.deleted
 
         case.db.expire_all()
         publication_after = case.db.get(type(case.publication), case.publication.id)
@@ -428,9 +428,9 @@ def test_provider_free_preflight_attestation_returns_only_safe_guard_diagnostic(
             "stage": "pre_provider",
             "field": "destination_identity",
         }
-        assert case.db.new == set()
-        assert case.db.dirty == set()
-        assert case.db.deleted == set()
+        assert not case.db.new
+        assert not case.db.dirty
+        assert not case.db.deleted
     finally:
         case.db.close()
         case.engine.dispose()
