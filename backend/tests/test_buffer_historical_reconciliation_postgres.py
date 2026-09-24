@@ -441,6 +441,74 @@ def test_postgres_provider_free_preflight_attestation_is_read_only(
         engine.dispose()
 
 
+def test_postgres_historical_sent_snapshot_can_retain_persisted_pin_identity(
+    isolated_postgres: str,
+) -> None:
+    engine, db, publication, attempt, permit = _historical_case(
+        isolated_postgres,
+        legacy_board_external_id=None,
+    )
+    try:
+        original_external_link = attempt.provider_external_link
+        original_attempt_count = db.query(PublicationAttempt).filter_by(
+            publication_id=publication.id
+        ).count()
+
+        class HistoricalSentGateway(ExactGateway):
+            async def post(self, operation_id):
+                snapshot = await super().post(operation_id)
+                return BufferPostSnapshot(
+                    buffer_post_id=snapshot.buffer_post_id,
+                    status=snapshot.status,
+                    channel_id=snapshot.channel_id,
+                    created_at=snapshot.created_at,
+                    due_at=snapshot.due_at,
+                    sent_at=snapshot.sent_at,
+                    external_link=None,
+                    channel_service=snapshot.channel_service,
+                    text=snapshot.text,
+                    pinterest_board_service_id=snapshot.pinterest_board_service_id,
+                    pinterest_title=snapshot.pinterest_title,
+                    pinterest_url=snapshot.pinterest_url,
+                    image_url=snapshot.image_url,
+                    image_alt_text=snapshot.image_alt_text,
+                )
+
+        gateway = HistoricalSentGateway(publication)
+        result = asyncio.run(
+            reconcile_buffer(
+                db,
+                publication.id,
+                actor="operator",
+                settings=SETTINGS,
+                gateway=gateway,
+            )
+        )
+        db.refresh(attempt)
+        db.refresh(permit)
+
+        assert gateway.calls == [OPERATION_ID]
+        assert result.status == PublicationStatus.PUBLISHED
+        assert result.pinterest_pin_id == PIN_ID
+        assert attempt.status == "SUCCEEDED"
+        assert attempt.provider_pin_id == PIN_ID
+        assert attempt.provider_external_link == original_external_link
+        assert permit.status == "CONSUMED"
+        assert db.query(PublicationAttempt).filter_by(
+            publication_id=publication.id
+        ).count() == original_attempt_count
+        events = db.scalars(
+            sa.select(PublicationReconciliationEvent).where(
+                PublicationReconciliationEvent.publication_id == publication.id
+            )
+        ).all()
+        assert len(events) == 1
+        assert events[0].provider_pin_id == PIN_ID
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_postgres_historical_missing_legacy_board_external_id_reconciles(
     isolated_postgres: str,
 ) -> None:
