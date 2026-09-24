@@ -21,8 +21,14 @@ from app.models.domain import (
     PublicationReconciliationEvent,
     PublicationStatus,
 )
+from app.models.routine_publishing import RoutineDispatchPermit
+from app.services.fingerprints import publication_identity_fingerprint
 from app.services.publication_scheduler import request_fingerprint_for
 from app.services.pinterest_publisher import PublicationReconciliationError
+from app.services.routine_autonomous_authorization import (
+    AUTONOMOUS_ACTOR,
+    AUTONOMOUS_NOTE_PREFIX,
+)
 
 
 class BufferReconciliationError(RuntimeError):
@@ -93,12 +99,11 @@ def _legacy_board_identity_valid(db, publication):
     )
 
 
-def _modern_destination_identity_valid(db, publication):
+def _modern_destination_lineage_valid(db, publication):
     connection = db.get(PinterestConnection, publication.pinterest_connection_id)
     board_record = db.get(PinterestBoard, publication.pinterest_board_record_id)
     return bool(
-        publication.board_id is None
-        and connection is not None
+        connection is not None
         and board_record is not None
         and connection.provider == "pinterest"
         and connection.status == "CONNECTED"
@@ -113,14 +118,112 @@ def _modern_destination_identity_valid(db, publication):
     )
 
 
-def _destination_identity_mode(db, publication):
-    """Choose exactly one persisted destination mode; never fall back across modes."""
+def _modern_destination_identity_valid(db, publication):
+    return bool(
+        publication.board_id is None
+        and _modern_destination_lineage_valid(db, publication)
+    )
+
+
+def _historical_publication_fingerprint_valid(publication):
+    required = (
+        publication.draft_id,
+        publication.creative_id,
+        publication.source_image_id,
+        publication.board_id,
+        publication.pinterest_connection_id,
+        publication.pinterest_board_record_id,
+        publication.pinterest_board_id_snapshot,
+        publication.destination_url,
+        publication.utm_url,
+        publication.publication_fingerprint,
+    )
+    if not all(required):
+        return False
+    expected = publication_identity_fingerprint(
+        draft_id=publication.draft_id,
+        revision_id=publication.revision_id,
+        creative_id=publication.creative_id,
+        source_image_id=publication.source_image_id,
+        board_id=publication.board_id,
+        integration_account_id=publication.integration_account_id,
+        destination_url=publication.destination_url,
+        utm_url=publication.utm_url,
+        pinterest_connection_id=publication.pinterest_connection_id,
+        pinterest_board_record_id=publication.pinterest_board_record_id,
+        pinterest_board_id_snapshot=publication.pinterest_board_id_snapshot,
+    )
+    return publication.publication_fingerprint == expected
+
+
+def _historical_mixed_destination_identity_valid(db, publication, attempt):
+    """Permit only the pre-58.17 autonomous Phase C mixed-identity shape.
+
+    This is reconciliation compatibility, never identity repair: the immutable
+    publication and request fingerprints must already match the historical row.
+    The sole routine permit must already be consumed, proving this path cannot
+    authorize or redispatch another Buffer mutation.
+    """
+    if (
+        publication.board_id is None
+        or not publication.pinterest_connection_id
+        or not publication.pinterest_board_record_id
+        or publication.error_code != "BUFFER_SENT_LINK_UNVERIFIED"
+        or attempt.error_code != "BUFFER_SENT_LINK_UNVERIFIED"
+        or attempt.provider_operation_status != "sent"
+        or not attempt.provider_operation_id
+        or not attempt.provider_external_link
+        or attempt.request_fingerprint != request_fingerprint_for(publication)
+        or not _legacy_board_identity_valid(db, publication)
+        or not _modern_destination_lineage_valid(db, publication)
+        or not _historical_publication_fingerprint_valid(publication)
+    ):
+        return False
+
+    approval = db.get(PinApproval, publication.approval_id) if publication.approval_id else None
+    if (
+        approval is None
+        or approval.decided_by != AUTONOMOUS_ACTOR
+        or not (approval.note or "").startswith(AUTONOMOUS_NOTE_PREFIX)
+    ):
+        return False
+
+    permits = list(db.scalars(
+        select(RoutineDispatchPermit).where(
+            RoutineDispatchPermit.publication_id == publication.id
+        )
+    ).all())
+    if len(permits) != 1:
+        return False
+    permit = permits[0]
+    return bool(
+        permit.status == "CONSUMED"
+        and permit.consumed_at is not None
+        and permit.dispatch_provider == "buffer"
+        and permit.authorized_by == AUTONOMOUS_ACTOR
+        and permit.approval_id == publication.approval_id
+        and permit.pinterest_board_record_id == publication.pinterest_board_record_id
+        and permit.publication_fingerprint == publication.publication_fingerprint
+        and permit.request_fingerprint == attempt.request_fingerprint
+        and permit.request_fingerprint == request_fingerprint_for(publication)
+        and permit.scheduled_for_snapshot == publication.scheduled_for
+    )
+
+
+def _destination_identity_mode(db, publication, *, attempt=None):
+    """Choose one exact destination mode; historical compatibility is explicit."""
     connection_id = publication.pinterest_connection_id
     board_record_id = publication.pinterest_board_record_id
     if bool(connection_id) != bool(board_record_id):
         return None
     if connection_id and board_record_id:
-        return "modern" if _modern_destination_identity_valid(db, publication) else None
+        if _modern_destination_identity_valid(db, publication):
+            return "modern"
+        if attempt is not None and _historical_mixed_destination_identity_valid(
+            db, publication, attempt
+        ):
+            return "historical_mixed_modern_v1"
+        return None
     return "legacy" if _legacy_board_identity_valid(db, publication) else None
 
 
@@ -202,7 +305,7 @@ def _entry(db, publication_id, settings, *, stage="pre_provider"):
         raise BufferReconciliationError("CONFLICTING_KNOWN_PROVIDER_PIN_IDS")
 
     metadata = attempt.safe_response_metadata or {}
-    destination_mode = _destination_identity_mode(db, publication)
+    destination_mode = _destination_identity_mode(db, publication, attempt=attempt)
     guards = (
         ("publication_fingerprint", bool(publication.publication_fingerprint)),
         ("creative_id", bool(publication.creative_id)),
