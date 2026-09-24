@@ -1,10 +1,12 @@
 import asyncio
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 
+from app.api.routes import buffer_reconciliation as reconciliation_route
 from app.integrations.buffer.gateway import BufferPostSnapshot
 from app.models.domain import (
     Board,
@@ -20,7 +22,12 @@ from app.models.domain import (
     PublicationStatus,
 )
 from app.models.routine_publishing import RoutineDispatchPermit
-from app.services.buffer_publication_reconciliation import BufferReconciliationError, reconcile_buffer
+from app.services import buffer_publication_reconciliation as reconciliation_service
+from app.services.buffer_publication_reconciliation import (
+    BufferReconciliationError,
+    attest_buffer_reconciliation_preflight,
+    reconcile_buffer,
+)
 from app.services.fingerprints import publication_identity_fingerprint
 from app.services.publication_scheduler import request_fingerprint_for
 from app.services.routine_autonomous_authorization import AUTONOMOUS_ACTOR, AUTONOMOUS_NOTE_PREFIX
@@ -266,6 +273,167 @@ def _assert_pre_provider_rejection(case):
     assert case.db.scalars(select(PublicationReconciliationEvent).where(
         PublicationReconciliationEvent.publication_id == case.publication.id
     )).all() == []
+
+
+def _orm_column_state(row):
+    return deepcopy({
+        column.key: getattr(row, column.key)
+        for column in row.__mapper__.column_attrs
+    })
+
+
+def test_provider_free_preflight_route_requires_auth_and_delegates_only_to_attestation(
+    monkeypatch,
+):
+    calls = []
+    expected = {
+        "eligible": True,
+        "pre_provider_eligible": True,
+        "provider_free": True,
+        "read_only": True,
+        "reconciliation_performed": False,
+        "code": None,
+        "stage": None,
+        "field": None,
+    }
+
+    def fake_attest(db, publication_id):
+        calls.append((db, publication_id))
+        return expected
+
+    monkeypatch.setattr(reconciliation_route, "attest_buffer_reconciliation_preflight", fake_attest)
+    monkeypatch.setattr(reconciliation_route, "current_user", lambda request: None)
+
+    with pytest.raises(Exception) as error:
+        reconciliation_route.attest_known_buffer_operation_preflight(
+            "publication",
+            object(),
+            object(),
+        )
+    assert getattr(error.value, "status_code", None) == 401
+    assert calls == []
+
+    db = object()
+    monkeypatch.setattr(
+        reconciliation_route,
+        "current_user",
+        lambda request: "operator@example.test",
+    )
+    observed = reconciliation_route.attest_known_buffer_operation_preflight(
+        "publication",
+        object(),
+        db,
+    )
+
+    assert observed == expected
+    assert calls == [(db, "publication")]
+
+
+def test_provider_free_preflight_attestation_is_read_only_and_never_constructs_gateway(
+    tmp_path,
+    monkeypatch,
+):
+    case = _historical_phase_c_case(tmp_path)
+    try:
+        local_board = case.db.get(Board, case.legacy_board_id)
+        local_board.pinterest_board_id = None
+        case.db.commit()
+
+        publication_before = _orm_column_state(case.publication)
+        attempt_before = _orm_column_state(case.attempt)
+        permit_before = _orm_column_state(case.permit)
+        events_before = [
+            _orm_column_state(row)
+            for row in case.db.scalars(
+                select(PublicationReconciliationEvent).where(
+                    PublicationReconciliationEvent.publication_id == case.publication.id
+                )
+            ).all()
+        ]
+
+        class ForbiddenGateway:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("BufferGateway must never be constructed by preflight")
+
+        monkeypatch.setattr(reconciliation_service, "BufferGateway", ForbiddenGateway)
+
+        result = attest_buffer_reconciliation_preflight(
+            case.db,
+            case.publication.id,
+            settings=SETTINGS,
+        )
+
+        assert result == {
+            "eligible": True,
+            "pre_provider_eligible": True,
+            "provider_free": True,
+            "read_only": True,
+            "reconciliation_performed": False,
+            "code": None,
+            "stage": None,
+            "field": None,
+        }
+        assert not case.db.new
+        assert not case.db.dirty
+        assert not case.db.deleted
+
+        case.db.expire_all()
+        publication_after = case.db.get(type(case.publication), case.publication.id)
+        attempt_after = case.db.get(PublicationAttempt, case.attempt.id)
+        permit_after = case.db.get(RoutineDispatchPermit, case.permit.id)
+        events_after = case.db.scalars(
+            select(PublicationReconciliationEvent).where(
+                PublicationReconciliationEvent.publication_id == case.publication.id
+            )
+        ).all()
+
+        assert _orm_column_state(publication_after) == publication_before
+        assert _orm_column_state(attempt_after) == attempt_before
+        assert _orm_column_state(permit_after) == permit_before
+        assert [_orm_column_state(row) for row in events_after] == events_before
+    finally:
+        case.db.close()
+        case.engine.dispose()
+
+
+def test_provider_free_preflight_attestation_returns_only_safe_guard_diagnostic(
+    tmp_path,
+    monkeypatch,
+):
+    case = _historical_phase_c_case(tmp_path)
+    try:
+        local_board = case.db.get(Board, case.legacy_board_id)
+        local_board.pinterest_board_id = "different-external-board"
+        case.db.commit()
+
+        class ForbiddenGateway:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("BufferGateway must never be constructed by preflight")
+
+        monkeypatch.setattr(reconciliation_service, "BufferGateway", ForbiddenGateway)
+
+        result = attest_buffer_reconciliation_preflight(
+            case.db,
+            case.publication.id,
+            settings=SETTINGS,
+        )
+
+        assert result == {
+            "eligible": False,
+            "pre_provider_eligible": False,
+            "provider_free": True,
+            "read_only": True,
+            "reconciliation_performed": False,
+            "code": "BUFFER_POST_SNAPSHOT_MISMATCH",
+            "stage": "pre_provider",
+            "field": "destination_identity",
+        }
+        assert not case.db.new
+        assert not case.db.dirty
+        assert not case.db.deleted
+    finally:
+        case.db.close()
+        case.engine.dispose()
 
 
 def test_historical_phase_c_missing_legacy_board_external_id_reconciles(tmp_path):

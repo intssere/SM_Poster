@@ -374,6 +374,41 @@ def _entry(db, publication_id, settings, *, stage="pre_provider"):
     return publication, attempt, known
 
 
+def attest_buffer_reconciliation_preflight(db, publication_id, *, settings=None):
+    """Evaluate the exact pre-provider reconciliation guards without provider I/O.
+
+    This attestation is intentionally read-only: it never constructs a gateway,
+    never reconciles state, and never persists an audit/event. Only bounded safe
+    diagnostics are returned.
+    """
+    settings = settings or get_settings()
+    try:
+        with db.no_autoflush:
+            _entry(db, publication_id, settings, stage="pre_provider")
+    except BufferReconciliationError as exc:
+        diagnostic = exc.safe_diagnostic()
+        return {
+            "eligible": False,
+            "pre_provider_eligible": False,
+            "provider_free": True,
+            "read_only": True,
+            "reconciliation_performed": False,
+            "code": diagnostic.get("code"),
+            "stage": diagnostic.get("stage"),
+            "field": diagnostic.get("field"),
+        }
+    return {
+        "eligible": True,
+        "pre_provider_eligible": True,
+        "provider_free": True,
+        "read_only": True,
+        "reconciliation_performed": False,
+        "code": None,
+        "stage": None,
+        "field": None,
+    }
+
+
 async def reconcile_buffer(db, publication_id, *, actor, settings=None, gateway=None):
     if not isinstance(actor, str) or not actor.strip() or len(actor) > 255 or any(ord(c) < 32 for c in actor):
         raise BufferReconciliationError("ACTOR_REQUIRED")

@@ -29,12 +29,15 @@ from app.models.domain import (
     Product,
     ProductImage,
     PublicationAttempt,
+    PublicationReconciliationEvent,
     PublicationStatus,
     Store,
 )
 from app.models.routine_publishing import RoutineDispatchPermit
+from app.services import buffer_publication_reconciliation as reconciliation_service
 from app.services.buffer_publication_reconciliation import (
     BufferReconciliationError,
+    attest_buffer_reconciliation_preflight,
     reconcile_buffer,
 )
 from app.services.fingerprints import publication_identity_fingerprint
@@ -365,6 +368,77 @@ def _historical_case(url: str, *, legacy_board_external_id=EXTERNAL_BOARD_ID):
     db.add(permit)
     db.commit()
     return engine, db, publication, attempt, permit
+
+
+def _orm_column_state(row):
+    return {
+        column.key: getattr(row, column.key)
+        for column in row.__mapper__.column_attrs
+    }
+
+
+def test_postgres_provider_free_preflight_attestation_is_read_only(
+    isolated_postgres: str,
+    monkeypatch,
+) -> None:
+    engine, db, publication, attempt, permit = _historical_case(
+        isolated_postgres,
+        legacy_board_external_id=None,
+    )
+    try:
+        publication_before = _orm_column_state(publication)
+        attempt_before = _orm_column_state(attempt)
+        permit_before = _orm_column_state(permit)
+        events_before = [
+            _orm_column_state(row)
+            for row in db.scalars(
+                sa.select(PublicationReconciliationEvent).where(
+                    PublicationReconciliationEvent.publication_id == publication.id
+                )
+            ).all()
+        ]
+
+        class GuardedGateway:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("preflight must not construct BufferGateway")
+
+        monkeypatch.setattr(reconciliation_service, "BufferGateway", GuardedGateway)
+
+        result = attest_buffer_reconciliation_preflight(
+            db,
+            publication.id,
+            settings=SETTINGS,
+        )
+
+        assert result["eligible"] is True
+        assert result["pre_provider_eligible"] is True
+        assert result["provider_free"] is True
+        assert result["read_only"] is True
+        assert result["reconciliation_performed"] is False
+        assert result["code"] is None
+        assert result["stage"] is None
+        assert result["field"] is None
+        assert not db.new
+        assert not db.dirty
+        assert not db.deleted
+
+        db.expire_all()
+        publication_after = db.get(PinPublication, publication.id)
+        attempt_after = db.get(PublicationAttempt, attempt.id)
+        permit_after = db.get(RoutineDispatchPermit, permit.id)
+        events_after = db.scalars(
+            sa.select(PublicationReconciliationEvent).where(
+                PublicationReconciliationEvent.publication_id == publication.id
+            )
+        ).all()
+
+        assert _orm_column_state(publication_after) == publication_before
+        assert _orm_column_state(attempt_after) == attempt_before
+        assert _orm_column_state(permit_after) == permit_before
+        assert [_orm_column_state(row) for row in events_after] == events_before
+    finally:
+        db.close()
+        engine.dispose()
 
 
 def test_postgres_historical_missing_legacy_board_external_id_reconciles(
