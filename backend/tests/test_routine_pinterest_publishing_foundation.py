@@ -180,8 +180,8 @@ async def test_dry_run_creates_no_attempt_or_claim(monkeypatch):
     dummy_evidence = SimpleNamespace(publication_id=publication.id)
     monkeypatch.setattr(worker, "active_permit", lambda *a, **k: dummy_permit)
     monkeypatch.setattr(worker, "validate_permit", lambda *a, **k: {"valid": True, "status": "ACTIVE"})
-    async def preflight(*a, **k): return dummy_evidence
-    monkeypatch.setattr(worker, "build_routine_execution_evidence", preflight)
+    def offline_preflight(*a, **k): return dummy_evidence
+    monkeypatch.setattr(worker, "build_routine_offline_evidence", offline_preflight)
     settings = Settings(
         database_url="sqlite:///:memory:", routine_pinterest_worker_enabled=True,
         routine_buffer_dispatch_enabled=True, routine_pinterest_dry_run=True,
@@ -304,10 +304,10 @@ async def test_targeted_dry_run_selects_exact_publication_without_scanning_older
     monkeypatch.setattr(worker, "active_permit", fake_active_permit)
     monkeypatch.setattr(worker, "validate_permit", lambda *a, **k: {"valid": True, "status": "ACTIVE"})
 
-    async def preflight(*a, **k):
+    def offline_preflight(*a, **k):
         return dummy_evidence
 
-    monkeypatch.setattr(worker, "build_routine_execution_evidence", preflight)
+    monkeypatch.setattr(worker, "build_routine_offline_evidence", offline_preflight)
     settings = Settings(
         database_url="sqlite:///:memory:",
         routine_pinterest_worker_enabled=True,

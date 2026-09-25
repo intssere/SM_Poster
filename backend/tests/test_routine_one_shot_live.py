@@ -579,3 +579,117 @@ async def test_live_route_rejects_non_single_dispatch_result_and_pauses(
     assert raised.value.detail == expected_detail
     assert states[0][0] == "LIVE"
     assert states[-1][0] == "PAUSED"
+
+
+@pytest.mark.asyncio
+async def test_targeted_dry_run_uses_offline_preflight_and_never_live_provider_path(monkeypatch):
+    from app.services import routine_pinterest_worker as worker
+
+    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    publication = SimpleNamespace(
+        id=PUB_ID,
+        status=PublicationStatus.SCHEDULED,
+        scheduled_for=now,
+    )
+    db = FakeDB(publication)
+    run = _run()
+    permit = SimpleNamespace(id=PERMIT_ID)
+    offline_calls = []
+
+    settings = _persistent_settings(
+        routine_pinterest_worker_enabled=True,
+        routine_buffer_dispatch_enabled=False,
+        routine_pinterest_dry_run=True,
+    )
+    monkeypatch.setattr(worker, "get_control", lambda db_: SimpleNamespace(state="DRY_RUN", pause_reason=None))
+    monkeypatch.setattr(worker, "start_run", lambda *a, **k: run)
+    monkeypatch.setattr(worker, "heartbeat_run", lambda *a, **k: run)
+    monkeypatch.setattr(worker, "finish_run", lambda *a, **k: run)
+    monkeypatch.setattr(worker, "active_permit", lambda *a, **k: permit)
+    monkeypatch.setattr(worker, "validate_permit", lambda *a, **k: {"valid": True, "status": "ACTIVE"})
+
+    def offline(db_, publication_, *, permit, now):
+        offline_calls.append((publication_.id, permit.id))
+        return SimpleNamespace(external_requests=0)
+
+    async def forbidden_live_preflight(*args, **kwargs):
+        raise AssertionError("DRY_RUN must not enter Buffer/media provider preflight")
+
+    async def forbidden_dispatch(*args, **kwargs):
+        raise AssertionError("DRY_RUN must not dispatch")
+
+    monkeypatch.setattr(worker, "build_routine_offline_evidence", offline)
+    monkeypatch.setattr(worker, "build_routine_execution_evidence", forbidden_live_preflight)
+    monkeypatch.setattr(worker, "dispatch_routine_buffer", forbidden_dispatch)
+
+    result = await worker.run_once(
+        db,
+        settings=settings,
+        now=now,
+        target_publication_id=PUB_ID,
+        target_permit_id=PERMIT_ID,
+    )
+
+    assert result["status"] == "SUCCEEDED"
+    assert result["mode"] == "DRY_RUN"
+    assert result["scanned"] == 1
+    assert result["eligible"] == 1
+    assert result["skipped"] == 0
+    assert result["claimed"] == 0
+    assert result["dispatched"] == 0
+    assert result["published"] == 0
+    assert result["failed"] == 0
+    assert result["unknown"] == 0
+    assert offline_calls == [(PUB_ID, PERMIT_ID)]
+
+
+@pytest.mark.asyncio
+async def test_targeted_dry_run_fails_closed_on_offline_preflight_error(monkeypatch):
+    from app.services import routine_pinterest_worker as worker
+    from app.services.routine_offline_preflight import RoutineOfflinePreflightError
+
+    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    publication = SimpleNamespace(id=PUB_ID, status=PublicationStatus.SCHEDULED, scheduled_for=now)
+    db = FakeDB(publication)
+    run = _run()
+    permit = SimpleNamespace(id=PERMIT_ID)
+    settings = _persistent_settings(
+        routine_pinterest_worker_enabled=True,
+        routine_buffer_dispatch_enabled=False,
+        routine_pinterest_dry_run=True,
+    )
+
+    monkeypatch.setattr(worker, "get_control", lambda db_: SimpleNamespace(state="DRY_RUN", pause_reason=None))
+    monkeypatch.setattr(worker, "start_run", lambda *a, **k: run)
+    monkeypatch.setattr(worker, "heartbeat_run", lambda *a, **k: run)
+    monkeypatch.setattr(worker, "finish_run", lambda *a, **k: run)
+    monkeypatch.setattr(worker, "active_permit", lambda *a, **k: permit)
+    monkeypatch.setattr(worker, "validate_permit", lambda *a, **k: {"valid": True, "status": "ACTIVE"})
+    monkeypatch.setattr(
+        worker,
+        "build_routine_offline_evidence",
+        lambda *a, **k: (_ for _ in ()).throw(
+            RoutineOfflinePreflightError("PERSISTED_PINTEREST_ROUTING_TOO_OLD")
+        ),
+    )
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("provider path must remain unreachable")
+
+    monkeypatch.setattr(worker, "build_routine_execution_evidence", forbidden)
+    monkeypatch.setattr(worker, "dispatch_routine_buffer", forbidden)
+
+    result = await worker.run_once(
+        db,
+        settings=settings,
+        now=now,
+        target_publication_id=PUB_ID,
+        target_permit_id=PERMIT_ID,
+    )
+
+    assert result["status"] == "SUCCEEDED"
+    assert result["eligible"] == 1
+    assert result["skipped"] == 1
+    assert result["claimed"] == 0
+    assert result["dispatched"] == 0
+    assert result["error_code"] == "PERSISTED_PINTEREST_ROUTING_TOO_OLD"
