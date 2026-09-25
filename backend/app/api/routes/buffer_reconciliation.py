@@ -33,11 +33,20 @@ def attest_known_buffer_operation_preflight(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    """Evaluate exact pre-provider guards without provider I/O or persistence."""
+    """Evaluate exact pre-provider guards and the safe HTTP write contract."""
     actor = current_user(request)
     if not actor:
         raise HTTPException(401, "Authentication required")
-    return attest_buffer_reconciliation_preflight(db, publication_id)
+    result = attest_buffer_reconciliation_preflight(db, publication_id)
+    return {
+        **result,
+        "transport_contract": {
+            "origin_required": True,
+            "authenticated_session_required": True,
+            "confirmation_required": True,
+            "confirmation_text_version": BUFFER_RECONCILIATION_CONFIRMATION_VERSION,
+        },
+    }
 
 
 @router.get("/{publication_id}/reconcile-buffer/receipt")
