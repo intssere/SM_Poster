@@ -8,6 +8,7 @@ from app.db.session import get_db
 from app.services.buffer_publication_reconciliation import (
     BufferReconciliationError,
     attest_buffer_reconciliation_preflight,
+    attest_buffer_reconciliation_receipt,
     reconcile_buffer,
 )
 from app.services.pinterest_publisher import PublicationReconciliationError
@@ -37,6 +38,19 @@ def attest_known_buffer_operation_preflight(
     if not actor:
         raise HTTPException(401, "Authentication required")
     return attest_buffer_reconciliation_preflight(db, publication_id)
+
+
+@router.get("/{publication_id}/reconcile-buffer/receipt")
+def attest_known_buffer_operation_receipt(
+    publication_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Read persisted reconciliation execution evidence without provider I/O."""
+    actor = current_user(request)
+    if not actor:
+        raise HTTPException(401, "Authentication required")
+    return attest_buffer_reconciliation_receipt(db, publication_id)
 
 
 @router.post("/{publication_id}/reconcile-buffer")

@@ -33,6 +33,10 @@ from app.services.routine_autonomous_authorization import (
 
 TASK58_17_MERGED_AT = datetime(2026, 9, 24, 7, 40, 8, tzinfo=timezone.utc)
 HISTORICAL_MIXED_DESTINATION_MODE = "historical_mixed_modern_v1"
+RECONCILIATION_RECEIPT_VERSION = "BUFFER_RECONCILIATION_RECEIPT_V1"
+RECONCILIATION_RECEIPTS_KEY = "buffer_reconciliation_receipts"
+RECONCILIATION_RECEIPT_TOTAL_KEY = "buffer_reconciliation_receipt_total"
+RECONCILIATION_RECEIPT_HISTORY_LIMIT = 8
 
 
 def _utc(value):
@@ -374,6 +378,178 @@ def _entry(db, publication_id, settings, *, stage="pre_provider"):
     return publication, attempt, known
 
 
+def _receipt_metadata(metadata, sequence, *, phase=None, provider_read_started=None,
+                      provider_read_completed=None, provider_operation_status=None,
+                      fallback_selected=None, code=None, stage=None, field=None):
+    """Return a copied metadata document with one bounded safe receipt updated."""
+    safe = dict(metadata or {})
+    raw_history = safe.get(RECONCILIATION_RECEIPTS_KEY)
+    history = [dict(item) for item in raw_history if isinstance(item, dict)] if isinstance(raw_history, list) else []
+    target = None
+    for item in history:
+        if item.get("version") == RECONCILIATION_RECEIPT_VERSION and item.get("sequence") == sequence:
+            target = item
+            break
+    if target is None:
+        raise PublicationReconciliationError("BUFFER_RECONCILIATION_RECEIPT_MISSING")
+    updates = {
+        "phase": phase,
+        "provider_read_started": provider_read_started,
+        "provider_read_completed": provider_read_completed,
+        "provider_operation_status": provider_operation_status,
+        "fallback_selected": fallback_selected,
+        "code": code,
+        "stage": stage,
+        "field": field,
+    }
+    for key, value in updates.items():
+        if value is not None:
+            target[key] = value
+    safe[RECONCILIATION_RECEIPTS_KEY] = history[-RECONCILIATION_RECEIPT_HISTORY_LIMIT:]
+    return safe
+
+
+def _begin_reconciliation_receipt(db, publication_id):
+    """Persist request-arrival evidence before any provider I/O when one Buffer attempt is identifiable."""
+    publication = db.get(PinPublication, publication_id, populate_existing=True)
+    if publication is None or publication.status != PublicationStatus.PUBLISH_UNKNOWN:
+        return None, None
+    attempts = list(db.scalars(
+        select(PublicationAttempt).where(
+            PublicationAttempt.publication_id == publication_id,
+            PublicationAttempt.dispatch_provider == "buffer",
+        ).with_for_update()
+    ).all())
+    if len(attempts) != 1:
+        return None, None
+    attempt = attempts[0]
+    metadata = dict(attempt.safe_response_metadata or {})
+    raw_history = metadata.get(RECONCILIATION_RECEIPTS_KEY)
+    history = [dict(item) for item in raw_history if isinstance(item, dict)] if isinstance(raw_history, list) else []
+    raw_total = metadata.get(RECONCILIATION_RECEIPT_TOTAL_KEY)
+    total = raw_total if type(raw_total) is int and raw_total >= 0 else len(history)
+    sequence = total + 1
+    history.append({
+        "version": RECONCILIATION_RECEIPT_VERSION,
+        "sequence": sequence,
+        "phase": "INVOCATION_RECEIVED",
+        "provider_read_started": False,
+        "provider_read_completed": False,
+        "provider_operation_status": None,
+        "fallback_selected": False,
+        "code": None,
+        "stage": None,
+        "field": None,
+    })
+    metadata[RECONCILIATION_RECEIPTS_KEY] = history[-RECONCILIATION_RECEIPT_HISTORY_LIMIT:]
+    metadata[RECONCILIATION_RECEIPT_TOTAL_KEY] = sequence
+    attempt.safe_response_metadata = metadata
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise PublicationReconciliationError("BUFFER_RECONCILIATION_RECEIPT_PERSISTENCE_FAILED") from None
+    return attempt.id, sequence
+
+
+def _persist_receipt_phase(db, attempt_id, sequence, *, phase, provider_read_started=None,
+                           provider_read_completed=None, provider_operation_status=None,
+                           fallback_selected=None, code=None, stage=None, field=None):
+    if attempt_id is None or sequence is None:
+        return
+    try:
+        attempt = db.scalar(
+            select(PublicationAttempt).where(PublicationAttempt.id == attempt_id)
+            .execution_options(populate_existing=True).with_for_update()
+        )
+        if attempt is None:
+            raise PublicationReconciliationError("BUFFER_RECONCILIATION_RECEIPT_MISSING")
+        attempt.safe_response_metadata = _receipt_metadata(
+            attempt.safe_response_metadata,
+            sequence,
+            phase=phase,
+            provider_read_started=provider_read_started,
+            provider_read_completed=provider_read_completed,
+            provider_operation_status=provider_operation_status,
+            fallback_selected=fallback_selected,
+            code=code,
+            stage=stage,
+            field=field,
+        )
+        db.commit()
+    except PublicationReconciliationError:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise PublicationReconciliationError("BUFFER_RECONCILIATION_RECEIPT_PERSISTENCE_FAILED") from None
+
+
+def _persist_rejection_receipt(db, attempt_id, sequence, phase, exc, *, provider_status=None,
+                               read_started=False, read_completed=False, fallback_selected=False):
+    diagnostic = exc.safe_diagnostic()
+    _persist_receipt_phase(
+        db,
+        attempt_id,
+        sequence,
+        phase=phase,
+        provider_read_started=read_started,
+        provider_read_completed=read_completed,
+        provider_operation_status=provider_status,
+        fallback_selected=fallback_selected,
+        code=diagnostic.get("code"),
+        stage=diagnostic.get("stage"),
+        field=diagnostic.get("field"),
+    )
+
+
+def attest_buffer_reconciliation_receipt(db, publication_id):
+    """Return only bounded execution evidence already persisted in attempt metadata."""
+    with db.no_autoflush:
+        attempts = list(db.scalars(select(PublicationAttempt).where(
+            PublicationAttempt.publication_id == publication_id,
+            PublicationAttempt.dispatch_provider == "buffer",
+        )).all())
+        if len(attempts) != 1:
+            return {
+                "provider_free": True,
+                "read_only": True,
+                "receipt_present": False,
+                "invocation_count": 0,
+                "sequence": None,
+                "phase": None,
+                "provider_read_started": False,
+                "provider_read_completed": False,
+                "provider_operation_status": None,
+                "fallback_selected": False,
+                "code": None,
+                "stage": None,
+                "field": None,
+            }
+        metadata = attempts[0].safe_response_metadata or {}
+        raw_history = metadata.get(RECONCILIATION_RECEIPTS_KEY)
+        history = [item for item in raw_history if isinstance(item, dict)] if isinstance(raw_history, list) else []
+        history = [item for item in history if item.get("version") == RECONCILIATION_RECEIPT_VERSION]
+        latest = history[-1] if history else None
+        raw_total = metadata.get(RECONCILIATION_RECEIPT_TOTAL_KEY)
+        count = raw_total if type(raw_total) is int and raw_total >= 0 else len(history)
+        return {
+            "provider_free": True,
+            "read_only": True,
+            "receipt_present": latest is not None,
+            "invocation_count": count,
+            "sequence": latest.get("sequence") if latest else None,
+            "phase": latest.get("phase") if latest else None,
+            "provider_read_started": latest.get("provider_read_started") is True if latest else False,
+            "provider_read_completed": latest.get("provider_read_completed") is True if latest else False,
+            "provider_operation_status": latest.get("provider_operation_status") if latest else None,
+            "fallback_selected": latest.get("fallback_selected") is True if latest else False,
+            "code": latest.get("code") if latest else None,
+            "stage": latest.get("stage") if latest else None,
+            "field": latest.get("field") if latest else None,
+        }
+
+
 def attest_buffer_reconciliation_preflight(db, publication_id, *, settings=None):
     """Evaluate the exact pre-provider reconciliation guards without provider I/O.
 
@@ -413,68 +589,187 @@ async def reconcile_buffer(db, publication_id, *, actor, settings=None, gateway=
     if not isinstance(actor, str) or not actor.strip() or len(actor) > 255 or any(ord(c) < 32 for c in actor):
         raise BufferReconciliationError("ACTOR_REQUIRED")
     settings = settings or get_settings()
-    publication, attempt, known = _entry(db, publication_id, settings, stage="pre_provider")
+    receipt_attempt_id, receipt_sequence = _begin_reconciliation_receipt(db, publication_id)
+    try:
+        publication, attempt, known = _entry(db, publication_id, settings, stage="pre_provider")
+    except BufferReconciliationError as exc:
+        _persist_rejection_receipt(
+            db, receipt_attempt_id, receipt_sequence, "PRE_PROVIDER_REJECTED", exc
+        )
+        raise
+
     operation_id = attempt.provider_operation_id
     expected_request = attempt.request_fingerprint
     gateway = gateway or BufferGateway(settings)
+
+    # This durable boundary is committed before provider I/O. If execution becomes
+    # externally ambiguous, receipt attestation can prove whether a read could have occurred.
+    _persist_receipt_phase(
+        db,
+        receipt_attempt_id,
+        receipt_sequence,
+        phase="PROVIDER_READ_STARTED",
+        provider_read_started=True,
+    )
     try:
         snapshot = await gateway.post(operation_id)
     except (BufferReadError, BufferConfigurationError):
+        _persist_receipt_phase(
+            db,
+            receipt_attempt_id,
+            receipt_sequence,
+            phase="PROVIDER_READ_FAILED",
+            provider_read_started=True,
+            code="BUFFER_RECONCILIATION_READ_FAILED",
+        )
         raise BufferReconciliationError("BUFFER_RECONCILIATION_READ_FAILED") from None
-    # Re-read after I/O; no stale ORM state may authorize a terminal transition.
-    publication, attempt, known = _entry(
-        db, publication_id, settings, stage="post_provider_revalidation"
+
+    _persist_receipt_phase(
+        db,
+        receipt_attempt_id,
+        receipt_sequence,
+        phase="PROVIDER_READ_COMPLETED",
+        provider_read_started=True,
+        provider_read_completed=True,
+        provider_operation_status=snapshot.status,
     )
-    if operation_id != attempt.provider_operation_id or expected_request != attempt.request_fingerprint:
-        raise BufferReconciliationError("BUFFER_OPERATION_CONFLICT")
-    if snapshot.buffer_post_id != operation_id:
-        raise BufferReconciliationError(
-            "BUFFER_POST_SNAPSHOT_MISMATCH",
-            stage="provider_snapshot",
-            field="provider_operation_id",
-        )
-    mismatch = snapshot_mismatch_field(publication, snapshot, settings)
-    if mismatch is not None:
-        raise BufferReconciliationError(
-            "BUFFER_POST_SNAPSHOT_MISMATCH",
-            stage="provider_snapshot",
-            field=mismatch,
-        )
-    pin = pinterest_pin_id(snapshot.external_link) if snapshot.status == "sent" else None
+
     retained_persisted_external_link = False
-    if snapshot.status == "sent" and not pin:
-        destination_mode = _destination_identity_mode(db, publication, attempt=attempt)
-        persisted_pin = pinterest_pin_id(attempt.provider_external_link)
-        if (
-            destination_mode == HISTORICAL_MIXED_DESTINATION_MODE
-            and persisted_pin is not None
-            and known == {persisted_pin}
-        ):
-            pin = persisted_pin
-            retained_persisted_external_link = True
-        else:
-            raise BufferReconciliationError("BUFFER_SENT_LINK_UNVERIFIED")
-    if pin:
-        if known and known != {pin}:
-            raise BufferReconciliationError("KNOWN_PROVIDER_PIN_MISMATCH")
-        if (db.scalar(select(PinPublication.id).where(PinPublication.pinterest_pin_id == pin, PinPublication.id != publication_id))
-                or db.scalar(select(PublicationAttempt.id).where(PublicationAttempt.provider_pin_id == pin, PublicationAttempt.publication_id != publication_id))):
-            raise BufferReconciliationError("PROVIDER_PIN_ID_ALREADY_ASSIGNED")
-    elif known and snapshot.status == "error":
-        raise BufferReconciliationError("KNOWN_PROVIDER_PIN_REQUIRES_CONFIRMATION")
+    try:
+        # Re-read after I/O; no stale ORM state may authorize a terminal transition.
+        publication, attempt, known = _entry(
+            db, publication_id, settings, stage="post_provider_revalidation"
+        )
+        if operation_id != attempt.provider_operation_id or expected_request != attempt.request_fingerprint:
+            raise BufferReconciliationError("BUFFER_OPERATION_CONFLICT")
+        if snapshot.buffer_post_id != operation_id:
+            raise BufferReconciliationError(
+                "BUFFER_POST_SNAPSHOT_MISMATCH",
+                stage="provider_snapshot",
+                field="provider_operation_id",
+            )
+        mismatch = snapshot_mismatch_field(publication, snapshot, settings)
+        if mismatch is not None:
+            raise BufferReconciliationError(
+                "BUFFER_POST_SNAPSHOT_MISMATCH",
+                stage="provider_snapshot",
+                field=mismatch,
+            )
+        pin = pinterest_pin_id(snapshot.external_link) if snapshot.status == "sent" else None
+        if snapshot.status == "sent" and not pin:
+            destination_mode = _destination_identity_mode(db, publication, attempt=attempt)
+            persisted_pin = pinterest_pin_id(attempt.provider_external_link)
+            if (
+                destination_mode == HISTORICAL_MIXED_DESTINATION_MODE
+                and persisted_pin is not None
+                and known == {persisted_pin}
+            ):
+                pin = persisted_pin
+                retained_persisted_external_link = True
+                _persist_receipt_phase(
+                    db,
+                    receipt_attempt_id,
+                    receipt_sequence,
+                    phase="FALLBACK_SELECTED",
+                    provider_read_started=True,
+                    provider_read_completed=True,
+                    provider_operation_status=snapshot.status,
+                    fallback_selected=True,
+                )
+                publication, attempt, known = _entry(
+                    db, publication_id, settings, stage="post_fallback_revalidation"
+                )
+                if operation_id != attempt.provider_operation_id or expected_request != attempt.request_fingerprint:
+                    raise BufferReconciliationError("BUFFER_OPERATION_CONFLICT")
+            else:
+                raise BufferReconciliationError("BUFFER_SENT_LINK_UNVERIFIED")
+        if pin:
+            if known and known != {pin}:
+                raise BufferReconciliationError("KNOWN_PROVIDER_PIN_MISMATCH")
+            if (db.scalar(select(PinPublication.id).where(
+                    PinPublication.pinterest_pin_id == pin,
+                    PinPublication.id != publication_id,
+                )) or db.scalar(select(PublicationAttempt.id).where(
+                    PublicationAttempt.provider_pin_id == pin,
+                    PublicationAttempt.publication_id != publication_id,
+                ))):
+                raise BufferReconciliationError("PROVIDER_PIN_ID_ALREADY_ASSIGNED")
+        elif known and snapshot.status == "error":
+            raise BufferReconciliationError("KNOWN_PROVIDER_PIN_REQUIRES_CONFIRMATION")
+    except BufferReconciliationError as exc:
+        _persist_rejection_receipt(
+            db,
+            receipt_attempt_id,
+            receipt_sequence,
+            "POST_PROVIDER_REJECTED",
+            exc,
+            provider_status=snapshot.status,
+            read_started=True,
+            read_completed=True,
+            fallback_selected=retained_persisted_external_link,
+        )
+        raise
+
+    _persist_receipt_phase(
+        db,
+        receipt_attempt_id,
+        receipt_sequence,
+        phase="CAS_STARTED",
+        provider_read_started=True,
+        provider_read_completed=True,
+        provider_operation_status=snapshot.status,
+        fallback_selected=retained_persisted_external_link,
+    )
+    # The receipt commit is intentionally outside the business-state transaction.
+    # Revalidate local authority once more before terminal CAS.
+    try:
+        publication, attempt, known = _entry(
+            db, publication_id, settings, stage="pre_cas_revalidation"
+        )
+        if operation_id != attempt.provider_operation_id or expected_request != attempt.request_fingerprint:
+            raise BufferReconciliationError("BUFFER_OPERATION_CONFLICT")
+    except BufferReconciliationError as exc:
+        _persist_rejection_receipt(
+            db,
+            receipt_attempt_id,
+            receipt_sequence,
+            "POST_PROVIDER_REJECTED",
+            exc,
+            provider_status=snapshot.status,
+            read_started=True,
+            read_completed=True,
+            fallback_selected=retained_persisted_external_link,
+        )
+        raise
+
     now = datetime.now(timezone.utc)
     terminal = snapshot.status in {"sent", "error"}
     status = PublicationStatus.PUBLISHED if pin else PublicationStatus.PUBLISH_FAILED if terminal else PublicationStatus.PUBLISH_UNKNOWN
     code = None if pin else "BUFFER_PROVIDER_FAILED_CONFIRMED" if terminal else "BUFFER_FINAL_OUTCOME_PENDING"
     try:
         # The publication CAS serializes observers; attempt CAS and audit share its transaction.
-        result = db.execute(update(PinPublication).where(PinPublication.id == publication_id,
+        result = db.execute(update(PinPublication).where(
+            PinPublication.id == publication_id,
             PinPublication.status == PublicationStatus.PUBLISH_UNKNOWN,
-            PinPublication.publication_fingerprint == publication.publication_fingerprint).values(
-                status=status, error_code=code, pinterest_pin_id=pin if terminal else publication.pinterest_pin_id,
-                published_at=now if pin else publication.published_at))
+            PinPublication.publication_fingerprint == publication.publication_fingerprint,
+        ).values(
+            status=status,
+            error_code=code,
+            pinterest_pin_id=pin if terminal else publication.pinterest_pin_id,
+            published_at=now if pin else publication.published_at,
+        ))
         if result.rowcount != 1:
             raise BufferReconciliationError("RECONCILIATION_CONFLICT")
+        terminal_metadata = _receipt_metadata(
+            attempt.safe_response_metadata,
+            receipt_sequence,
+            phase="CAS_SUCCEEDED",
+            provider_read_started=True,
+            provider_read_completed=True,
+            provider_operation_status=snapshot.status,
+            fallback_selected=retained_persisted_external_link,
+            code=code,
+        )
         values = dict(
             provider_operation_status=snapshot.status,
             provider_external_link=(
@@ -484,26 +779,64 @@ async def reconcile_buffer(db, publication_id, *, actor, settings=None, gateway=
             ),
             provider_last_observed_at=now,
             error_code=code,
+            safe_response_metadata=terminal_metadata,
         )
         if terminal:
             values.update(status="SUCCEEDED" if pin else "FAILED", completed_at=now, provider_pin_id=pin)
-        result = db.execute(update(PublicationAttempt).where(PublicationAttempt.id == attempt.id,
-            PublicationAttempt.status == "UNKNOWN", PublicationAttempt.provider_operation_id == operation_id,
-            PublicationAttempt.request_fingerprint == expected_request).values(**values))
+        result = db.execute(update(PublicationAttempt).where(
+            PublicationAttempt.id == attempt.id,
+            PublicationAttempt.status == "UNKNOWN",
+            PublicationAttempt.provider_operation_id == operation_id,
+            PublicationAttempt.request_fingerprint == expected_request,
+        ).values(**values))
         if result.rowcount != 1:
             raise BufferReconciliationError("RECONCILIATION_CONFLICT")
         if terminal:
-            db.add(PublicationReconciliationEvent(publication_id=publication_id, attempt_id=attempt.id,
-                actor=actor, action="PROVIDER_PIN_CONFIRMED" if pin else "PROVIDER_FAILURE_CONFIRMED",
-                previous_status="PUBLISH_UNKNOWN", new_status=status.value, provider="buffer",
-                provider_operation_id=operation_id, provider_operation_status=snapshot.status,
-                provider_pin_id=pin, reason="Exact Buffer post and immutable snapshot verified"))
+            db.add(PublicationReconciliationEvent(
+                publication_id=publication_id,
+                attempt_id=attempt.id,
+                actor=actor,
+                action="PROVIDER_PIN_CONFIRMED" if pin else "PROVIDER_FAILURE_CONFIRMED",
+                previous_status="PUBLISH_UNKNOWN",
+                new_status=status.value,
+                provider="buffer",
+                provider_operation_id=operation_id,
+                provider_operation_status=snapshot.status,
+                provider_pin_id=pin,
+                reason="Exact Buffer post and immutable snapshot verified",
+            ))
         db.commit()
-    except BufferReconciliationError:
+    except BufferReconciliationError as exc:
         db.rollback()
+        _persist_rejection_receipt(
+            db,
+            receipt_attempt_id,
+            receipt_sequence,
+            "CAS_FAILED",
+            exc,
+            provider_status=snapshot.status,
+            read_started=True,
+            read_completed=True,
+            fallback_selected=retained_persisted_external_link,
+        )
         raise
     except Exception:
         db.rollback()
+        try:
+            _persist_receipt_phase(
+                db,
+                receipt_attempt_id,
+                receipt_sequence,
+                phase="CAS_FAILED",
+                provider_read_started=True,
+                provider_read_completed=True,
+                provider_operation_status=snapshot.status,
+                fallback_selected=retained_persisted_external_link,
+                code="BUFFER_RECONCILIATION_PERSISTENCE_FAILED",
+            )
+        except PublicationReconciliationError:
+            pass
         raise PublicationReconciliationError("BUFFER_RECONCILIATION_PERSISTENCE_FAILED") from None
     db.refresh(publication)
     return publication
+

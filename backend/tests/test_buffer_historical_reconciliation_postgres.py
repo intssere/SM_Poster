@@ -13,7 +13,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from app.db.base import Base
-from app.integrations.buffer.gateway import BufferPostSnapshot
+from app.integrations.buffer.gateway import BufferPostSnapshot, BufferReadError
 from app.models.domain import (
     Board,
     ContentAngle,
@@ -38,6 +38,7 @@ from app.services import buffer_publication_reconciliation as reconciliation_ser
 from app.services.buffer_publication_reconciliation import (
     BufferReconciliationError,
     attest_buffer_reconciliation_preflight,
+    attest_buffer_reconciliation_receipt,
     reconcile_buffer,
 )
 from app.services.fingerprints import publication_identity_fingerprint
@@ -654,6 +655,110 @@ def test_postgres_historical_phase_c_permit_drift_rejects_before_provider_read(
         assert publication.status == PublicationStatus.PUBLISH_UNKNOWN
         assert attempt.status == "UNKNOWN"
         assert attempt.provider_pin_id is None
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_postgres_reconciliation_receipt_records_read_failure_once(
+    isolated_postgres: str,
+) -> None:
+    engine, db, publication, attempt, _permit = _historical_case(isolated_postgres)
+    try:
+        class FailingGateway:
+            def __init__(self):
+                self.calls = []
+
+            async def post(self, operation_id):
+                self.calls.append(operation_id)
+                raise BufferReadError("safe-test-failure")
+
+        gateway = FailingGateway()
+        with pytest.raises(
+            BufferReconciliationError,
+            match="^BUFFER_RECONCILIATION_READ_FAILED$",
+        ):
+            asyncio.run(
+                reconcile_buffer(
+                    db,
+                    publication.id,
+                    actor="operator",
+                    settings=SETTINGS,
+                    gateway=gateway,
+                )
+            )
+
+        assert gateway.calls == [OPERATION_ID]
+        receipt = attest_buffer_reconciliation_receipt(db, publication.id)
+        assert receipt["phase"] == "PROVIDER_READ_FAILED"
+        assert receipt["provider_read_started"] is True
+        assert receipt["provider_read_completed"] is False
+        assert receipt["code"] == "BUFFER_RECONCILIATION_READ_FAILED"
+        db.refresh(publication)
+        db.refresh(attempt)
+        assert publication.status == PublicationStatus.PUBLISH_UNKNOWN
+        assert attempt.status == "UNKNOWN"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_postgres_historical_fallback_receipt_reaches_cas_success(
+    isolated_postgres: str,
+) -> None:
+    engine, db, publication, attempt, permit = _historical_case(
+        isolated_postgres,
+        legacy_board_external_id=None,
+    )
+    try:
+        original_external_link = attempt.provider_external_link
+
+        class HistoricalFallbackGateway(ExactGateway):
+            async def post(self, operation_id):
+                snapshot = await super().post(operation_id)
+                return BufferPostSnapshot(
+                    buffer_post_id=snapshot.buffer_post_id,
+                    status=snapshot.status,
+                    channel_id=snapshot.channel_id,
+                    created_at=snapshot.created_at,
+                    due_at=snapshot.due_at,
+                    sent_at=snapshot.sent_at,
+                    external_link=None,
+                    channel_service=snapshot.channel_service,
+                    text=snapshot.text,
+                    pinterest_board_service_id=snapshot.pinterest_board_service_id,
+                    pinterest_title=snapshot.pinterest_title,
+                    pinterest_url=snapshot.pinterest_url,
+                    image_url=snapshot.image_url,
+                    image_alt_text=snapshot.image_alt_text,
+                )
+
+        gateway = HistoricalFallbackGateway(publication)
+        result = asyncio.run(
+            reconcile_buffer(
+                db,
+                publication.id,
+                actor="operator",
+                settings=SETTINGS,
+                gateway=gateway,
+            )
+        )
+        db.refresh(attempt)
+        db.refresh(permit)
+
+        assert gateway.calls == [OPERATION_ID]
+        assert result.status == PublicationStatus.PUBLISHED
+        assert attempt.status == "SUCCEEDED"
+        assert attempt.provider_external_link == original_external_link
+        assert permit.status == "CONSUMED"
+
+        receipt = attest_buffer_reconciliation_receipt(db, publication.id)
+        assert receipt["phase"] == "CAS_SUCCEEDED"
+        assert receipt["provider_read_started"] is True
+        assert receipt["provider_read_completed"] is True
+        assert receipt["provider_operation_status"] == "sent"
+        assert receipt["fallback_selected"] is True
+        assert receipt["code"] is None
     finally:
         db.close()
         engine.dispose()
