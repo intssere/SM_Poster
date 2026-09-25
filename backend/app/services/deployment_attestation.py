@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 DEFAULT_MANIFEST_PATH = Path(__file__).resolve().parents[2] / ".build-provenance.json"
 
 
@@ -16,16 +17,13 @@ class BuildProvenance:
     valid: bool
     commit_sha: str | None = None
     tree_sha: str | None = None
+    overlay_path: str | None = None
+    overlay_sha256: str | None = None
     error: str | None = None
 
 
 def read_build_provenance(path: Path = DEFAULT_MANIFEST_PATH) -> BuildProvenance:
-    """Read build-bound source identity without consulting Git or the network.
-
-    The manifest is generated from a clean checkout immediately before a
-    deployment build and is intentionally not tracked in Git. Missing or
-    malformed evidence fails closed.
-    """
+    """Read canonical source plus approved release-overlay identity offline."""
     if not path.is_file():
         return BuildProvenance(present=False, valid=False, error="BUILD_PROVENANCE_MISSING")
     try:
@@ -33,15 +31,20 @@ def read_build_provenance(path: Path = DEFAULT_MANIFEST_PATH) -> BuildProvenance
     except (OSError, json.JSONDecodeError):
         return BuildProvenance(present=True, valid=False, error="BUILD_PROVENANCE_INVALID")
 
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+    if not isinstance(payload, dict) or payload.get("schema_version") != 2:
         return BuildProvenance(present=True, valid=False, error="BUILD_PROVENANCE_INVALID")
-    commit_sha = payload.get("commit_sha")
-    tree_sha = payload.get("tree_sha")
+    commit_sha = payload.get("canonical_commit_sha")
+    tree_sha = payload.get("canonical_tree_sha")
+    overlay = payload.get("release_overlay")
     if not (
         isinstance(commit_sha, str)
         and isinstance(tree_sha, str)
         and _SHA_RE.fullmatch(commit_sha)
         and _SHA_RE.fullmatch(tree_sha)
+        and isinstance(overlay, dict)
+        and overlay.get("path") == ".replit"
+        and isinstance(overlay.get("sha256"), str)
+        and _HEX_RE.fullmatch(overlay["sha256"])
     ):
         return BuildProvenance(present=True, valid=False, error="BUILD_PROVENANCE_INVALID")
     return BuildProvenance(
@@ -49,6 +52,8 @@ def read_build_provenance(path: Path = DEFAULT_MANIFEST_PATH) -> BuildProvenance
         valid=True,
         commit_sha=commit_sha,
         tree_sha=tree_sha,
+        overlay_path=".replit",
+        overlay_sha256=overlay["sha256"],
     )
 
 
@@ -58,11 +63,14 @@ def safe_deployment_attestation(settings, *, path: Path = DEFAULT_MANIFEST_PATH)
         "build_provenance": {
             "present": provenance.present,
             "valid": provenance.valid,
-            "commit_sha": provenance.commit_sha,
-            "tree_sha": provenance.tree_sha,
+            "canonical_commit_sha": provenance.commit_sha,
+            "canonical_tree_sha": provenance.tree_sha,
+            "release_overlay": (
+                {"path": provenance.overlay_path, "sha256": provenance.overlay_sha256}
+                if provenance.valid
+                else None
+            ),
             "error": provenance.error,
         },
-        # Boolean only: never disclose where the effective value came from or
-        # any neighboring secret/configuration value.
         "pilot_disabled": settings.pinterest_single_pin_pilot_enabled is False,
     }
