@@ -4,6 +4,7 @@ from sqlalchemy import text
 from app.core.config import get_settings
 from app.db.session import SessionLocal, engine
 from app.services.routine_publishing_control import routine_operational_snapshot
+from app.services.deployment_attestation import safe_deployment_attestation
 
 router = APIRouter(prefix="/health", tags=["health"])
 
@@ -46,4 +47,5 @@ def health():
         "routine_pinterest_batch_size": settings.routine_pinterest_batch_size,
         "routine_pinterest_daily_write_limit": settings.routine_pinterest_daily_write_limit,
         "routine_publishing": routine,
+        "deployment_attestation": safe_deployment_attestation(settings),
     }

@@ -18,3 +18,4 @@ backend/generated-ai-assets/
 /backend/test.db
 /backend/DejaVuSans*.ttf
 /.venv/
+/backend/.build-provenance.json
