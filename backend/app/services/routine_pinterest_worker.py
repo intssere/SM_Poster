@@ -10,6 +10,7 @@ from app.services.publication_scheduler import due_publications
 from app.services.pinterest_publisher import normalize_persisted_utc
 from app.services.routine_buffer_dispatch import RoutineDispatchError, dispatch_routine_buffer, recover_stale_routine_claims
 from app.services.routine_buffer_preflight import build_routine_execution_evidence
+from app.services.routine_offline_preflight import build_routine_offline_evidence, RoutineOfflinePreflightError
 from app.services.routine_dispatch_authorization import active_permit, validate_permit
 from app.services.routine_publishing_control import (
     RoutineControlError,
@@ -84,6 +85,15 @@ async def run_once(
                 run.error_code = validated["status"]
                 continue
             run.eligible += 1
+            if mode == "DRY_RUN":
+                try:
+                    build_routine_offline_evidence(
+                        db, publication, permit=permit, now=now,
+                    )
+                except RoutineOfflinePreflightError as exc:
+                    run.skipped += 1
+                    run.error_code = str(exc)
+                continue
             try:
                 evidence = await build_routine_execution_evidence(
                     db, publication, settings=settings, gateway=gateway,
@@ -92,8 +102,6 @@ async def run_once(
             except BufferPreflightError as exc:
                 run.skipped += 1
                 run.error_code = str(exc)
-                continue
-            if mode == "DRY_RUN":
                 continue
             if daily_provider_write_count(db, day_start=day_start) >= settings.routine_pinterest_daily_write_limit:
                 run.error_code = "ROUTINE_DAILY_WRITE_LIMIT_REACHED"
