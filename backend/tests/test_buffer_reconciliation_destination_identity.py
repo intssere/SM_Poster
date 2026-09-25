@@ -325,7 +325,15 @@ def test_provider_free_preflight_route_requires_auth_and_delegates_only_to_attes
         db,
     )
 
-    assert observed == expected
+    assert observed == {
+        **expected,
+        "transport_contract": {
+            "origin_required": True,
+            "authenticated_session_required": True,
+            "confirmation_required": True,
+            "confirmation_text_version": "BUFFER_RECONCILIATION_V1",
+        },
+    }
     assert calls == [(db, "publication")]
 
 
