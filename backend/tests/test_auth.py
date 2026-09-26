@@ -265,7 +265,7 @@ def test_canary_fixture_route_requires_admin_session_and_exact_confirmation(auth
         "confirmed": True,
         "confirmation_text_version": "ROUTINE_DRY_RUN_CANARY_FIXTURE_V1",
     }
-    assert client.post(url, json=valid).status_code == 401
+    # Anonymous state-changing requests fail closed at the origin/CSRF boundary before session auth.\n    assert client.post(url, json=valid).status_code == 403
 
     login = client.post("/api/auth/login", json={"username": "admin", "password": "secret"})
     assert login.status_code == 200
