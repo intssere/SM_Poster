@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
 
 from app.models.domain import PinPublication, PublicationStatus
@@ -56,7 +56,12 @@ def evaluate_publication_duplicates(db: Session, publication: PinPublication) ->
             "matches": [_match(publication, UNKNOWN_OUTCOME_BLOCKS_RETRY)],
         }
 
-    others = db.scalars(select(PinPublication).where(PinPublication.id != publication.id)).all()
+    # A transient candidate has no persisted identity, even if an ID was
+    # explicitly assigned to it. Never let it exclude an existing row.
+    query = select(PinPublication)
+    if inspect(publication).has_identity:
+        query = query.where(PinPublication.id != publication.id)
+    others = db.scalars(query).all()
     for other in others:
         if other.publication_fingerprint and other.publication_fingerprint == publication.publication_fingerprint:
             return {

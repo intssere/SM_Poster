@@ -1229,6 +1229,7 @@ def test_publication_create_derives_exact_approved_snapshot_server_side(monkeypa
         Base,
         ContentAngle,
         ContentRevision,
+        ContentVersionSelection,
         CreativeTemplate,
         DraftStatus,
         PinApproval,
@@ -1254,7 +1255,10 @@ def test_publication_create_derives_exact_approved_snapshot_server_side(monkeypa
     monkeypatch.setenv("ADMIN_PASSWORD_HASH", auth.hash_password("secret"))
     monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5000")
     monkeypatch.setenv("PUBLISHING_ENABLED", "false")
+    monkeypatch.setenv("PUBLIC_MEDIA_BASE_URL", "https://media.example.com")
     get_settings.cache_clear()
+    from test_publication_candidate_preflight import FakeMedia, DIGEST
+    monkeypatch.setattr("app.services.publication_candidate_preflight.CreativeStorage", lambda: FakeMedia())
 
     token_decrypt_call_count = 0
     provider_call_count = 0
@@ -1340,7 +1344,7 @@ def test_publication_create_derives_exact_approved_snapshot_server_side(monkeypa
                 destination_url="https://diamondshelf.us/products/old-draft",
                 utm_url="https://diamondshelf.us/products/old-draft?utm_source=pinterest",
                 text_fingerprint="d" * 64,
-                status=DraftStatus.READY_FOR_REVIEW,
+                status=DraftStatus.APPROVED,
             )
             template = CreativeTemplate(
                 id="template-create-test",
@@ -1354,7 +1358,8 @@ def test_publication_create_derives_exact_approved_snapshot_server_side(monkeypa
                 draft_id=draft.id,
                 template_id=template.id,
                 source_image_id=product_image.id,
-                rendered_url="https://cdn.example.test/approved-rendered-pin.jpg",
+                rendered_url="https://media.example.com/api/pins/public-creatives/creative-create-test/" + DIGEST + ".png",
+                sha256=DIGEST,
                 creative_fingerprint="e" * 64,
                 render_status="RENDERED",
             )
@@ -1398,6 +1403,9 @@ def test_publication_create_derives_exact_approved_snapshot_server_side(monkeypa
                 decision="APPROVED",
                 decided_by="publication_api_success_test",
             )
+            selection = ContentVersionSelection(
+                draft_id=draft.id, revision_id=revision.id, selected_by="test",
+            )
             connection = PinterestConnection(
                 id="connection-create-test",
                 external_user_id="pinterest-user-create-test",
@@ -1430,6 +1438,7 @@ def test_publication_create_derives_exact_approved_snapshot_server_side(monkeypa
                     creative,
                     revision,
                     approval,
+                    selection,
                     connection,
                     board,
                 ]
@@ -1469,7 +1478,7 @@ def test_publication_create_derives_exact_approved_snapshot_server_side(monkeypa
         assert body["alt_text"] == "APPROVED REVISION ALT"
         assert body["destination_url"] == "https://diamondshelf.us/products/approved-product"
         assert body["utm_url"] == "https://diamondshelf.us/products/approved-product?utm_source=pinterest&utm_medium=organic"
-        assert body["media_url"] == "https://cdn.example.test/approved-rendered-pin.jpg"
+        assert body["media_url"] == "https://media.example.com/api/pins/public-creatives/creative-create-test/" + DIGEST + ".png"
         serialized_body = repr(body)
         assert "OLD DRAFT TITLE - MUST NOT BE SNAPSHOTTED" not in serialized_body
         assert "OLD DRAFT DESCRIPTION - MUST NOT BE SNAPSHOTTED" not in serialized_body
@@ -1499,7 +1508,7 @@ def test_publication_create_derives_exact_approved_snapshot_server_side(monkeypa
             assert publication.creative_id == "creative-create-test"
             assert publication.approval_id == "approval-create-test"
             assert publication.source_image_id == "image-create-test"
-            assert publication.media_url_snapshot == "https://cdn.example.test/approved-rendered-pin.jpg"
+            assert publication.media_url_snapshot == "https://media.example.com/api/pins/public-creatives/creative-create-test/" + DIGEST + ".png"
             assert publication.template_id == "template-create-test"
             assert publication.template_key == "approved-template"
             assert publication.template_version == 7

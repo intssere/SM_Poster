@@ -1,12 +1,14 @@
 from datetime import datetime, timezone
-from typing import Literal
-from fastapi import APIRouter, Depends, HTTPException, Request
+from typing import Annotated, Literal
+from uuid import UUID
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.domain import PinPublication, PinApproval, PinterestBoard, PinterestConnection, PublicationStatus, PublicationAttempt, PublicationDispatchAuthorization
 from app.services.publication_identity import PublicationIdentityService, PublicationIdentityError
+from app.services.publication_candidate_preflight import preflight_candidate
 from app.services.publication_scheduler import schedule, cancel, due_publications
 from app.services.pinterest_publisher import publication_readiness, sanitize_metadata, PublicationReconciliationError
 from app.services.pinterest_publisher import preflight_publish_readiness, execution_publish_readiness, finalize_post_claim_unknown
@@ -27,6 +29,11 @@ class PublicationCreate(BaseModel):
     approval_id: str
     pinterest_board_record_id: str
     scheduled_for: datetime | None = None
+
+class CandidatePreflightRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    approval_id: UUID
+    pinterest_board_record_id: UUID
 
 class ScheduleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -79,6 +86,21 @@ def create(payload: PublicationCreate, db: Session = Depends(get_db)):
     except PublicationIdentityError as exc:
         raise HTTPException(422, str(exc))
     return _dto(db, row)
+
+
+@router.get("/candidate-preflight")
+def candidate_preflight(
+    payload: Annotated[CandidatePreflightRequest, Query()],
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    if not current_user(request):
+        raise HTTPException(401, "Authentication required")
+    return preflight_candidate(
+        db,
+        approval_id=str(payload.approval_id),
+        pinterest_board_record_id=str(payload.pinterest_board_record_id),
+    )
 
 
 @router.get("/eligible-destinations")
