@@ -263,3 +263,68 @@ def test_critical_alert_fails_closed(monkeypatch):
         assert db.get(PinPublication, "canary-source").status == PublicationStatus.APPROVED
     finally:
         db.close(); engine.dispose()
+
+
+def test_stale_routing_fails_before_schedule_or_permit(monkeypatch):
+    engine, db = _db()
+    try:
+        monkeypatch.setattr(fixture, "routine_readiness_snapshot", lambda *a, **k: {"ready": True, "alerts": []})
+        monkeypatch.setattr(fixture, "routine_activation_candidate_snapshot", lambda *a, **k: {
+            "due_count": 0, "active_permit_count": 0, "valid_permit_count": 0,
+            "routing_current_count": 0, "eligible_count": 0,
+            "eligible_publication_ids": [], "invalid_reasons": {},
+        })
+        monkeypatch.setattr(fixture, "_persisted_routing_current", lambda *_: False)
+        with pytest.raises(fixture.RoutineCanaryFixtureError, match="PERSISTED_PINTEREST_ROUTING_STALE"):
+            fixture.prepare_atomic_dry_run_canary_fixture(
+                db, publication_id="canary-source", actor="admin",
+                settings=_settings(), now=NOW, scheduler_snapshot=_scheduler(),
+            )
+        assert db.get(PinPublication, "canary-source").status == PublicationStatus.APPROVED
+        assert db.scalars(select(RoutineDispatchPermit)).all() == []
+    finally:
+        db.close(); engine.dispose()
+
+
+def test_second_invocation_fails_closed_without_second_fixture(monkeypatch):
+    engine, db = _db()
+    try:
+        _wire_happy(monkeypatch, db)
+        fixture.prepare_atomic_dry_run_canary_fixture(
+            db, publication_id="canary-source", actor="admin",
+            settings=_settings(), now=NOW, scheduler_snapshot=_scheduler(),
+        )
+        with pytest.raises(fixture.RoutineCanaryFixtureError, match="PRECONDITION_COUNTS_NOT_ZERO"):
+            fixture.prepare_atomic_dry_run_canary_fixture(
+                db, publication_id="canary-source", actor="admin",
+                settings=_settings(), now=NOW, scheduler_snapshot=_scheduler(),
+            )
+        publications = db.scalars(select(PinPublication)).all()
+        permits = db.scalars(select(RoutineDispatchPermit)).all()
+        assert len(publications) == 1 and publications[0].status == PublicationStatus.SCHEDULED
+        assert len(permits) == 1 and permits[0].status == "ACTIVE"
+        assert db.get(RoutinePublishingControl, "default").state == "PAUSED"
+    finally:
+        db.close(); engine.dispose()
+
+
+def test_offline_evidence_failure_rolls_back_and_no_provider_boundary_runs(monkeypatch):
+    engine, db = _db()
+    try:
+        _wire_happy(monkeypatch, db)
+        monkeypatch.setattr(
+            fixture, "build_routine_offline_evidence",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("provider/network boundary forbidden")),
+        )
+        with pytest.raises(RuntimeError, match="provider/network boundary forbidden"):
+            fixture.prepare_atomic_dry_run_canary_fixture(
+                db, publication_id="canary-source", actor="admin",
+                settings=_settings(), now=NOW, scheduler_snapshot=_scheduler(),
+            )
+        publication = db.get(PinPublication, "canary-source")
+        assert publication.status == PublicationStatus.APPROVED
+        assert publication.scheduled_for is None
+        assert db.scalars(select(RoutineDispatchPermit)).all() == []
+        assert db.get(RoutinePublishingControl, "default").state == "PAUSED"
+    finally:
+        db.close(); engine.dispose()
