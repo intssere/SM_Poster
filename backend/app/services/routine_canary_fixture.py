@@ -35,7 +35,7 @@ def _count(db, model, *criteria) -> int:
     return int(db.scalar(select(func.count()).select_from(model).where(*criteria)) or 0)
 
 
-def _assert_static_safety(settings: Settings, control, scheduler: dict) -> None:
+def _assert_static_safety(db, settings: Settings, control, scheduler: dict) -> None:
     if control is None or control.state != "PAUSED":
         raise RoutineCanaryFixtureError("ROUTINE_CONTROL_NOT_PAUSED")
     required_false = {
@@ -67,7 +67,7 @@ def _assert_static_safety(settings: Settings, control, scheduler: dict) -> None:
         raise RoutineCanaryFixtureError("ROUTINE_SCHEDULER_NOT_DORMANT")
     if scheduler.get("lease_supported") is not True:
         raise RoutineCanaryFixtureError("ROUTINE_DISTRIBUTED_LEASE_UNSUPPORTED")
-    if _count(db=control._sa_instance_state.session, model=RoutinePublishingRun, *[RoutinePublishingRun.status == "RUNNING"]):
+    if _count(db, RoutinePublishingRun, RoutinePublishingRun.status == "RUNNING"):
         raise RoutineCanaryFixtureError("ROUTINE_WORKER_ALREADY_RUNNING")
 
 
@@ -124,7 +124,7 @@ def prepare_atomic_dry_run_canary_fixture(
         )
         if control is None:
             raise RoutineCanaryFixtureError("ROUTINE_CONTROL_NOT_INITIALIZED")
-        _assert_static_safety(settings, control, scheduler)
+        _assert_static_safety(db, settings, control, scheduler)
 
         operational = routine_readiness_snapshot(db, settings=settings, now=now)
         critical = sorted(
