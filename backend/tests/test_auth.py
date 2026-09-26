@@ -278,12 +278,13 @@ def test_canary_fixture_route_requires_admin_session_and_exact_confirmation(auth
     import app.services.routine_canary_fixture as canary_service
     monkeypatch.setattr(canary_service, "prepare_atomic_dry_run_canary_fixture", prepare)
 
+    headers = {"Origin": "http://localhost:5000"}
     bad = dict(valid, confirmation_text_version="WRONG")
-    assert client.post(url, json=bad).status_code == 422
-    assert client.post(url, json=dict(valid, confirmed=False)).status_code == 422
+    assert client.post(url, json=bad, headers=headers).status_code == 422
+    assert client.post(url, json=dict(valid, confirmed=False), headers=headers).status_code == 422
     assert called["n"] == 0
 
-    response = client.post(url, json=valid)
+    response = client.post(url, json=valid, headers=headers)
     assert response.status_code == 200
     assert response.json() == {"status": "PREPARED"}
     assert called["n"] == 1
