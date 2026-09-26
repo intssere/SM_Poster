@@ -124,6 +124,7 @@ jobs:
           tests/test_routine_pinterest_publishing_foundation.py
           tests/test_routine_one_shot_live.py
           tests/test_deployment_attestation.py
+          tests/test_replit_release_preflight.py
 
       - name: Full backend tests
         if: matrix.postgres == '16'
