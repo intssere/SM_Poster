@@ -19,7 +19,7 @@ def due_publications(db, *, now=None, limit=MAX_DISPATCH_BATCH):
         PinPublication.scheduled_for <= now,
     ).order_by(PinPublication.scheduled_for, PinPublication.id).limit(min(limit, MAX_DISPATCH_BATCH))).all()
 
-def schedule(db, publication, when):
+def schedule(db, publication, when, *, commit=True):
     if when.tzinfo is None or when.utcoffset() is None:
         raise ValueError("scheduled_for must be timezone-aware")
     if publication.status == PublicationStatus.PUBLISH_UNKNOWN:
@@ -29,7 +29,10 @@ def schedule(db, publication, when):
     when = when.astimezone(timezone.utc)
     publication.scheduled_for = when
     publication.status = PublicationStatus.SCHEDULED
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return publication
 
 def cancel(db, publication):

@@ -55,6 +55,13 @@ class ControlRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=255)
 
 
+class CanaryFixtureRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    publication_id: str = Field(min_length=1, max_length=64)
+    confirmed: bool
+    confirmation_text_version: str
+
+
 class RunOnceDryRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     confirmed: bool
@@ -160,6 +167,31 @@ def activation_readiness(
         target_mode=target_mode,
         settings=get_settings(),
     )
+
+
+@router.post("/canary-fixture")
+def prepare_canary_fixture(
+    request: Request,
+    payload: CanaryFixtureRequest,
+    db: Session = Depends(get_db),
+):
+    actor = _actor(request)
+    from app.services.routine_canary_fixture import (
+        CONFIRMATION_TEXT_VERSION,
+        RoutineCanaryFixtureError,
+        prepare_atomic_dry_run_canary_fixture,
+    )
+    if not payload.confirmed or payload.confirmation_text_version != CONFIRMATION_TEXT_VERSION:
+        raise HTTPException(422, "INVALID_ROUTINE_CANARY_FIXTURE_CONFIRMATION")
+    try:
+        return prepare_atomic_dry_run_canary_fixture(
+            db,
+            publication_id=payload.publication_id,
+            actor=actor,
+            settings=get_settings(),
+        )
+    except RoutineCanaryFixtureError as exc:
+        raise HTTPException(409, str(exc)) from None
 
 
 @router.post("/publications/{publication_id}/run-once-dry-run")

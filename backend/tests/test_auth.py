@@ -253,3 +253,38 @@ def test_product_source_hydration_endpoints_remain_authenticated(auth_client):
         headers={"Origin": "http://localhost:5000"},
         json={},
     ).status_code == 401
+
+
+def test_canary_fixture_route_requires_admin_session_and_exact_confirmation(auth_client, monkeypatch):
+    from app.api.routes import routine_publishing as routine_routes
+
+    client = auth_client
+    url = "/api/routine-publishing/canary-fixture"
+    valid = {
+        "publication_id": "canary-source",
+        "confirmed": True,
+        "confirmation_text_version": "ROUTINE_DRY_RUN_CANARY_FIXTURE_V1",
+    }
+    # Anonymous state-changing requests fail closed at the origin/CSRF boundary before session auth.\n    assert client.post(url, json=valid).status_code == 403
+
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "secret"})
+    assert login.status_code == 200
+
+    called = {"n": 0}
+    def prepare(*args, **kwargs):
+        called["n"] += 1
+        return {"status": "PREPARED"}
+
+    import app.services.routine_canary_fixture as canary_service
+    monkeypatch.setattr(canary_service, "prepare_atomic_dry_run_canary_fixture", prepare)
+
+    headers = {"Origin": "http://localhost:5000"}
+    bad = dict(valid, confirmation_text_version="WRONG")
+    assert client.post(url, json=bad, headers=headers).status_code == 422
+    assert client.post(url, json=dict(valid, confirmed=False), headers=headers).status_code == 422
+    assert called["n"] == 0
+
+    response = client.post(url, json=valid, headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {"status": "PREPARED"}
+    assert called["n"] == 1

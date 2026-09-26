@@ -56,7 +56,7 @@ def _snapshots(db, publication, *, now, expected_status=PublicationStatus.SCHEDU
     return quality, duplicate, readiness
 
 
-def create_permit(db, publication: PinPublication, *, actor: str, now=None):
+def create_permit(db, publication: PinPublication, *, actor: str, now=None, commit=True):
     now = normalize_persisted_utc(now or _now())
     if not actor:
         raise RoutinePermitError("ACTOR_REQUIRED")
@@ -94,11 +94,14 @@ def create_permit(db, publication: PinPublication, *, actor: str, now=None):
     )
     db.add(permit)
     try:
-        db.commit()
+        if commit:
+            db.commit()
+            db.refresh(permit)
+        else:
+            db.flush()
     except IntegrityError:
         db.rollback()
         raise RoutinePermitError("ACTIVE_ROUTINE_PERMIT_EXISTS") from None
-    db.refresh(permit)
     return permit
 
 
