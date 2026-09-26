@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.config import Settings
 from app.db.base import Base
-from app.models.domain import PinPublication, PublicationStatus
+from app.models.domain import PinDraft, PinPublication, PublicationStatus
 from app.models.routine_publishing import RoutineDispatchPermit, RoutinePublishingControl
 from app.services import routine_canary_fixture as fixture
 
