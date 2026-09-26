@@ -84,7 +84,7 @@ def test_postgres_control_row_lock_and_failed_postcondition_are_atomic(
     try:
         db.add(RoutinePublishingControl(id="default", state="PAUSED", paused_at=NOW, paused_by="test"))
         db.add(PinPublication(
-            id="pg-canary-source", draft_id="draft", creative_id="creative",
+            id="pg-canary-source", draft_id=None, creative_id="creative",
             approval_id="approval", pinterest_connection_id="conn",
             pinterest_board_record_id="board", pinterest_board_id_snapshot="external",
             publication_fingerprint="a" * 64, text_fingerprint="b" * 64,
