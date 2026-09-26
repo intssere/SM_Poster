@@ -21,7 +21,6 @@ from app.services.routine_dispatch_authorization import create_permit
 from app.services.routine_offline_preflight import build_routine_offline_evidence
 from app.services.routine_operational_readiness import routine_readiness_snapshot
 from app.services.routine_pinterest_scheduler import scheduler_status
-from app.services.routine_publishing_control import get_control
 
 
 CONFIRMATION_TEXT_VERSION = "ROUTINE_DRY_RUN_CANARY_FIXTURE_V1"
@@ -126,7 +125,7 @@ def prepare_atomic_dry_run_canary_fixture(
             raise RoutineCanaryFixtureError("ROUTINE_CONTROL_NOT_INITIALIZED")
         _assert_static_safety(db, settings, control, scheduler)
 
-        operational = routine_readiness_snapshot(db, settings=settings, now=now)
+        operational = routine_readiness_snapshot(\n            db, settings=settings, scheduler_snapshot=scheduler, now=now\n        )
         critical = sorted(
             str(alert.get("code"))
             for alert in operational.get("alerts", [])
