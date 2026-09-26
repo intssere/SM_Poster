@@ -125,7 +125,9 @@ def prepare_atomic_dry_run_canary_fixture(
             raise RoutineCanaryFixtureError("ROUTINE_CONTROL_NOT_INITIALIZED")
         _assert_static_safety(db, settings, control, scheduler)
 
-        operational = routine_readiness_snapshot(\n            db, settings=settings, scheduler_snapshot=scheduler, now=now\n        )
+        operational = routine_readiness_snapshot(
+            db, settings=settings, scheduler_snapshot=scheduler, now=now
+        )
         critical = sorted(
             str(alert.get("code"))
             for alert in operational.get("alerts", [])
