@@ -12,8 +12,8 @@ MANIFEST = ROOT / "backend" / ".build-provenance.json"
 def main() -> None:
     subprocess.run([sys.executable, str(ROOT / "scripts" / "write_build_provenance.py")], cwd=ROOT, check=True)
     payload = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    if payload.get("schema_version") != 2:
-        raise SystemExit("release preflight failed: schema-v2 provenance missing")
+    if payload.get("schema_version") != 3:
+        raise SystemExit("release preflight failed: schema-v3 provenance missing")
     subprocess.run(["npm", "--prefix", "frontend", "run", "build"], cwd=ROOT, check=True)
     if not MANIFEST.is_file():
         raise SystemExit("release preflight failed: provenance missing after build")
