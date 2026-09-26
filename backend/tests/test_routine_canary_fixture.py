@@ -167,7 +167,7 @@ def test_happy_path_commits_exactly_one_due_candidate_and_permit(monkeypatch):
         }
         publication = db.get(PinPublication, "canary-source")
         assert publication.status == PublicationStatus.SCHEDULED
-        assert publication.scheduled_for == NOW
+        assert publication.scheduled_for.replace(tzinfo=timezone.utc) == NOW
         permits = db.scalars(select(RoutineDispatchPermit)).all()
         assert len(permits) == 1 and permits[0].status == "ACTIVE"
         assert db.get(RoutinePublishingControl, "default").state == "PAUSED"
