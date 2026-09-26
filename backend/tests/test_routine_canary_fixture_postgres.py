@@ -100,7 +100,13 @@ def test_postgres_control_row_lock_and_failed_postcondition_are_atomic(
             utm_url="https://diamondshelf.us/p/canary?utm_source=pinterest",
             text_fingerprint="b" * 64, status="APPROVED",
         )
-        db.add_all([store, product, angle, concept, draft])
+        db.add(store)
+        db.flush()
+        db.add_all([product, angle])
+        db.flush()
+        db.add(concept)
+        db.flush()
+        db.add(draft)
         db.flush()
         db.add(PinPublication(
             id="pg-canary-source", draft_id="draft", creative_id="creative",
