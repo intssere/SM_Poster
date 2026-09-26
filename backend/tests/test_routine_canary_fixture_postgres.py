@@ -83,8 +83,27 @@ def test_postgres_control_row_lock_and_failed_postcondition_are_atomic(
     db = Session()
     try:
         db.add(RoutinePublishingControl(id="default", state="PAUSED", paused_at=NOW, paused_by="test"))
+        store = Store(id="pg-store", name="Canary", shop_domain="canary.example")
+        product = Product(
+            id="pg-product", store_id="pg-store", shopify_product_id="pg-product",
+            handle="canary", title="Canary", product_url="https://canary.example/p/canary",
+        )
+        angle = ContentAngle(id="pg-angle", key="canary", name="Canary")
+        concept = PinConcept(
+            id="pg-concept", store_id="pg-store", product_id="pg-product",
+            content_angle_id="pg-angle", fingerprint="e" * 64,
+        )
+        draft = PinDraft(
+            id="draft", concept_id="pg-concept", version=1, title="Canary",
+            description="Canary", alt_text="Canary",
+            destination_url="https://diamondshelf.us/p/canary",
+            utm_url="https://diamondshelf.us/p/canary?utm_source=pinterest",
+            text_fingerprint="b" * 64, status="APPROVED",
+        )
+        db.add_all([store, product, angle, concept, draft])
+        db.flush()
         db.add(PinPublication(
-            id="pg-canary-source", draft_id=None, creative_id="creative",
+            id="pg-canary-source", draft_id="draft", creative_id="creative",
             approval_id="approval", pinterest_connection_id="conn",
             pinterest_board_record_id="board", pinterest_board_id_snapshot="external",
             publication_fingerprint="a" * 64, text_fingerprint="b" * 64,
