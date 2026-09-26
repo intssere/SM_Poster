@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.config import Settings
 from app.db.base import Base
-from app.models.domain import PinConcept, PinDraft, PinPublication, PublicationStatus, Store, Product, ContentAngle
+from app.models.domain import PinConcept, PinDraft, PinPublication, PublicationStatus, Store, Product, ProductImage, ContentAngle, CreativeTemplate, PinCreative, PinApproval
 from app.models.routine_publishing import RoutineDispatchPermit, RoutinePublishingControl
 from app.services import routine_canary_fixture as fixture
 
@@ -107,6 +107,28 @@ def test_postgres_control_row_lock_and_failed_postcondition_are_atomic(
         db.add(concept)
         db.flush()
         db.add(draft)
+        db.flush()
+        image = ProductImage(
+            id="source", product_id="pg-product",
+            source_url="https://cdn.example/canary.jpg", is_primary=True,
+        )
+        template = CreativeTemplate(
+            id="template", key="template", version=1, name="Canary",
+        )
+        db.add_all([image, template])
+        db.flush()
+        creative = PinCreative(
+            id="creative", draft_id="draft", template_id="template",
+            source_image_id="source", creative_fingerprint="c" * 64,
+            render_status="RENDERED",
+        )
+        db.add(creative)
+        db.flush()
+        approval = PinApproval(
+            id="approval", draft_id="draft", creative_id="creative",
+            decision="APPROVED", decided_by="test",
+        )
+        db.add(approval)
         db.flush()
         db.add(PinPublication(
             id="pg-canary-source", draft_id="draft", creative_id="creative",
