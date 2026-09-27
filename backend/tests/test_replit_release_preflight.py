@@ -238,4 +238,52 @@ def test_release_build_refuses_unavailable_git_metadata_before_frontend(monkeypa
     with pytest.raises(subprocess.CalledProcessError):
         module.main()
     assert len(commands) == 1
-\n\ndef test_release_build_refuses_overlay_mutation_during_frontend(tmp_path, monkeypatch):\n    module = load_build_module()\n    expected = set_expected_identity(monkeypatch)\n    monkeypatch.setattr(module, "ROOT", tmp_path)\n    manifest = tmp_path / "backend" / ".build-provenance.json"\n    manifest.parent.mkdir()\n    monkeypatch.setattr(module, "MANIFEST", manifest)\n    overlay = tmp_path / ".replit"\n    overlay.write_bytes(b"reviewed")\n    monkeypatch.setattr(module, "OVERLAY", overlay)\n    digest = hashlib.sha256(b"reviewed").hexdigest()\n    calls = []\n\n    def runner(command, **_kwargs):\n        calls.append(command)\n        if len(calls) == 1:\n            manifest.write_text(json.dumps(expected_manifest(expected, digest)), encoding="utf-8")\n        elif len(calls) == 2:\n            overlay.write_bytes(b"mutated")\n\n    monkeypatch.setattr(module.subprocess, "run", runner)\n    with pytest.raises(SystemExit, match="overlay changed during build"):\n        module.main()\n\n\ndef test_release_build_does_not_require_overlay_environment_pin(tmp_path, monkeypatch):\n    module = load_build_module()\n    expected = set_expected_identity(monkeypatch)\n    monkeypatch.delenv("EXPECTED_REPLIT_OVERLAY_SHA256", raising=False)\n    monkeypatch.setattr(module, "ROOT", tmp_path)\n    manifest = tmp_path / "backend" / ".build-provenance.json"\n    manifest.parent.mkdir()\n    monkeypatch.setattr(module, "MANIFEST", manifest)\n    overlay = tmp_path / ".replit"\n    overlay.write_bytes(b"reviewed")\n    monkeypatch.setattr(module, "OVERLAY", overlay)\n    digest = hashlib.sha256(b"reviewed").hexdigest()\n    calls = []\n\n    def runner(command, **_kwargs):\n        calls.append(command)\n        if len(calls) == 1:\n            manifest.write_text(json.dumps(expected_manifest(expected, digest)), encoding="utf-8")\n\n    monkeypatch.setattr(module.subprocess, "run", runner)\n    module.main()\n    assert len(calls) == 2\n
+
+
+def test_release_build_refuses_overlay_mutation_during_frontend(tmp_path, monkeypatch):
+    module = load_build_module()
+    expected = set_expected_identity(monkeypatch)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    manifest = tmp_path / "backend" / ".build-provenance.json"
+    manifest.parent.mkdir()
+    monkeypatch.setattr(module, "MANIFEST", manifest)
+    overlay = tmp_path / ".replit"
+    overlay.write_bytes(b"reviewed")
+    monkeypatch.setattr(module, "OVERLAY", overlay)
+    digest = hashlib.sha256(b"reviewed").hexdigest()
+    calls = []
+
+    def runner(command, **_kwargs):
+        calls.append(command)
+        if len(calls) == 1:
+            manifest.write_text(json.dumps(expected_manifest(expected, digest)), encoding="utf-8")
+        elif len(calls) == 2:
+            overlay.write_bytes(b"mutated")
+
+    monkeypatch.setattr(module.subprocess, "run", runner)
+    with pytest.raises(SystemExit, match="overlay changed during build"):
+        module.main()
+
+
+def test_release_build_does_not_require_overlay_environment_pin(tmp_path, monkeypatch):
+    module = load_build_module()
+    expected = set_expected_identity(monkeypatch)
+    monkeypatch.delenv("EXPECTED_REPLIT_OVERLAY_SHA256", raising=False)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    manifest = tmp_path / "backend" / ".build-provenance.json"
+    manifest.parent.mkdir()
+    monkeypatch.setattr(module, "MANIFEST", manifest)
+    overlay = tmp_path / ".replit"
+    overlay.write_bytes(b"reviewed")
+    monkeypatch.setattr(module, "OVERLAY", overlay)
+    digest = hashlib.sha256(b"reviewed").hexdigest()
+    calls = []
+
+    def runner(command, **_kwargs):
+        calls.append(command)
+        if len(calls) == 1:
+            manifest.write_text(json.dumps(expected_manifest(expected, digest)), encoding="utf-8")
+
+    monkeypatch.setattr(module.subprocess, "run", runner)
+    module.main()
+    assert len(calls) == 2
