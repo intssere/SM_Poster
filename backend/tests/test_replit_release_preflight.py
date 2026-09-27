@@ -37,7 +37,7 @@ def set_expected_identity(monkeypatch):
         monkeypatch.setenv(name, value)
     return expected
 
-def expected_manifest(expected):
+def expected_manifest(expected, overlay_sha256="3" * 64):
     return {
         "schema_version": 3,
         "topology": "canonical_parent_with_checkpoint_overlay",
@@ -45,7 +45,7 @@ def expected_manifest(expected):
         "canonical_tree_sha": expected["EXPECTED_CANONICAL_TREE"],
         "release_overlay": {
             "path": ".replit",
-            "sha256": expected["EXPECTED_REPLIT_OVERLAY_SHA256"],
+            "sha256": overlay_sha256,
         },
     }
 
@@ -85,7 +85,7 @@ def test_exact_clean_checkpoint_succeeds(tmp_path, monkeypatch):
     module = load_module()
     digest = bind(module, tmp_path, monkeypatch, changed=[], commit="4"*40, tree="5"*40,
                   parents=["3"*40], parent_tree="2"*40, checkpoint_paths=[".replit"])
-    payload = module.build_provenance(expected_commit="3"*40, expected_tree="2"*40, expected_overlay_sha256=digest)
+    payload = module.build_provenance(expected_commit="3"*40, expected_tree="2"*40)
     assert payload["schema_version"] == 3
     assert payload["topology"] == module.CHECKPOINT_TOPOLOGY
     assert payload["canonical_commit_sha"] == "3"*40
@@ -179,7 +179,7 @@ def test_deployment_build_invokes_pinned_provenance_before_frontend(tmp_path, mo
         assert cwd == tmp_path and check is True
         commands.append(command)
         if len(commands) == 1:
-            manifest.write_text(json.dumps(expected_manifest(expected)), encoding="utf-8")
+            manifest.write_text(json.dumps(expected_manifest(expected, overlay_sha256)), encoding="utf-8")
 
     monkeypatch.setattr(module.subprocess, "run", runner)
     module.main()
@@ -238,3 +238,4 @@ def test_release_build_refuses_unavailable_git_metadata_before_frontend(monkeypa
     with pytest.raises(subprocess.CalledProcessError):
         module.main()
     assert len(commands) == 1
+\n\ndef test_release_build_refuses_overlay_mutation_during_frontend(tmp_path, monkeypatch):\n    module = load_build_module()\n    expected = set_expected_identity(monkeypatch)\n    monkeypatch.setattr(module, "ROOT", tmp_path)\n    manifest = tmp_path / "backend" / ".build-provenance.json"\n    manifest.parent.mkdir()\n    monkeypatch.setattr(module, "MANIFEST", manifest)\n    overlay = tmp_path / ".replit"\n    overlay.write_bytes(b"reviewed")\n    monkeypatch.setattr(module, "OVERLAY", overlay)\n    digest = hashlib.sha256(b"reviewed").hexdigest()\n    calls = []\n\n    def runner(command, **_kwargs):\n        calls.append(command)\n        if len(calls) == 1:\n            manifest.write_text(json.dumps(expected_manifest(expected, digest)), encoding="utf-8")\n        elif len(calls) == 2:\n            overlay.write_bytes(b"mutated")\n\n    monkeypatch.setattr(module.subprocess, "run", runner)\n    with pytest.raises(SystemExit, match="overlay changed during build"):\n        module.main()\n\n\ndef test_release_build_does_not_require_overlay_environment_pin(tmp_path, monkeypatch):\n    module = load_build_module()\n    expected = set_expected_identity(monkeypatch)\n    monkeypatch.delenv("EXPECTED_REPLIT_OVERLAY_SHA256", raising=False)\n    monkeypatch.setattr(module, "ROOT", tmp_path)\n    manifest = tmp_path / "backend" / ".build-provenance.json"\n    manifest.parent.mkdir()\n    monkeypatch.setattr(module, "MANIFEST", manifest)\n    overlay = tmp_path / ".replit"\n    overlay.write_bytes(b"reviewed")\n    monkeypatch.setattr(module, "OVERLAY", overlay)\n    digest = hashlib.sha256(b"reviewed").hexdigest()\n    calls = []\n\n    def runner(command, **_kwargs):\n        calls.append(command)\n        if len(calls) == 1:\n            manifest.write_text(json.dumps(expected_manifest(expected, digest)), encoding="utf-8")\n\n    monkeypatch.setattr(module.subprocess, "run", runner)\n    module.main()\n    assert len(calls) == 2\n
