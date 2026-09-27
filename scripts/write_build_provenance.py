@@ -53,8 +53,8 @@ def build_provenance(*, expected_commit: str | None = None, expected_tree: str |
         canonical_tree_sha = release_tree_sha
         topology = DIRTY_OVERLAY_TOPOLOGY
     elif changed_paths == []:
-        if not expected_commit or not expected_tree or not expected_overlay_sha256:
-            raise SystemExit("refusing to attest: checkpoint topology requires exact expected canonical identity and overlay hash")
+        if not expected_commit or not expected_tree:
+            raise SystemExit("refusing to attest: checkpoint topology requires exact expected canonical identity")
         parents = _checkpoint_parents()
         if len(parents) != 1:
             raise SystemExit("refusing to attest: checkpoint release must have exactly one parent")
