@@ -100,13 +100,13 @@ def test_dirty_drift_other_than_exact_overlay_fails(tmp_path, monkeypatch, chang
     with pytest.raises(SystemExit, match="tracked differences"):
         module.build_provenance()
 
-def test_clean_checkpoint_requires_all_expected_identity(tmp_path, monkeypatch):
+def test_clean_checkpoint_requires_canonical_identity_but_not_overlay_pin(tmp_path, monkeypatch):
     module = load_module()
     digest = bind(module, tmp_path, monkeypatch, changed=[], commit="4"*40, parents=["3"*40])
+    payload = module.build_provenance(expected_commit="3"*40, expected_tree="2"*40)
+    assert payload["release_overlay"]["sha256"] == digest
     with pytest.raises(SystemExit, match="requires exact expected"):
-        module.build_provenance(expected_commit="3"*40, expected_tree="2"*40)
-    with pytest.raises(SystemExit, match="requires exact expected"):
-        module.build_provenance(expected_commit="3"*40, expected_overlay_sha256=digest)
+        module.build_provenance(expected_commit="3"*40)
 
 @pytest.mark.parametrize("parents", [[], ["3"*40, "6"*40]])
 def test_checkpoint_requires_exactly_one_parent(tmp_path, monkeypatch, parents):
