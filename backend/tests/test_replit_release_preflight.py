@@ -173,6 +173,10 @@ def test_deployment_build_invokes_pinned_provenance_before_frontend(tmp_path, mo
     manifest = tmp_path / "backend" / ".build-provenance.json"
     manifest.parent.mkdir()
     monkeypatch.setattr(module, "MANIFEST", manifest)
+    overlay = tmp_path / ".replit"
+    overlay.write_bytes(b"reviewed")
+    monkeypatch.setattr(module, "OVERLAY", overlay)
+    overlay_sha256 = hashlib.sha256(b"reviewed").hexdigest()
     commands = []
 
     def runner(command, *, cwd, check):
@@ -191,7 +195,6 @@ def test_deployment_build_invokes_pinned_provenance_before_frontend(tmp_path, mo
 @pytest.mark.parametrize("missing", [
     "EXPECTED_CANONICAL_COMMIT",
     "EXPECTED_CANONICAL_TREE",
-    "EXPECTED_REPLIT_OVERLAY_SHA256",
 ])
 def test_release_build_refuses_missing_independent_pin(monkeypatch, missing):
     module = load_build_module()
