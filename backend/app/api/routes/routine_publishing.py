@@ -68,6 +68,12 @@ class RunOnceDryRunRequest(BaseModel):
     confirmation_text_version: str
 
 
+class CertifiedCanaryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmed: bool
+    confirmation_text_version: str
+
+
 class RunOnceLiveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     confirmed: bool
@@ -228,6 +234,29 @@ async def run_once_dry_run(
     ):
         raise HTTPException(409, "ROUTINE_DRY_RUN_TARGET_NOT_ELIGIBLE")
     return result
+
+
+@router.post("/publications/{publication_id}/certified-offline-dry-run")
+def certified_offline_dry_run(
+    publication_id: str,
+    request: Request,
+    payload: CertifiedCanaryRequest,
+    db: Session = Depends(get_db),
+):
+    _actor(request)
+    from app.services.routine_certified_canary import (
+        CONFIRMATION_TEXT_VERSION, CertifiedCanaryError, certify_one_shot_offline_canary,
+    )
+    if not payload.confirmed or payload.confirmation_text_version != CONFIRMATION_TEXT_VERSION:
+        raise HTTPException(422, "INVALID_CERTIFIED_CANARY_CONFIRMATION")
+    try:
+        return certify_one_shot_offline_canary(
+            db, publication_id=publication_id, settings=get_settings(),
+        )
+    except CertifiedCanaryError as exc:
+        raise HTTPException(409, str(exc)) from None
+    except Exception:
+        raise HTTPException(500, "CERTIFIED_CANARY_UNEXPECTED_ERROR") from None
 
 
 @router.post("/publications/{publication_id}/run-once-live")
