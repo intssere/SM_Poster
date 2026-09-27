@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -72,6 +72,8 @@ class CertifiedCanaryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     confirmed: bool
     confirmation_text_version: str
+    preflight_contract_version: str
+    preflight_receipt: dict[str, Any]
 
 
 class RunOnceLiveRequest(BaseModel):
@@ -236,6 +238,26 @@ async def run_once_dry_run(
     return result
 
 
+@router.get("/publications/{publication_id}/certified-offline-preflight")
+def certified_offline_preflight(
+    publication_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    _actor(request)
+    from app.services.routine_certified_canary import (
+        CertifiedCanaryError, preflight_certified_offline_canary,
+    )
+    try:
+        return preflight_certified_offline_canary(
+            db, publication_id=publication_id, settings=get_settings(),
+        )
+    except CertifiedCanaryError as exc:
+        raise HTTPException(409, str(exc)) from None
+    except Exception:
+        raise HTTPException(500, "CERTIFIED_CANARY_PREFLIGHT_UNEXPECTED_ERROR") from None
+
+
 @router.post("/publications/{publication_id}/certified-offline-dry-run")
 def certified_offline_dry_run(
     publication_id: str,
@@ -252,6 +274,8 @@ def certified_offline_dry_run(
     try:
         return certify_one_shot_offline_canary(
             db, publication_id=publication_id, settings=get_settings(),
+            preflight_contract_version=payload.preflight_contract_version,
+            preflight_receipt=payload.preflight_receipt,
         )
     except CertifiedCanaryError as exc:
         raise HTTPException(409, str(exc)) from None

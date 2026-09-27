@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import socket
 from datetime import timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -80,10 +81,21 @@ def canary(monkeypatch):
 
 
 def _run(db, **kwargs):
+    publication_id = kwargs.pop("publication_id", "canary-source")
+    settings = kwargs.pop("settings", _settings())
+    if not settings.app_secret_key:
+        settings = settings.model_copy(update={"app_secret_key": "s" * 48})
+    scheduler = kwargs.pop("scheduler_snapshot", _scheduler())
+    preflight_receipt = kwargs.pop("preflight_receipt", None)
+    if preflight_receipt is None:
+        preflight_receipt = certified.preflight_certified_offline_canary(
+            db, publication_id=publication_id, settings=settings, now=NOW,
+            scheduler_snapshot=scheduler,
+        )
     return certified.certify_one_shot_offline_canary(
-        db, publication_id=kwargs.pop("publication_id", "canary-source"),
-        settings=kwargs.pop("settings", _settings()),
-        now=NOW, scheduler_snapshot=kwargs.pop("scheduler_snapshot", _scheduler()),
+        db, publication_id=publication_id, settings=settings,
+        preflight_contract_version=certified.PREFLIGHT_CONTRACT_VERSION,
+        preflight_receipt=preflight_receipt, now=NOW, scheduler_snapshot=scheduler,
     )
 
 
@@ -239,19 +251,32 @@ def test_api_auth_origin_confirmation_and_sanitized_receipt(monkeypatch):
     get_settings.cache_clear()
     from app.main import app
     calls = []
+    receipt = {"contract_version": certified.PREFLIGHT_CONTRACT_VERSION}
+    monkeypatch.setattr(
+        certified, "preflight_certified_offline_canary",
+        lambda db, *, publication_id, settings: calls.append(("preflight", publication_id)) or receipt,
+    )
     monkeypatch.setattr(
         certified, "certify_one_shot_offline_canary",
-        lambda db, *, publication_id, settings: calls.append(publication_id) or
+        lambda db, *, publication_id, settings, preflight_contract_version, preflight_receipt:
+        calls.append(("execute", publication_id, preflight_contract_version, preflight_receipt)) or
         {"status": "SUCCEEDED", "external_requests": 0},
     )
     app.dependency_overrides[get_db] = lambda: object()
     client = TestClient(app)
     path = "/api/routine-publishing/publications/canary-source/certified-offline-dry-run"
-    body = {"confirmed": True, "confirmation_text_version": certified.CONFIRMATION_TEXT_VERSION}
+    preflight_path = "/api/routine-publishing/publications/canary-source/certified-offline-preflight"
+    body = {
+        "confirmed": True, "confirmation_text_version": certified.CONFIRMATION_TEXT_VERSION,
+        "preflight_contract_version": certified.PREFLIGHT_CONTRACT_VERSION,
+        "preflight_receipt": receipt,
+    }
     try:
+        assert client.get(preflight_path).status_code == 401
         assert client.post(path, json=body, headers={"Origin": "http://localhost:5000"}).status_code == 401
         assert client.post(path, json=body).status_code == 403
         assert client.post(path, json=body, headers={"Origin": "https://other.example"}).status_code == 403
+        assert client.get(preflight_path, headers={"Origin": "https://other.example"}).status_code == 403
         login = client.post("/api/auth/login", json={
             "username": "admin", "password": "test-only-password",
         }, headers={"Origin": "http://localhost:5000"})
@@ -260,14 +285,21 @@ def test_api_auth_origin_confirmation_and_sanitized_receipt(monkeypatch):
         # login response set a secure cookie for the proxied environment.
         client.cookies.set(auth.SESSION_COOKIE, auth.make_session("admin"))
         headers = {"Origin": "http://localhost:5000"}
+        assert client.get(preflight_path, headers=headers).json() == receipt
         for bad in ({"confirmed": False, "confirmation_text_version": body["confirmation_text_version"]},
                     {"confirmed": True, "confirmation_text_version": "WRONG"},
                     {**body, "unexpected": True}):
             assert client.post(path, json=bad, headers=headers).status_code == 422
+        assert client.post(path, json={
+            "confirmed": True, "confirmation_text_version": certified.CONFIRMATION_TEXT_VERSION,
+        }, headers=headers).status_code == 422
         response = client.post(path, json=body, headers=headers)
         assert response.status_code == 200
         assert response.json() == {"status": "SUCCEEDED", "external_requests": 0}
-        assert calls == ["canary-source"]
+        assert calls == [
+            ("preflight", "canary-source"),
+            ("execute", "canary-source", certified.PREFLIGHT_CONTRACT_VERSION, receipt),
+        ]
     finally:
         app.dependency_overrides.pop(get_db, None)
         get_settings.cache_clear()
@@ -277,6 +309,7 @@ def test_api_auth_origin_confirmation_and_sanitized_receipt(monkeypatch):
 @pytest.mark.parametrize("case", [
     "success", "real_success", "zero", "multiple", "wrong", "expired", "extra_permit",
     "stale_routing", "network", "unrelated_running", "concurrent_writer",
+    "state_drift", "preflight_write", "execution_select_into",
 ])
 def test_postgres_locked_certification_preserves_paused_and_unrelated_run(monkeypatch, case):
     # CI supplies a disposable database, never a production URL.
@@ -292,7 +325,8 @@ def test_postgres_locked_certification_preserves_paused_and_unrelated_run(monkey
         db.add(ContentAngle(id="angle", key="canary", name="Canary"))
         db.flush()
         db.add(Product(id="product", store_id="store", shopify_product_id="product",
-                       handle="canary", title="Canary", product_url="https://canary.example/p/canary"))
+                       handle="canary", title="Canary", product_url="https://canary.example/p/canary",
+                       price_min=Decimal("19.99"), compare_at_min=Decimal("24.00")))
         db.flush()
         db.add(PinConcept(id="concept", store_id="store", product_id="product",
                           content_angle_id="angle", fingerprint="e" * 64))
@@ -420,8 +454,52 @@ def test_postgres_locked_certification_preserves_paused_and_unrelated_run(monkey
             db.get(RoutinePublishingRun, "unrelated").completed_at = None
         if case in {"zero", "multiple", "extra_permit", "expired", "stale_routing", "unrelated_running"}:
             db.commit()
-        if case in {"success", "real_success", "concurrent_writer"}:
+        if case in {"success", "real_success"}:
             assert _run(db)["external_requests"] == 0
+        elif case == "concurrent_writer":
+            # Preflight does not take the execution lock. Exercise contention
+            # after obtaining the read-only receipt, during locked re-evaluation.
+            monkeypatch.setattr(certified, "build_routine_offline_evidence", lambda *a, **k: _evidence())
+            settings = _settings(app_secret_key="s" * 48)
+            preflight_receipt = certified.preflight_certified_offline_canary(
+                db, publication_id=publication_id, settings=settings, now=NOW,
+                scheduler_snapshot=_scheduler(),
+            )
+            monkeypatch.setattr(certified, "build_routine_offline_evidence", try_write)
+            assert _run(db, settings=settings, preflight_receipt=preflight_receipt)["external_requests"] == 0
+        elif case == "state_drift":
+            settings = _settings(app_secret_key="s" * 48)
+            receipt = certified.preflight_certified_offline_canary(
+                db, publication_id=publication_id, settings=settings, now=NOW,
+                scheduler_snapshot=_scheduler(),
+            )
+            db.get(PinPublication, publication_id).title_snapshot = "Drifted after preflight"
+            db.commit()
+            with pytest.raises(certified.CertifiedCanaryError, match="CANARY_PREFLIGHT_STATE_DRIFT"):
+                _run(db, settings=settings, preflight_receipt=receipt)
+        elif case == "preflight_write":
+            def forbidden_write(db_, *args, **kwargs):
+                db_.execute(text(
+                    "UPDATE pin_publications SET scheduled_for = scheduled_for "
+                    "WHERE id = 'canary-source'"
+                ))
+                return _evidence()
+            monkeypatch.setattr(certified, "build_routine_offline_evidence", forbidden_write)
+            with pytest.raises(certified.CertifiedCanaryError, match="CANARY_DATABASE_WRITE_ATTEMPTED"):
+                _run(db)
+        elif case == "execution_select_into":
+            settings = _settings(app_secret_key="s" * 48)
+            receipt = certified.preflight_certified_offline_canary(
+                db, publication_id=publication_id, settings=settings, now=NOW,
+                scheduler_snapshot=_scheduler(),
+            )
+            def forbidden_select(db_, *args, **kwargs):
+                db_.execute(text("SELECT 1 INTO TEMP TABLE canary_probe"))
+                return _evidence()
+            monkeypatch.setattr(certified, "build_routine_offline_evidence", forbidden_select)
+            with pytest.raises(certified.CertifiedCanaryError, match="CANARY_DATABASE_WRITE_ATTEMPTED"):
+                _run(db, settings=settings, preflight_receipt=receipt)
+            assert db.scalar(text("SELECT to_regclass('pg_temp.canary_probe')")) is None
         else:
             with pytest.raises(certified.CertifiedCanaryError):
                 _run(db, publication_id=publication_id)
