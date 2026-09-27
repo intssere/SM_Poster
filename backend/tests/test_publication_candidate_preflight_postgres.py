@@ -23,7 +23,7 @@ def test_postgres_transient_preflight_never_excludes_a_real_row(isolated_postgre
     db = Session()
     try:
         now = datetime.now(timezone.utc)
-        db.add_all([
+        rows = [
             Store(id="store", name="Test", shop_domain="test.example.com"),
             Product(
                 id="product", store_id="store", shopify_product_id="test-product",
@@ -71,7 +71,19 @@ def test_postgres_transient_preflight_never_excludes_a_real_row(isolated_postgre
                 name="Test board", is_active=True, is_eligible=True,
                 last_synced_at=now,
             ),
-        ])
+        ]
+        # Explicit flushes are needed for ID-only fixtures: the ORM cannot
+        # infer insert ordering from relationships that were never assigned.
+        for parent_types in (
+            (Store, ContentAngle, CreativeTemplate, PinterestConnection),
+            (Product,),
+            (PinConcept, ProductImage),
+            (PinDraft, PinterestBoard),
+            (PinCreative,),
+            (PinApproval,),
+        ):
+            db.add_all([row for row in rows if type(row) in parent_types])
+            db.flush()
         db.commit()
 
         def check():
