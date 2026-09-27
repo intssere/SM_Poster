@@ -37,7 +37,7 @@ def set_expected_identity(monkeypatch):
         monkeypatch.setenv(name, value)
     return expected
 
-def expected_manifest(expected):
+def expected_manifest(expected, overlay_sha256="3" * 64):
     return {
         "schema_version": 3,
         "topology": "canonical_parent_with_checkpoint_overlay",
@@ -45,7 +45,7 @@ def expected_manifest(expected):
         "canonical_tree_sha": expected["EXPECTED_CANONICAL_TREE"],
         "release_overlay": {
             "path": ".replit",
-            "sha256": expected["EXPECTED_REPLIT_OVERLAY_SHA256"],
+            "sha256": overlay_sha256,
         },
     }
 
@@ -85,7 +85,7 @@ def test_exact_clean_checkpoint_succeeds(tmp_path, monkeypatch):
     module = load_module()
     digest = bind(module, tmp_path, monkeypatch, changed=[], commit="4"*40, tree="5"*40,
                   parents=["3"*40], parent_tree="2"*40, checkpoint_paths=[".replit"])
-    payload = module.build_provenance(expected_commit="3"*40, expected_tree="2"*40, expected_overlay_sha256=digest)
+    payload = module.build_provenance(expected_commit="3"*40, expected_tree="2"*40)
     assert payload["schema_version"] == 3
     assert payload["topology"] == module.CHECKPOINT_TOPOLOGY
     assert payload["canonical_commit_sha"] == "3"*40
@@ -100,13 +100,13 @@ def test_dirty_drift_other_than_exact_overlay_fails(tmp_path, monkeypatch, chang
     with pytest.raises(SystemExit, match="tracked differences"):
         module.build_provenance()
 
-def test_clean_checkpoint_requires_all_expected_identity(tmp_path, monkeypatch):
+def test_clean_checkpoint_requires_canonical_identity_but_not_overlay_pin(tmp_path, monkeypatch):
     module = load_module()
     digest = bind(module, tmp_path, monkeypatch, changed=[], commit="4"*40, parents=["3"*40])
+    payload = module.build_provenance(expected_commit="3"*40, expected_tree="2"*40)
+    assert payload["release_overlay"]["sha256"] == digest
     with pytest.raises(SystemExit, match="requires exact expected"):
-        module.build_provenance(expected_commit="3"*40, expected_tree="2"*40)
-    with pytest.raises(SystemExit, match="requires exact expected"):
-        module.build_provenance(expected_commit="3"*40, expected_overlay_sha256=digest)
+        module.build_provenance(expected_commit="3"*40)
 
 @pytest.mark.parametrize("parents", [[], ["3"*40, "6"*40]])
 def test_checkpoint_requires_exactly_one_parent(tmp_path, monkeypatch, parents):
@@ -173,13 +173,17 @@ def test_deployment_build_invokes_pinned_provenance_before_frontend(tmp_path, mo
     manifest = tmp_path / "backend" / ".build-provenance.json"
     manifest.parent.mkdir()
     monkeypatch.setattr(module, "MANIFEST", manifest)
+    overlay = tmp_path / ".replit"
+    overlay.write_bytes(b"reviewed")
+    monkeypatch.setattr(module, "OVERLAY", overlay)
+    overlay_sha256 = hashlib.sha256(b"reviewed").hexdigest()
     commands = []
 
     def runner(command, *, cwd, check):
         assert cwd == tmp_path and check is True
         commands.append(command)
         if len(commands) == 1:
-            manifest.write_text(json.dumps(expected_manifest(expected)), encoding="utf-8")
+            manifest.write_text(json.dumps(expected_manifest(expected, overlay_sha256)), encoding="utf-8")
 
     monkeypatch.setattr(module.subprocess, "run", runner)
     module.main()
@@ -191,7 +195,6 @@ def test_deployment_build_invokes_pinned_provenance_before_frontend(tmp_path, mo
 @pytest.mark.parametrize("missing", [
     "EXPECTED_CANONICAL_COMMIT",
     "EXPECTED_CANONICAL_TREE",
-    "EXPECTED_REPLIT_OVERLAY_SHA256",
 ])
 def test_release_build_refuses_missing_independent_pin(monkeypatch, missing):
     module = load_build_module()
@@ -238,3 +241,52 @@ def test_release_build_refuses_unavailable_git_metadata_before_frontend(monkeypa
     with pytest.raises(subprocess.CalledProcessError):
         module.main()
     assert len(commands) == 1
+
+
+def test_release_build_refuses_overlay_mutation_during_frontend(tmp_path, monkeypatch):
+    module = load_build_module()
+    expected = set_expected_identity(monkeypatch)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    manifest = tmp_path / "backend" / ".build-provenance.json"
+    manifest.parent.mkdir()
+    monkeypatch.setattr(module, "MANIFEST", manifest)
+    overlay = tmp_path / ".replit"
+    overlay.write_bytes(b"reviewed")
+    monkeypatch.setattr(module, "OVERLAY", overlay)
+    digest = hashlib.sha256(b"reviewed").hexdigest()
+    calls = []
+
+    def runner(command, **_kwargs):
+        calls.append(command)
+        if len(calls) == 1:
+            manifest.write_text(json.dumps(expected_manifest(expected, digest)), encoding="utf-8")
+        elif len(calls) == 2:
+            overlay.write_bytes(b"mutated")
+
+    monkeypatch.setattr(module.subprocess, "run", runner)
+    with pytest.raises(SystemExit, match="overlay changed during build"):
+        module.main()
+
+
+def test_release_build_does_not_require_overlay_environment_pin(tmp_path, monkeypatch):
+    module = load_build_module()
+    expected = set_expected_identity(monkeypatch)
+    monkeypatch.delenv("EXPECTED_REPLIT_OVERLAY_SHA256", raising=False)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    manifest = tmp_path / "backend" / ".build-provenance.json"
+    manifest.parent.mkdir()
+    monkeypatch.setattr(module, "MANIFEST", manifest)
+    overlay = tmp_path / ".replit"
+    overlay.write_bytes(b"reviewed")
+    monkeypatch.setattr(module, "OVERLAY", overlay)
+    digest = hashlib.sha256(b"reviewed").hexdigest()
+    calls = []
+
+    def runner(command, **_kwargs):
+        calls.append(command)
+        if len(calls) == 1:
+            manifest.write_text(json.dumps(expected_manifest(expected, digest)), encoding="utf-8")
+
+    monkeypatch.setattr(module.subprocess, "run", runner)
+    module.main()
+    assert len(calls) == 2
