@@ -12,7 +12,7 @@ PUBLISHING_ENABLED = "true"
 
 [deployment]
 deploymentTarget = "autoscale"
-build = ["npm", "--prefix", "frontend", "run", "build"]
+build = ["python", "scripts/replit_release_build.py"]
 run = ["python", "scripts/start_production.py"]
 
 [workflows]

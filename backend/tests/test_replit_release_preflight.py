@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
+import tomllib
 
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "write_build_provenance.py"
+BUILD_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "replit_release_build.py"
+REPLIT = Path(__file__).resolve().parents[2] / ".replit"
 
 def load_module():
     spec = importlib.util.spec_from_file_location("task593d_provenance", SCRIPT)
@@ -14,6 +19,35 @@ def load_module():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+def load_build_module():
+    spec = importlib.util.spec_from_file_location("task595_release_build", BUILD_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+def set_expected_identity(monkeypatch):
+    expected = {
+        "EXPECTED_CANONICAL_COMMIT": "1" * 40,
+        "EXPECTED_CANONICAL_TREE": "2" * 40,
+        "EXPECTED_REPLIT_OVERLAY_SHA256": "3" * 64,
+    }
+    for name, value in expected.items():
+        monkeypatch.setenv(name, value)
+    return expected
+
+def expected_manifest(expected):
+    return {
+        "schema_version": 3,
+        "topology": "canonical_parent_with_checkpoint_overlay",
+        "canonical_commit_sha": expected["EXPECTED_CANONICAL_COMMIT"],
+        "canonical_tree_sha": expected["EXPECTED_CANONICAL_TREE"],
+        "release_overlay": {
+            "path": ".replit",
+            "sha256": expected["EXPECTED_REPLIT_OVERLAY_SHA256"],
+        },
+    }
 
 def bind(module, tmp_path: Path, monkeypatch, *, changed=None, commit="1"*40, tree="2"*40,
          overlay=b"reviewed", parents=None, parent_tree="2"*40, checkpoint_paths=None):
@@ -129,3 +163,78 @@ def test_reviewed_overlay_hash_mismatch_fails_for_checkpoint(tmp_path, monkeypat
     bind(module, tmp_path, monkeypatch, changed=[], parents=["3"*40])
     with pytest.raises(SystemExit, match="overlay hash mismatch"):
         module.build_provenance(expected_commit="3"*40, expected_tree="2"*40, expected_overlay_sha256="9"*64)
+
+def test_deployment_build_invokes_pinned_provenance_before_frontend(tmp_path, monkeypatch):
+    config = tomllib.loads(REPLIT.read_text(encoding="utf-8"))
+    assert config["deployment"]["build"] == ["python", "scripts/replit_release_build.py"]
+    module = load_build_module()
+    expected = set_expected_identity(monkeypatch)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    manifest = tmp_path / "backend" / ".build-provenance.json"
+    manifest.parent.mkdir()
+    monkeypatch.setattr(module, "MANIFEST", manifest)
+    commands = []
+
+    def runner(command, *, cwd, check):
+        assert cwd == tmp_path and check is True
+        commands.append(command)
+        if len(commands) == 1:
+            manifest.write_text(json.dumps(expected_manifest(expected)), encoding="utf-8")
+
+    monkeypatch.setattr(module.subprocess, "run", runner)
+    module.main()
+    assert commands == [
+        [module.sys.executable, str(tmp_path / "scripts" / "write_build_provenance.py")],
+        ["npm", "--prefix", "frontend", "run", "build"],
+    ]
+
+@pytest.mark.parametrize("missing", [
+    "EXPECTED_CANONICAL_COMMIT",
+    "EXPECTED_CANONICAL_TREE",
+    "EXPECTED_REPLIT_OVERLAY_SHA256",
+])
+def test_release_build_refuses_missing_independent_pin(monkeypatch, missing):
+    module = load_build_module()
+    set_expected_identity(monkeypatch)
+    monkeypatch.delenv(missing)
+    monkeypatch.setattr(
+        module.subprocess, "run",
+        lambda *_args, **_kwargs: pytest.fail("build must not run without pins"),
+    )
+    with pytest.raises(SystemExit, match=missing):
+        module.main()
+
+def test_release_build_refuses_non_checkpoint_manifest_before_frontend(tmp_path, monkeypatch):
+    module = load_build_module()
+    expected = set_expected_identity(monkeypatch)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    manifest = tmp_path / "backend" / ".build-provenance.json"
+    manifest.parent.mkdir()
+    monkeypatch.setattr(module, "MANIFEST", manifest)
+    commands = []
+
+    def runner(command, **_kwargs):
+        commands.append(command)
+        manifest.write_text(
+            json.dumps({**expected_manifest(expected), "topology": "canonical_with_worktree_overlay"}),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", runner)
+    with pytest.raises(SystemExit, match="certified schema-v3 checkpoint"):
+        module.main()
+    assert len(commands) == 1
+
+def test_release_build_refuses_unavailable_git_metadata_before_frontend(monkeypatch):
+    module = load_build_module()
+    set_expected_identity(monkeypatch)
+    commands = []
+
+    def runner(command, **_kwargs):
+        commands.append(command)
+        raise subprocess.CalledProcessError(128, command)
+
+    monkeypatch.setattr(module.subprocess, "run", runner)
+    with pytest.raises(subprocess.CalledProcessError):
+        module.main()
+    assert len(commands) == 1

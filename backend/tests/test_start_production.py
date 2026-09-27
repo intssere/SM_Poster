@@ -12,14 +12,10 @@ startup = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(startup)
 
 
-def test_migration_command_is_repository_resolved_and_shell_free():
-    assert startup.migration_command() == [
-        startup.sys.executable,
-        "-m",
-        "alembic",
-        "upgrade",
-        "head",
-    ]
+def test_production_supervisor_has_no_migration_command():
+    assert not hasattr(startup, "migration_command")
+    assert not hasattr(startup, "run_database_migrations")
+    assert "alembic" not in SCRIPT_PATH.read_text(encoding="utf-8")
 
 
 def test_schema_guard_command_is_repository_resolved_and_shell_free():
@@ -28,28 +24,6 @@ def test_schema_guard_command_is_repository_resolved_and_shell_free():
         "-m",
         "app.db.schema_canonicality_guard",
     ]
-
-
-def test_run_database_migrations_uses_backend_cwd_and_no_shell_or_secret_args():
-    seen = {}
-
-    def runner(command, **kwargs):
-        seen["command"] = command
-        seen["kwargs"] = kwargs
-        return SimpleNamespace(returncode=0)
-
-    startup.run_database_migrations(runner=runner)
-
-    assert seen["command"] == startup.migration_command()
-    assert seen["kwargs"] == {
-        "cwd": startup.BACKEND_DIR,
-        "check": False,
-    }
-    rendered = repr((seen["command"], seen["kwargs"]))
-    assert "DATABASE_URL" not in rendered
-    assert "postgresql://" not in rendered
-    assert "password" not in rendered.lower()
-    assert "shell" not in seen["kwargs"]
 
 
 def test_run_schema_guard_uses_backend_cwd_and_no_shell_or_secret_args():
@@ -74,18 +48,6 @@ def test_run_schema_guard_uses_backend_cwd_and_no_shell_or_secret_args():
     assert "shell" not in seen["kwargs"]
 
 
-def test_nonzero_migration_exit_fails_closed_without_secret_detail():
-    def runner(*args, **kwargs):
-        return SimpleNamespace(returncode=17)
-
-    with pytest.raises(startup.StartupError, match="database migration failed with status 17") as exc:
-        startup.run_database_migrations(runner=runner)
-
-    message = str(exc.value)
-    assert "DATABASE_URL" not in message
-    assert "postgresql://" not in message
-
-
 def test_nonzero_schema_guard_exit_fails_closed_without_secret_detail():
     def runner(*args, **kwargs):
         return SimpleNamespace(returncode=23)
@@ -101,12 +63,11 @@ def test_nonzero_schema_guard_exit_fails_closed_without_secret_detail():
     assert "postgresql://" not in message
 
 
-def test_run_orders_migration_guard_backend_health_frontend_supervision(monkeypatch):
+def test_run_orders_guard_backend_health_frontend_supervision(monkeypatch):
     events = []
     backend = object()
     frontend = object()
 
-    monkeypatch.setattr(startup, "run_database_migrations", lambda: events.append("migration"))
     monkeypatch.setattr(
         startup,
         "run_schema_canonicality_guard",
@@ -149,18 +110,12 @@ def test_run_orders_migration_guard_backend_health_frontend_supervision(monkeypa
 
     operational = [event for event in events if not event.startswith("log:")]
     assert operational == [
-        "migration",
         "schema_guard",
         "backend_start",
         "backend_ready",
         "frontend_start",
         "supervise",
     ]
-    assert events.index("log:database_migration_started") < events.index("migration")
-    assert events.index("migration") < events.index("log:database_migration_succeeded")
-    assert events.index("log:database_migration_succeeded") < events.index(
-        "log:schema_canonicality_guard_started"
-    )
     assert events.index("log:schema_canonicality_guard_started") < events.index(
         "schema_guard"
     )
@@ -172,45 +127,8 @@ def test_run_orders_migration_guard_backend_health_frontend_supervision(monkeypa
     )
 
 
-def test_migration_failure_starts_neither_guard_backend_nor_frontend(monkeypatch):
+def test_schema_revision_mismatch_starts_neither_backend_nor_frontend(monkeypatch):
     calls = []
-
-    def fail_migration():
-        calls.append("migration")
-        raise startup.StartupError("database migration failed with status 2")
-
-    monkeypatch.setattr(startup, "run_database_migrations", fail_migration)
-    monkeypatch.setattr(
-        startup,
-        "run_schema_canonicality_guard",
-        lambda: (_ for _ in ()).throw(AssertionError("guard must not run")),
-    )
-    monkeypatch.setattr(
-        startup,
-        "start_backend",
-        lambda: (_ for _ in ()).throw(AssertionError("backend must not start")),
-    )
-    monkeypatch.setattr(
-        startup,
-        "start_frontend",
-        lambda: (_ for _ in ()).throw(AssertionError("frontend must not start")),
-    )
-    monkeypatch.setattr(startup, "terminate_process", lambda process: None)
-    monkeypatch.setattr(startup.signal, "getsignal", lambda signum: object())
-    monkeypatch.setattr(startup.signal, "signal", lambda signum, handler: None)
-
-    assert startup.run() == 1
-    assert calls == ["migration"]
-
-
-def test_schema_guard_failure_starts_neither_backend_nor_frontend(monkeypatch):
-    calls = []
-
-    monkeypatch.setattr(
-        startup,
-        "run_database_migrations",
-        lambda: calls.append("migration"),
-    )
 
     def fail_guard():
         calls.append("schema_guard")
@@ -232,14 +150,13 @@ def test_schema_guard_failure_starts_neither_backend_nor_frontend(monkeypatch):
     monkeypatch.setattr(startup.signal, "signal", lambda signum, handler: None)
 
     assert startup.run() == 1
-    assert calls == ["migration", "schema_guard"]
+    assert calls == ["schema_guard"]
 
 
 def test_existing_health_gate_still_blocks_frontend(monkeypatch):
     events = []
     backend = object()
 
-    monkeypatch.setattr(startup, "run_database_migrations", lambda: events.append("migration"))
     monkeypatch.setattr(
         startup,
         "run_schema_canonicality_guard",
@@ -268,4 +185,4 @@ def test_existing_health_gate_still_blocks_frontend(monkeypatch):
     monkeypatch.setattr(startup, "_timeout_from_environment", lambda: 10.0)
 
     assert startup.run() == 1
-    assert events == ["migration", "schema_guard", "backend_start", "health_fail"]
+    assert events == ["schema_guard", "backend_start", "health_fail"]
