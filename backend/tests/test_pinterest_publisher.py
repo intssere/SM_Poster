@@ -16,7 +16,32 @@ from app.services.publication_scheduler import claim, due_publications, request_
 from test_pin_proposals import add_review_creative, setup_service
 import asyncio
 from app.models.domain import PinterestConnection, PinterestBoard, PinApproval, ProductImage
-from app.services.publication_identity import PublicationIdentityService
+from app.services.publication_identity import build_publication_candidate
+from app.models import routine_publishing  # noqa: F401 - register FK targets for SQLite test metadata
+
+
+class HistoricalFixtureSnapshotService:
+    """Seed historical publication rows for publisher rejection tests.
+
+    These cases intentionally start with malformed media/routing or later mutate
+    the row. New snapshot creation correctly refuses such rows at preflight.
+    """
+    def __init__(self, session_factory):
+        self.session_factory = session_factory
+
+    def create_snapshot(self, **kwargs):
+        db = self.session_factory()
+        try:
+            publication = build_publication_candidate(db, **kwargs)
+            db.add(publication)
+            db.commit()
+            db.refresh(publication)
+            return publication
+        finally:
+            db.close()
+
+
+PublicationIdentityService = HistoricalFixtureSnapshotService
 from test_publication_identity import _prepared, _revision, _activate
 
 @pytest.mark.parametrize("value", ["http://x", "https://localhost/x", "https://127.0.0.1/x", "https://10.0.0.1/x", "https://x.local/a"])

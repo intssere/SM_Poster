@@ -18,6 +18,7 @@ from app.core.config import get_settings
 from app.services.publication_identity import (
     PublicationIdentityError,
     PublicationIdentityService,
+    build_publication_candidate,
 )
 from test_pin_proposals import add_product, add_review_creative, setup_service
 
@@ -280,11 +281,18 @@ def test_direct_pinterest_snapshot_derives_public_digest_url(monkeypatch):
     db.add(connection); db.flush(); pinterest_board = PinterestBoard(connection_id=connection.id, external_board_id="direct-media-board", name="Fragrance", is_active=True, is_eligible=True, routing_label="fragrance"); db.add(pinterest_board); db.commit()
     monkeypatch.setenv("PUBLIC_MEDIA_BASE_URL", "https://media.example.com"); get_settings.cache_clear()
     try:
-        publication = PublicationIdentityService(proposals.session_factory).create_snapshot(approval_id=approval.id, board_id=None, pinterest_connection_id=connection.id, pinterest_board_record_id=pinterest_board.id)
+        publication = build_publication_candidate(db, approval_id=approval.id, board_id=None, pinterest_connection_id=connection.id, pinterest_board_record_id=pinterest_board.id)
         assert publication.media_url_snapshot == f"https://media.example.com/api/pins/public-creatives/{creative.id}/{creative.sha256}.png"
         assert publication.board_id is None
         assert publication.pinterest_connection_id == connection.id
         assert publication.pinterest_board_record_id == pinterest_board.id
+        assert publication.id is None
+        with pytest.raises(PublicationIdentityError, match="CANDIDATE_PREFLIGHT_BLOCKED"):
+            PublicationIdentityService(proposals.session_factory).create_snapshot(
+                approval_id=approval.id, board_id=None,
+                pinterest_connection_id=connection.id, pinterest_board_record_id=pinterest_board.id,
+            )
+        assert db.scalar(select(PinPublication).where(PinPublication.approval_id == approval.id)) is None
     finally:
         get_settings.cache_clear(); db.close()
 
