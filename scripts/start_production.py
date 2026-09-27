@@ -47,16 +47,6 @@ def log_lifecycle_event(
     print(f"{LOG_PREFIX} event={event} elapsed_ms={elapsed_ms}", flush=True)
 
 
-def migration_command() -> list[str]:
-    return [
-        sys.executable,
-        "-m",
-        "alembic",
-        "upgrade",
-        "head",
-    ]
-
-
 def schema_canonicality_guard_command() -> list[str]:
     return [
         sys.executable,
@@ -69,7 +59,7 @@ def run_schema_canonicality_guard(
     *,
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
 ) -> None:
-    """Refuse startup if post-migration PostgreSQL catalog contracts drift."""
+    """Refuse startup unless PostgreSQL is already at canonical revision 0030."""
     result = runner(
         schema_canonicality_guard_command(),
         cwd=BACKEND_DIR,
@@ -78,27 +68,6 @@ def run_schema_canonicality_guard(
     if int(result.returncode) != 0:
         raise StartupError(
             f"schema canonicality guard failed with status {int(result.returncode)}"
-        )
-
-
-def run_database_migrations(
-    *,
-    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
-) -> None:
-    """Upgrade the production database to this repository's Alembic head.
-
-    The command is executed without a shell and no environment or database URL
-    is logged by this wrapper. Any non-zero exit refuses production startup
-    before the backend or frontend process is launched.
-    """
-    result = runner(
-        migration_command(),
-        cwd=BACKEND_DIR,
-        check=False,
-    )
-    if int(result.returncode) != 0:
-        raise StartupError(
-            f"database migration failed with status {int(result.returncode)}"
         )
 
 
@@ -252,9 +221,6 @@ def run() -> int:
 
     try:
         lifecycle("wrapper_start")
-        lifecycle("database_migration_started")
-        run_database_migrations()
-        lifecycle("database_migration_succeeded")
         lifecycle("schema_canonicality_guard_started")
         run_schema_canonicality_guard()
         lifecycle("schema_canonicality_guard_succeeded")

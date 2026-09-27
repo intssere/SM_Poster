@@ -11,7 +11,9 @@ from app.db.session import engine
 
 def main() -> int:
     with engine.connect() as connection:
-        verify_frozen_schema_at_head(connection)
+        if connection.dialect.name != "postgresql":
+            raise RuntimeError("schema canonicality guard requires PostgreSQL")
+        verify_frozen_schema_at_head(connection, revision="0030")
     return 0
 
 
