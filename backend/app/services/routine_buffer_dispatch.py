@@ -12,7 +12,7 @@ from app.integrations.buffer.gateway import (
     BufferGateway,
 )
 from app.models.domain import PinPublication, PublicationAttempt, PublicationStatus
-from app.models.routine_publishing import RoutineAttemptBoundary, RoutineDispatchPermit
+from app.models.routine_publishing import RoutineAttemptBoundary, RoutineDispatchPermit, RoutinePublishingControl
 from app.services.buffer_pinterest_adapter import build_pinterest_payload, verify_destination
 from app.services.buffer_publication_reconciliation import BufferReconciliationError, reconcile_buffer
 from app.services.publication_scheduler import request_fingerprint_for
@@ -125,6 +125,17 @@ def _persist_pre_provider_failure(db, publication_id, attempt_id, code):
 
 def mark_provider_mutation_boundary(db, attempt_id: str, *, now=None):
     now = normalize_persisted_utc(now or _now())
+    control = db.scalar(select(RoutinePublishingControl).where(
+        RoutinePublishingControl.id == "default",
+    ).with_for_update())
+    attempt = db.get(PublicationAttempt, attempt_id)
+    publication = db.get(PinPublication, attempt.publication_id) if attempt else None
+    if publication:
+        db.refresh(publication)
+    if (not control or control.state != "LIVE" or not attempt or attempt.status != "STARTED"
+            or not publication or publication.status != PublicationStatus.PUBLISHING):
+        db.rollback()
+        raise RoutineDispatchError("ROUTINE_PROVIDER_BOUNDARY_STATE_CHANGED")
     changed = db.execute(update(RoutineAttemptBoundary).where(
         RoutineAttemptBoundary.attempt_id == attempt_id,
         RoutineAttemptBoundary.provider_mutation_started_at.is_(None),
@@ -134,6 +145,33 @@ def mark_provider_mutation_boundary(db, attempt_id: str, *, now=None):
         raise RoutineDispatchError("ROUTINE_PROVIDER_BOUNDARY_CONFLICT")
     db.commit()
     return now
+
+
+def _lock_provider_call(db, publication_id, attempt_id):
+    """Hold the singleton control lock through provider I/O and outcome persistence.
+
+    A stale-run recovery or operator pause cannot interleave with this sole network
+    submission. If either won before the lock, do not make a provider call.
+    """
+    control = db.scalar(select(RoutinePublishingControl).where(
+        RoutinePublishingControl.id == "default",
+    ).with_for_update())
+    publication = db.get(PinPublication, publication_id)
+    attempt = db.get(PublicationAttempt, attempt_id)
+    if publication:
+        db.refresh(publication)
+    if attempt:
+        db.refresh(attempt)
+    boundary = db.scalar(select(RoutineAttemptBoundary).where(
+        RoutineAttemptBoundary.attempt_id == attempt_id,
+    ))
+    if (not control or control.state != "LIVE"
+            or not publication or publication.status != PublicationStatus.PUBLISHING
+            or not attempt or attempt.status != "STARTED"
+            or not boundary or boundary.provider_mutation_started_at is None):
+        db.rollback()
+        return False
+    return True
 
 
 def _unexpected_diagnostic():
@@ -282,6 +320,17 @@ async def dispatch_routine_buffer(
         raise RoutineDispatchError("ROUTINE_PRE_PROVIDER_VALIDATION_FAILED") from None
 
     mark_provider_mutation_boundary(db, attempt_id, now=now)
+    if not _lock_provider_call(db, publication_id, attempt_id):
+        # The mutation boundary has been committed. Even though we did not call
+        # Buffer, treat any competing recovery/control transition conservatively.
+        publication = db.get(PinPublication, publication_id)
+        if publication and publication.status == PublicationStatus.PUBLISHING:
+            _persist_provider_outcome(
+                db, publication_id, attempt_id, status=PublicationStatus.PUBLISH_UNKNOWN,
+                code="ROUTINE_PROVIDER_BOUNDARY_STATE_CHANGED", settings=settings,
+            )
+        pause_on_unknown(db, publication_id, reason="ROUTINE_PROVIDER_BOUNDARY_STATE_CHANGED")
+        raise RoutineDispatchError("ROUTINE_PROVIDER_BOUNDARY_STATE_CHANGED")
     result = None
     diagnostic = None
     try:

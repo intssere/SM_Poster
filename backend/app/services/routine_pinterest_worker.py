@@ -33,6 +33,7 @@ async def run_once(
     target_publication_id: str | None = None,
     target_permit_id: str | None = None,
     allow_targeted_live: bool = False,
+    certified_run=None,
 ):
     settings = settings or get_settings()
     now = now or datetime.now(timezone.utc)
@@ -46,15 +47,27 @@ async def run_once(
         return {"status": "ROUTINE_TARGETED_RUN_DRY_RUN_ONLY", "dispatched": 0}
     if allow_targeted_live and (target_publication_id is None or mode != "LIVE"):
         return {"status": "ROUTINE_TARGETED_LIVE_INVALID_CONTEXT", "dispatched": 0}
-    try:
-        run = start_run(
-            db,
-            mode=mode,
-            now=now,
-            stale_seconds=settings.routine_claim_stale_seconds,
-        )
-    except RoutineControlError as exc:
-        return {"status": str(exc), "dispatched": 0}
+    if allow_targeted_live and certified_run is None:
+        return {"status": "CERTIFIED_LIVE_RESERVATION_REQUIRED", "dispatched": 0}
+    if certified_run is not None:
+        db.refresh(certified_run)
+        binding = certified_run.metadata_json or {}
+        if (certified_run.status != "RUNNING" or mode != "LIVE" or not allow_targeted_live
+                or binding.get("publication_id") != target_publication_id
+                or binding.get("permit_id") != target_permit_id
+                or binding.get("certified_live_version") != "ROUTINE_CERTIFIED_LIVE_PREFLIGHT_V1"):
+            return {"status": "CERTIFIED_LIVE_RUN_MISMATCH", "dispatched": 0}
+        run = certified_run
+    else:
+        try:
+            run = start_run(
+                db,
+                mode=mode,
+                now=now,
+                stale_seconds=settings.routine_claim_stale_seconds,
+            )
+        except RoutineControlError as exc:
+            return {"status": str(exc), "dispatched": 0}
     try:
         if target_publication_id is None:
             recover_stale_routine_claims(db, stale_seconds=settings.routine_claim_stale_seconds, now=now)

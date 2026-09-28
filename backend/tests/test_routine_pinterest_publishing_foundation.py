@@ -156,6 +156,9 @@ def test_stale_claim_after_provider_boundary_becomes_unknown_and_pauses(monkeypa
     monkeypatch.setattr(service, "validate_permit", lambda *a, **k: {"valid": True, "status": "ACTIVE"})
     attempt = service.claim_for_routine(db, publication, permit)
     attempt.started_at = datetime.now(timezone.utc) - timedelta(hours=1); db.commit()
+    from app.models.routine_publishing import RoutinePublishingControl
+    db.add(RoutinePublishingControl(id="default", state="LIVE"))
+    db.commit()
     service.mark_provider_mutation_boundary(db, attempt.id, now=datetime.now(timezone.utc) - timedelta(minutes=30))
     recovered = service.recover_stale_routine_claims(db, stale_seconds=60)
     db.refresh(publication); db.refresh(attempt)
