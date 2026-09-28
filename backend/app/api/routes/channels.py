@@ -67,11 +67,24 @@ def _last_synced(db, connection_id):
 
 @router.post("/pinterest/boards/sync")
 async def pinterest_boards_sync(db: Session = Depends(get_db)):
+    return await _pinterest_boards_sync(db, provider_read_only=False)
+
+
+@router.post("/pinterest/boards/sync-read-only")
+async def pinterest_boards_sync_read_only(db: Session = Depends(get_db)):
+    """Refresh local routing evidence using only Pinterest board/section GETs."""
+    return await _pinterest_boards_sync(db, provider_read_only=True)
+
+
+async def _pinterest_boards_sync(db: Session, *, provider_read_only: bool):
     connection = db.scalar(select(PinterestConnection).where(PinterestConnection.status == "CONNECTED"))
     if not connection:
         raise HTTPException(status_code=409, detail="Pinterest account is not connected")
     try:
-        count = await sync_boards(db, connection)
+        if provider_read_only:
+            count = await sync_boards(db, connection, provider_read_only=True)
+        else:
+            count = await sync_boards(db, connection)
     except RuntimeError as exc:
         db.rollback()
         raise HTTPException(status_code=502, detail=str(exc))
