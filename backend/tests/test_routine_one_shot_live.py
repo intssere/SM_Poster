@@ -5,6 +5,7 @@ from fastapi import HTTPException
 
 from app.core.config import Settings
 from app.models.domain import PinPublication, PublicationStatus
+from app.services import routine_certified_live as certified_live
 from app.services.routine_publishing_control import RoutineControlError
 
 
@@ -15,12 +16,15 @@ REQ_FP = "b" * 64
 ORG_ID = "buffer-org-1"
 CHANNEL_ID = "buffer-channel-1"
 BOARD_ID = "pinterest-board-1"
+LIVE_CONTRACT = certified_live.PREFLIGHT_CONTRACT_VERSION
+LIVE_RECEIPT = {"contract_version": LIVE_CONTRACT, "receipt": "test-only"}
 
 
 class FakeDB:
     def __init__(self, publication=None):
         self.publication = publication
         self.get_calls = []
+        self.refresh_calls = []
         self.rollbacks = 0
 
     def get(self, model, ident):
@@ -30,6 +34,7 @@ class FakeDB:
         return None
 
     def refresh(self, obj):
+        self.refresh_calls.append(obj)
         return None
 
     def rollback(self):
@@ -71,7 +76,7 @@ def _publication():
     )
 
 
-def _run():
+def _run(*, publication_id=PUB_ID, permit_id=PERMIT_ID):
     return SimpleNamespace(
         id="run-1",
         status="RUNNING",
@@ -84,7 +89,22 @@ def _run():
         failed=0,
         unknown=0,
         error_code=None,
+        metadata_json={
+            "certified_live_version": certified_live.PREFLIGHT_CONTRACT_VERSION,
+            "publication_id": publication_id,
+            "permit_id": permit_id,
+        },
     )
+
+
+def _stub_certified_reservation(monkeypatch, *, states=None):
+    def reserve(_db, **kwargs):
+        assert kwargs["receipt"] == LIVE_RECEIPT
+        if states is not None:
+            states.append(("LIVE", "operator", "CERTIFIED_LIVE_RESERVED"))
+        return _run()
+
+    monkeypatch.setattr(certified_live, "reserve_certified_live", reserve)
 
 
 @pytest.mark.parametrize(
@@ -133,13 +153,15 @@ async def test_live_route_requires_explicit_confirmation(monkeypatch):
     monkeypatch.setattr(route, "_actor", lambda request: "operator")
     payload = route.RunOnceLiveRequest(
         confirmed=False,
-        confirmation_text_version="ROUTINE_LIVE_ONCE_V1",
+        confirmation_text_version=certified_live.CONFIRMATION_TEXT_VERSION,
         permit_id=PERMIT_ID,
         publication_fingerprint=PUB_FP,
         request_fingerprint=REQ_FP,
         buffer_organization_id=ORG_ID,
         buffer_pinterest_channel_id=CHANNEL_ID,
         pinterest_board_id=BOARD_ID,
+        preflight_contract_version=LIVE_CONTRACT,
+        preflight_receipt=LIVE_RECEIPT,
     )
     with pytest.raises(HTTPException) as raised:
         await route.run_once_live(PUB_ID, object(), payload, FakeDB())
@@ -170,6 +192,7 @@ async def test_live_route_binds_exact_identity_and_always_pauses(monkeypatch):
         "set_control",
         lambda db_, *, state, actor, reason=None: states.append((state, actor, reason)) or SimpleNamespace(state=state),
     )
+    _stub_certified_reservation(monkeypatch, states=states)
 
     async def fake_run_once(db_, **kwargs):
         calls.append(kwargs)
@@ -191,13 +214,15 @@ async def test_live_route_binds_exact_identity_and_always_pauses(monkeypatch):
     monkeypatch.setattr(route, "run_routine_worker_once", fake_run_once)
     payload = route.RunOnceLiveRequest(
         confirmed=True,
-        confirmation_text_version="ROUTINE_LIVE_ONCE_V1",
+        confirmation_text_version=certified_live.CONFIRMATION_TEXT_VERSION,
         permit_id=PERMIT_ID,
         publication_fingerprint=PUB_FP,
         request_fingerprint=REQ_FP,
         buffer_organization_id=ORG_ID,
         buffer_pinterest_channel_id=CHANNEL_ID,
         pinterest_board_id=BOARD_ID,
+        preflight_contract_version=LIVE_CONTRACT,
+        preflight_receipt=LIVE_RECEIPT,
     )
 
     result = await route.run_once_live(PUB_ID, object(), payload, db)
@@ -228,13 +253,15 @@ async def test_live_route_rejects_identity_drift_before_arming(monkeypatch):
 
     payload = route.RunOnceLiveRequest(
         confirmed=True,
-        confirmation_text_version="ROUTINE_LIVE_ONCE_V1",
+        confirmation_text_version=certified_live.CONFIRMATION_TEXT_VERSION,
         permit_id=PERMIT_ID,
         publication_fingerprint="c" * 64,
         request_fingerprint=REQ_FP,
         buffer_organization_id=ORG_ID,
         buffer_pinterest_channel_id=CHANNEL_ID,
         pinterest_board_id=BOARD_ID,
+        preflight_contract_version=LIVE_CONTRACT,
+        preflight_receipt=LIVE_RECEIPT,
     )
     with pytest.raises(HTTPException) as raised:
         await route.run_once_live(PUB_ID, object(), payload, db)
@@ -251,13 +278,15 @@ async def test_live_route_rejects_active_run_and_daily_quota_before_live(monkeyp
     permit = SimpleNamespace(id=PERMIT_ID)
     payload = route.RunOnceLiveRequest(
         confirmed=True,
-        confirmation_text_version="ROUTINE_LIVE_ONCE_V1",
+        confirmation_text_version=certified_live.CONFIRMATION_TEXT_VERSION,
         permit_id=PERMIT_ID,
         publication_fingerprint=PUB_FP,
         request_fingerprint=REQ_FP,
         buffer_organization_id=ORG_ID,
         buffer_pinterest_channel_id=CHANNEL_ID,
         pinterest_board_id=BOARD_ID,
+        preflight_contract_version=LIVE_CONTRACT,
+        preflight_receipt=LIVE_RECEIPT,
     )
 
     async def run_case(active_run, write_count, expected):
@@ -303,6 +332,7 @@ async def test_live_route_pauses_after_unexpected_worker_exception(monkeypatch):
         "set_control",
         lambda db_, *, state, actor, reason=None: states.append((state, reason)) or SimpleNamespace(state=state),
     )
+    _stub_certified_reservation(monkeypatch, states=states)
 
     async def explode(*args, **kwargs):
         raise RuntimeError("boom")
@@ -310,13 +340,15 @@ async def test_live_route_pauses_after_unexpected_worker_exception(monkeypatch):
     monkeypatch.setattr(route, "run_routine_worker_once", explode)
     payload = route.RunOnceLiveRequest(
         confirmed=True,
-        confirmation_text_version="ROUTINE_LIVE_ONCE_V1",
+        confirmation_text_version=certified_live.CONFIRMATION_TEXT_VERSION,
         permit_id=PERMIT_ID,
         publication_fingerprint=PUB_FP,
         request_fingerprint=REQ_FP,
         buffer_organization_id=ORG_ID,
         buffer_pinterest_channel_id=CHANNEL_ID,
         pinterest_board_id=BOARD_ID,
+        preflight_contract_version=LIVE_CONTRACT,
+        preflight_receipt=LIVE_RECEIPT,
     )
 
     with pytest.raises(RuntimeError, match="boom"):
@@ -337,6 +369,32 @@ async def test_worker_targeted_live_is_rejected_without_explicit_authorization(m
         target_publication_id=PUB_ID,
     )
     assert result == {"status": "ROUTINE_TARGETED_RUN_DRY_RUN_ONLY", "dispatched": 0}
+
+
+@pytest.mark.asyncio
+async def test_worker_targeted_live_requires_certified_reservation_before_provider_io(monkeypatch):
+    from app.services import routine_pinterest_worker as worker
+
+    calls = []
+    monkeypatch.setattr(worker, "get_control", lambda db: SimpleNamespace(state="LIVE", pause_reason=None))
+    monkeypatch.setattr(worker, "start_run", lambda *a, **k: pytest.fail("reservation guard must run before start_run"))
+
+    async def forbidden(*args, **kwargs):
+        calls.append("provider")
+        raise AssertionError("certified reservation is required before provider I/O")
+
+    monkeypatch.setattr(worker, "build_routine_execution_evidence", forbidden)
+    monkeypatch.setattr(worker, "dispatch_routine_buffer", forbidden)
+    result = await worker.run_once(
+        FakeDB(_publication()),
+        settings=_effective_live_settings(),
+        target_publication_id=PUB_ID,
+        target_permit_id=PERMIT_ID,
+        allow_targeted_live=True,
+    )
+
+    assert result == {"status": "CERTIFIED_LIVE_RESERVATION_REQUIRED", "dispatched": 0}
+    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -381,6 +439,7 @@ async def test_worker_explicit_targeted_live_is_exact_single_candidate(monkeypat
         target_publication_id=PUB_ID,
         target_permit_id=PERMIT_ID,
         allow_targeted_live=True,
+        certified_run=run,
     )
 
     assert result["scanned"] == 1
@@ -390,6 +449,7 @@ async def test_worker_explicit_targeted_live_is_exact_single_candidate(monkeypat
     assert result["published"] == 1
     assert dispatch_calls == [PUB_ID]
     assert [ident for model, ident in db.get_calls if model is PinPublication] == [PUB_ID]
+    assert run in db.refresh_calls
 
 
 @pytest.mark.asyncio
@@ -420,7 +480,7 @@ async def test_worker_targeted_live_enforces_exact_permit_and_daily_limit(monkey
         monkeypatch.setattr(worker, "build_routine_execution_evidence", evidence)
         monkeypatch.setattr(worker, "dispatch_routine_buffer", dispatch)
 
-    run1 = _run()
+    run1 = _run(permit_id="different-permit")
     install_common(run1)
     result = await worker.run_once(
         db,
@@ -429,6 +489,7 @@ async def test_worker_targeted_live_enforces_exact_permit_and_daily_limit(monkey
         target_publication_id=PUB_ID,
         target_permit_id="different-permit",
         allow_targeted_live=True,
+        certified_run=run1,
     )
     assert result["error_code"] == "ROUTINE_PERMIT_ID_MISMATCH"
     assert result["dispatched"] == 0
@@ -443,6 +504,7 @@ async def test_worker_targeted_live_enforces_exact_permit_and_daily_limit(monkey
         target_publication_id=PUB_ID,
         target_permit_id=PERMIT_ID,
         allow_targeted_live=True,
+        certified_run=run2,
     )
     assert result["error_code"] == "ROUTINE_DAILY_WRITE_LIMIT_REACHED"
     assert result["dispatched"] == 0
@@ -450,7 +512,7 @@ async def test_worker_targeted_live_enforces_exact_permit_and_daily_limit(monkey
 
 
 @pytest.mark.asyncio
-async def test_worker_targeted_live_preserves_run_lock_and_unknown_circuit_breaker(monkeypatch):
+async def test_worker_targeted_live_rejects_bad_reservation_and_preserves_unknown_circuit_breaker(monkeypatch):
     from app.services import routine_pinterest_worker as worker
 
     now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
@@ -458,11 +520,9 @@ async def test_worker_targeted_live_preserves_run_lock_and_unknown_circuit_break
     db = FakeDB(publication)
 
     monkeypatch.setattr(worker, "get_control", lambda db_: SimpleNamespace(state="LIVE", pause_reason=None))
-    monkeypatch.setattr(
-        worker,
-        "start_run",
-        lambda *a, **k: (_ for _ in ()).throw(RoutineControlError("ROUTINE_WORKER_ALREADY_RUNNING")),
-    )
+    monkeypatch.setattr(worker, "start_run", lambda *a, **k: pytest.fail("certified runs must not call start_run"))
+    invalid_reservation = _run()
+    invalid_reservation.status = "FAILED"
     result = await worker.run_once(
         db,
         settings=_effective_live_settings(),
@@ -470,8 +530,9 @@ async def test_worker_targeted_live_preserves_run_lock_and_unknown_circuit_break
         target_publication_id=PUB_ID,
         target_permit_id=PERMIT_ID,
         allow_targeted_live=True,
+        certified_run=invalid_reservation,
     )
-    assert result == {"status": "ROUTINE_WORKER_ALREADY_RUNNING", "dispatched": 0}
+    assert result == {"status": "CERTIFIED_LIVE_RUN_MISMATCH", "dispatched": 0}
 
     run = _run()
     permit = SimpleNamespace(id=PERMIT_ID)
@@ -500,6 +561,7 @@ async def test_worker_targeted_live_preserves_run_lock_and_unknown_circuit_break
         target_publication_id=PUB_ID,
         target_permit_id=PERMIT_ID,
         allow_targeted_live=True,
+        certified_run=run,
     )
     assert result["dispatched"] == 1
     assert result["unknown"] == 1
@@ -556,6 +618,7 @@ async def test_live_route_rejects_non_single_dispatch_result_and_pauses(
         "set_control",
         lambda db_, *, state, actor, reason=None: states.append((state, reason)) or SimpleNamespace(state=state),
     )
+    _stub_certified_reservation(monkeypatch, states=states)
 
     async def fake_run_once(*args, **kwargs):
         return worker_result
@@ -563,13 +626,15 @@ async def test_live_route_rejects_non_single_dispatch_result_and_pauses(
     monkeypatch.setattr(route, "run_routine_worker_once", fake_run_once)
     payload = route.RunOnceLiveRequest(
         confirmed=True,
-        confirmation_text_version="ROUTINE_LIVE_ONCE_V1",
+        confirmation_text_version=certified_live.CONFIRMATION_TEXT_VERSION,
         permit_id=PERMIT_ID,
         publication_fingerprint=PUB_FP,
         request_fingerprint=REQ_FP,
         buffer_organization_id=ORG_ID,
         buffer_pinterest_channel_id=CHANNEL_ID,
         pinterest_board_id=BOARD_ID,
+        preflight_contract_version=LIVE_CONTRACT,
+        preflight_receipt=LIVE_RECEIPT,
     )
 
     with pytest.raises(HTTPException) as raised:

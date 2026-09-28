@@ -283,7 +283,10 @@ def _check_receipt(receipt, contract_version, publication_id, settings, now):
         raise CertifiedCanaryError("CANARY_PREFLIGHT_RELEASE_DRIFT")
 
 
-def _evaluate_prerequisites(db, *, publication_id, settings, now, scheduler_snapshot, locked):
+def _evaluate_prerequisites(
+    db, *, publication_id, settings, now, scheduler_snapshot, locked,
+    safety_check=_assert_static_safety, additional_check=None,
+):
     connection = db.connection()
     event.listen(connection, "before_cursor_execute", _reject_database_write)
     try:
@@ -305,7 +308,7 @@ def _evaluate_prerequisites(db, *, publication_id, settings, now, scheduler_snap
         with _offline_network_guard() as external:
             scheduler = scheduler_snapshot if scheduler_snapshot is not None else scheduler_status(settings)
             try:
-                _assert_static_safety(db, settings, control, scheduler)
+                safety_check(db, settings, control, scheduler)
             except RoutineCanaryFixtureError as exc:
                 raise CertifiedCanaryError(str(exc)) from None
             if _due_ids(db, evaluated_at) != [publication_id]:
@@ -319,6 +322,8 @@ def _evaluate_prerequisites(db, *, publication_id, settings, now, scheduler_snap
             if permit.consumed_at is not None or expires <= evaluated_at:
                 raise CertifiedCanaryError("CANARY_PERMIT_INVALID")
             publication = db.get(PinPublication, publication_id)
+            if additional_check is not None:
+                additional_check(db, publication, permit, settings, evaluated_at)
             before = _boundary_counts(db)
             valid = validate_permit(db, publication, permit, now=evaluated_at, require_due=True)
             if valid.get("valid") is not True:
@@ -353,7 +358,7 @@ def _evaluate_prerequisites(db, *, publication_id, settings, now, scheduler_snap
                     or db.new or db.dirty or db.deleted):
                 raise CertifiedCanaryError("CANARY_POSTCONDITION_DRIFT")
             try:
-                _assert_static_safety(
+                safety_check(
                     db, settings, control,
                     scheduler_snapshot if scheduler_snapshot is not None else scheduler_status(settings),
                 )
@@ -362,6 +367,8 @@ def _evaluate_prerequisites(db, *, publication_id, settings, now, scheduler_snap
             if external[0] != 0:
                 raise CertifiedCanaryError("CANARY_NETWORK_OPERATION_ATTEMPTED")
             completed_at = now() if callable(now) else now
+            if additional_check is not None:
+                additional_check(db, publication, permit, settings, completed_at)
             if completed_at < evaluated_at:
                 raise CertifiedCanaryError("CANARY_PREFLIGHT_CLOCK_DRIFT")
             if expires <= completed_at:

@@ -86,6 +86,14 @@ class RunOnceLiveRequest(BaseModel):
     buffer_organization_id: str = Field(min_length=1, max_length=255)
     buffer_pinterest_channel_id: str = Field(min_length=1, max_length=255)
     pinterest_board_id: str = Field(min_length=1, max_length=255)
+    preflight_contract_version: str
+    preflight_receipt: dict[str, Any]
+
+
+class CertifiedLiveRecoveryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmed: bool
+    confirmation_text_version: str
 
 
 def _one_shot_dry_run_settings(settings, control):
@@ -283,6 +291,23 @@ def certified_offline_dry_run(
         raise HTTPException(500, "CERTIFIED_CANARY_UNEXPECTED_ERROR") from None
 
 
+@router.get("/publications/{publication_id}/certified-live-preflight")
+def certified_live_preflight(
+    publication_id: str, request: Request, db: Session = Depends(get_db),
+):
+    _actor(request)
+    from app.services.routine_certified_canary import CertifiedCanaryError
+    from app.services.routine_certified_live import (
+        CertifiedLiveError, preflight_certified_live,
+    )
+    try:
+        return preflight_certified_live(
+            db, publication_id=publication_id, settings=get_settings(),
+        )
+    except (CertifiedCanaryError, CertifiedLiveError) as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
 @router.post("/publications/{publication_id}/run-once-live")
 async def run_once_live(
     publication_id: str,
@@ -291,8 +316,15 @@ async def run_once_live(
     db: Session = Depends(get_db),
 ):
     actor = _actor(request)
-    if not payload.confirmed or payload.confirmation_text_version != "ROUTINE_LIVE_ONCE_V1":
+    from app.services.routine_certified_canary import CertifiedCanaryError
+    from app.services.routine_certified_live import (
+        CONFIRMATION_TEXT_VERSION, PREFLIGHT_CONTRACT_VERSION,
+        CertifiedLiveError, reserve_certified_live,
+    )
+    if not payload.confirmed or payload.confirmation_text_version != CONFIRMATION_TEXT_VERSION:
         raise HTTPException(422, "INVALID_ROUTINE_LIVE_CONFIRMATION")
+    if payload.preflight_contract_version != PREFLIGHT_CONTRACT_VERSION:
+        raise HTTPException(422, "INVALID_CERTIFIED_LIVE_CONTRACT")
 
     settings = get_settings()
     control = get_control(db, create=False)
@@ -334,7 +366,13 @@ async def run_once_live(
     result = None
     pause_reason = "ONE_SHOT_LIVE_COMPLETE"
     try:
-        set_control(db, state="LIVE", actor=actor, reason="ONE_SHOT_LIVE_AUTHORIZED")
+        try:
+            reserved_run = reserve_certified_live(
+                db, publication_id=publication_id, settings=settings,
+                receipt=payload.preflight_receipt, actor=actor,
+            )
+        except (CertifiedCanaryError, CertifiedLiveError) as exc:
+            raise HTTPException(409, str(exc)) from None
         live_armed = True
         result = await run_routine_worker_once(
             db,
@@ -343,6 +381,7 @@ async def run_once_live(
             target_publication_id=publication_id,
             target_permit_id=payload.permit_id,
             allow_targeted_live=True,
+            certified_run=reserved_run,
         )
         if int(result.get("unknown", 0) or 0) > 0:
             pause_reason = "PUBLISH_UNKNOWN_CIRCUIT_BREAKER"
@@ -366,11 +405,44 @@ async def run_once_live(
     except Exception:
         if result is None:
             pause_reason = "ONE_SHOT_LIVE_EXCEPTION"
+            if live_armed:
+                # A result-persistence failure may leave a STARTED attempt after
+                # the durable provider boundary. Recover it as UNKNOWN now if the
+                # database is available; otherwise the operator recovery route
+                # can do so later without resubmitting.
+                db.rollback()
+                from app.services.routine_certified_live import recover_certified_live
+                try:
+                    recover_certified_live(
+                        db, actor=actor,
+                        stale_seconds=settings.routine_claim_stale_seconds,
+                    )
+                except Exception:
+                    db.rollback()
         raise
     finally:
         if live_armed:
             db.rollback()
             set_control(db, state="PAUSED", actor=actor, reason=pause_reason)
+
+
+@router.post("/certified-live-recover")
+def certified_live_recover(
+    request: Request, payload: CertifiedLiveRecoveryRequest,
+    db: Session = Depends(get_db),
+):
+    actor = _actor(request)
+    from app.services.routine_certified_live import (
+        CertifiedLiveError, RECOVERY_CONFIRMATION_TEXT_VERSION, recover_certified_live,
+    )
+    if not payload.confirmed or payload.confirmation_text_version != RECOVERY_CONFIRMATION_TEXT_VERSION:
+        raise HTTPException(422, "INVALID_CERTIFIED_LIVE_RECOVERY_CONFIRMATION")
+    try:
+        return recover_certified_live(
+            db, actor=actor, stale_seconds=get_settings().routine_claim_stale_seconds,
+        )
+    except CertifiedLiveError as exc:
+        raise HTTPException(409, str(exc)) from None
 
 
 @router.get("/publications/{publication_id}/permit")
