@@ -11,6 +11,11 @@ from app.services.routine_scheduler_lease import (
     LEASE_BACKEND,
     PostgresSchedulerLeaderLease,
 )
+from app.services.routine_scheduler_canary_context import (
+    CanarySafetyError,
+    RoutineSchedulerCanaryContext,
+    validate_canary_context,
+)
 
 SleepFn = Callable[[float], Awaitable[Any]]
 
@@ -109,16 +114,25 @@ async def scheduler_tick(
     session_factory=SessionLocal,
     runner=run_routine_worker_once,
     leader_lease=None,
+    canary_context: RoutineSchedulerCanaryContext | None = None,
 ) -> dict:
     settings = settings or get_settings()
-    if settings.routine_pinterest_scheduler_enabled is not True:
+    if canary_context is None and settings.routine_pinterest_scheduler_enabled is not True:
         return {"status": "SCHEDULER_DISABLED", "dispatched": 0}
+    if canary_context is not None:
+        validate_canary_context(canary_context, settings)
+        if leader_lease is None:
+            leader_lease = canary_context.lease
+        elif leader_lease is not canary_context.lease:
+            raise CanarySafetyError("CANARY_LEASE_CONTEXT_MISMATCH")
 
     lock = _get_tick_lock()
     if lock.locked():
         return {"status": "SCHEDULER_TICK_ALREADY_RUNNING", "dispatched": 0}
 
     async with lock:
+        if canary_context is not None:
+            validate_canary_context(canary_context, settings)
         if leader_lease is None or not bool(getattr(leader_lease, "held", False)):
             result = {"status": "SCHEDULER_LEASE_NOT_HELD", "dispatched": 0}
             _state["last_result"] = result
@@ -129,6 +143,8 @@ async def scheduler_tick(
             _state["last_result"] = result
             _state["last_error"] = "SCHEDULER_LEASE_LOST"
             return result
+        if canary_context is not None:
+            validate_canary_context(canary_context, settings)
 
         _record_lease(leader_lease, role="leader")
         _state["tick_running"] = True
@@ -136,7 +152,10 @@ async def scheduler_tick(
         _state["last_error"] = None
         db = session_factory()
         try:
-            result = await runner(db, settings=settings)
+            if canary_context is None:
+                result = await runner(db, settings=settings)
+            else:
+                result = await runner(db, settings=settings, canary_context=canary_context)
             _state["last_result"] = result
             return result
         except Exception as exc:

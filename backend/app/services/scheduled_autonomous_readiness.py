@@ -45,6 +45,10 @@ from app.services.routine_scheduled_quotas import (
     scheduled_quota_limits,
 )
 from app.services.routine_scheduled_commitments import assess_scheduled_quota_with_commitments
+from app.services.routine_scheduler_canary_context import (
+    RoutineSchedulerCanaryContext,
+    validate_canary_context,
+)
 
 MAX_ROUTE_ROWS = 200
 MAX_SAME_DAY_ITEMS = 200
@@ -252,6 +256,7 @@ def scheduled_autonomous_readiness(
     *,
     settings: Settings | None = None,
     now: datetime | None = None,
+    canary_context: RoutineSchedulerCanaryContext | None = None,
 ) -> dict:
     """Return a bounded, provider-free certificate for an existing due execution.
 
@@ -259,6 +264,8 @@ def scheduled_autonomous_readiness(
     credentials and gateways are intentionally not read or constructed.
     """
     settings = settings or get_settings()
+    if canary_context is not None:
+        validate_canary_context(canary_context, settings)
     now = _utc(now or datetime.now(timezone.utc))
     checks: list[dict] = []
     item = db.get(PinterestPortfolioPlanItem, portfolio_item_id)
@@ -507,15 +514,39 @@ def scheduled_autonomous_readiness(
            validation_error=permit_error)
 
     control = db.get(RoutinePublishingControl, "default")
-    _check(checks, "DRY_RUN_CONTROL", bool(control and control.state == "DRY_RUN"),
+    _check(checks, "DRY_RUN_CONTROL", bool(
+        control and (
+            control.state == ("PAUSED" if canary_context is not None else "DRY_RUN")
+        )
+    ),
            "Routine control must already be in DRY_RUN; this certificate does not change it.")
-    _check(checks, "SCHEDULED_AUTONOMY_AUTHORIZED",
-           getattr(settings, "routine_scheduled_autonomy_enabled", False) is True,
-           "The explicit scheduled-autonomy authorization gate must be enabled.")
-    _check(checks, "SCHEDULER_AND_WORKER_ENABLED",
-           settings.routine_pinterest_scheduler_enabled is True
-           and settings.routine_pinterest_worker_enabled is True,
-           "Scheduler and worker must be enabled for a scheduled DRY_RUN certification.")
+    if canary_context is None:
+        _check(checks, "SCHEDULED_AUTONOMY_AUTHORIZED",
+               getattr(settings, "routine_scheduled_autonomy_enabled", False) is True,
+               "The explicit scheduled-autonomy authorization gate must be enabled.")
+        _check(checks, "SCHEDULER_AND_WORKER_ENABLED",
+               settings.routine_pinterest_scheduler_enabled is True
+               and settings.routine_pinterest_worker_enabled is True,
+               "Scheduler and worker must be enabled for a scheduled DRY_RUN certification.")
+    else:
+        fingerprints_match = bool(
+            publication
+            and permit
+            and publication.id == canary_context.target_publication_id
+            and permit.id == canary_context.target_permit_id
+            and publication.publication_fingerprint == canary_context.expected_publication_fingerprint
+            and request_fingerprint_for(publication) == canary_context.expected_request_fingerprint
+            and publication.pinterest_board_record_id == canary_context.expected_route_id
+        )
+        _check(checks, "CANARY_TARGET_BINDING_CURRENT", fingerprints_match,
+               "The canary context must bind this publication, permit, request, and route.")
+        _check(checks, "CANARY_GATES_CLOSED",
+               all(getattr(settings, key, None) is False for key in (
+                   "routine_pinterest_scheduler_enabled",
+                   "routine_pinterest_worker_enabled",
+                   "routine_scheduled_autonomy_enabled",
+               )),
+               "The canary may certify only while ordinary scheduler gates remain closed.")
     _check(checks, "DRY_RUN_MODE", settings.routine_pinterest_dry_run is True,
            "The worker must remain in DRY_RUN mode.")
 
