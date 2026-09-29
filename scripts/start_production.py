@@ -55,11 +55,27 @@ def schema_canonicality_guard_command() -> list[str]:
     ]
 
 
+def run_managed_schema_adoption(
+    *,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> None:
+    """Refuse startup unless a complete managed schema can be adopted safely."""
+    result = runner(
+        [sys.executable, "-m", "app.db.managed_schema_adoption"],
+        cwd=BACKEND_DIR,
+        check=False,
+    )
+    if int(result.returncode) != 0:
+        raise StartupError(
+            f"managed schema adoption refused with status {int(result.returncode)}"
+        )
+
+
 def run_schema_canonicality_guard(
     *,
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
 ) -> None:
-    """Refuse startup unless PostgreSQL is already at canonical revision 0030."""
+    """Refuse startup unless PostgreSQL is already at canonical revision 0031."""
     result = runner(
         schema_canonicality_guard_command(),
         cwd=BACKEND_DIR,
@@ -221,6 +237,9 @@ def run() -> int:
 
     try:
         lifecycle("wrapper_start")
+        lifecycle("managed_schema_adoption_started")
+        run_managed_schema_adoption()
+        lifecycle("managed_schema_adoption_succeeded")
         lifecycle("schema_canonicality_guard_started")
         run_schema_canonicality_guard()
         lifecycle("schema_canonicality_guard_succeeded")

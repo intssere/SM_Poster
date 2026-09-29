@@ -21,6 +21,11 @@ sys.modules[spec.name] = startup
 spec.loader.exec_module(startup)
 
 
+@pytest.fixture(autouse=True)
+def no_database_adoption_in_unit_tests(monkeypatch):
+    monkeypatch.setattr(startup, "run_managed_schema_adoption", lambda: None)
+
+
 class FakeResponse:
     def __init__(self, payload):
         self._raw = json.dumps(payload).encode("utf-8")
@@ -246,6 +251,8 @@ def test_run_emits_success_lifecycle_events_in_order(monkeypatch, capsys):
 
     assert _lifecycle_events(output) == [
         "wrapper_start",
+        "managed_schema_adoption_started",
+        "managed_schema_adoption_succeeded",
         "schema_canonicality_guard_started",
         "schema_canonicality_guard_succeeded",
         "backend_process_started",
@@ -280,6 +287,8 @@ def test_run_omits_frontend_lifecycle_events_on_readiness_failure(monkeypatch, c
 
     assert _lifecycle_events(output) == [
         "wrapper_start",
+        "managed_schema_adoption_started",
+        "managed_schema_adoption_succeeded",
         "schema_canonicality_guard_started",
         "schema_canonicality_guard_succeeded",
         "backend_process_started",

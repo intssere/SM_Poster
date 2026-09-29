@@ -12,6 +12,11 @@ startup = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(startup)
 
 
+@pytest.fixture(autouse=True)
+def no_database_adoption_in_unit_tests(monkeypatch):
+    monkeypatch.setattr(startup, "run_managed_schema_adoption", lambda: None)
+
+
 def test_production_supervisor_has_no_migration_command():
     assert not hasattr(startup, "migration_command")
     assert not hasattr(startup, "run_database_migrations")
