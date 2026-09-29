@@ -544,7 +544,7 @@ def _external_dependencies_for_tables(
 
 def _require_exact_alembic_revision(connection: Any, revision: str) -> None:
     revisions = connection.execute(sa.text(
-        "SELECT version_num FROM alembic_version ORDER BY version_num"
+        'SELECT version_num FROM "public"."alembic_version" ORDER BY version_num'
     )).scalars().all()
     if list(revisions) != [revision]:
         _refuse(
@@ -815,6 +815,22 @@ LINEAGE_PRESERVED_TABLES = tuple(
 )
 
 
+# Frozen from the migration-created 0031 PostgreSQL public catalog. These
+# tables changed in 0030, so their 0020-0027 fingerprints are not applicable.
+FROZEN_0030_LINEAGE_FINGERPRINTS = {
+    "pinterest_autonomous_destination_runs": "fbb5d6cf6742ae320f20726e3fcb7f53e30b2c808737665bdd10ab7b42de1f09",
+    "pinterest_autonomous_execution_runs": "c5681bd4e0ccaea3deb40d1d227e9afd40282d9a80b807dd323dd76895b1cfb9",
+    "pinterest_autonomous_generation_runs": "cee9e0728872f986b24bb48dc2d3e0a1d4eaf3c95947a646cf144cd36ad6110d",
+    "pinterest_autonomous_run_reconciliations": "a62c06abc7eb2332cbbdecd779a1c5c659db0ea59c40d0ca60eba075eda431d4",
+}
+
+
+def _require_frozen_0030_lineage_catalog(connection: Any) -> None:
+    for table, expected in FROZEN_0030_LINEAGE_FINGERPRINTS.items():
+        if _fingerprint(_catalog_contract(connection, table)) != expected:
+            _refuse(f"0030 frozen lineage contract mismatch: {table}")
+
+
 def _require_0030_lineage_schema(connection: Any) -> None:
     inspector = sa.inspect(connection)
     present = set(inspector.get_table_names(schema="public"))
@@ -887,7 +903,7 @@ def _require_0030_lineage_schema(connection: Any) -> None:
         },
     }
     for table, contract in run_contracts.items():
-        columns = {row["name"]: row for row in inspector.get_columns(table)}
+        columns = {row["name"]: row for row in inspector.get_columns(table, schema="public")}
         attempt = columns.get("attempt_number")
         supersedes = columns.get("supersedes_run_id")
         if attempt is None or attempt.get("nullable") is not False:
@@ -897,7 +913,7 @@ def _require_0030_lineage_schema(connection: Any) -> None:
 
         uniques = {
             row.get("name"): tuple(row.get("column_names") or ())
-            for row in inspector.get_unique_constraints(table)
+            for row in inspector.get_unique_constraints(table, schema="public")
         }
         if uniques.get(contract["attempt_uq"]) != (
             "portfolio_item_id",
@@ -909,7 +925,7 @@ def _require_0030_lineage_schema(connection: Any) -> None:
 
         foreign_keys = {
             row.get("name"): row
-            for row in inspector.get_foreign_keys(table)
+            for row in inspector.get_foreign_keys(table, schema="public")
         }
         fk = foreign_keys.get(contract["supersedes_fk"])
         if (
@@ -922,7 +938,7 @@ def _require_0030_lineage_schema(connection: Any) -> None:
 
         indexes = {
             row.get("name"): tuple(row.get("column_names") or ())
-            for row in inspector.get_indexes(table)
+            for row in inspector.get_indexes(table, schema="public")
         }
         missing_indexes = sorted(contract["expected_indexes"] - set(indexes))
         if missing_indexes:
@@ -939,7 +955,7 @@ def _require_0030_lineage_schema(connection: Any) -> None:
 
     reconciliation_columns = {
         row["name"]: row
-        for row in inspector.get_columns(LINEAGE_RECONCILIATION_TABLE)
+        for row in inspector.get_columns(LINEAGE_RECONCILIATION_TABLE, schema="public")
     }
     expected_columns = {
         "id",
@@ -964,7 +980,7 @@ def _require_0030_lineage_schema(connection: Any) -> None:
 
     reconciliation_uniques = {
         row.get("name"): tuple(row.get("column_names") or ())
-        for row in inspector.get_unique_constraints(LINEAGE_RECONCILIATION_TABLE)
+        for row in inspector.get_unique_constraints(LINEAGE_RECONCILIATION_TABLE, schema="public")
     }
     expected_uniques = {
         "uq_pinterest_auto_reconcile_destination": ("failed_destination_run_id",),
@@ -978,7 +994,7 @@ def _require_0030_lineage_schema(connection: Any) -> None:
 
     referred = {
         tuple(row.get("constrained_columns") or ()): row.get("referred_table")
-        for row in inspector.get_foreign_keys(LINEAGE_RECONCILIATION_TABLE)
+        for row in inspector.get_foreign_keys(LINEAGE_RECONCILIATION_TABLE, schema="public")
     }
     expected_fks = {
         ("portfolio_item_id",): "pinterest_portfolio_plan_items",
@@ -991,7 +1007,7 @@ def _require_0030_lineage_schema(connection: Any) -> None:
 
     checks = {
         row.get("name"): (row.get("sqltext") or "")
-        for row in inspector.get_check_constraints(LINEAGE_RECONCILIATION_TABLE)
+        for row in inspector.get_check_constraints(LINEAGE_RECONCILIATION_TABLE, schema="public")
     }
     status_check = checks.get(
         "ck_pinterest_autonomous_run_reconciliation_status",
@@ -1195,7 +1211,88 @@ def verify_frozen_schema_at_head(connection: Any, revision: str = "0031") -> Non
         _refuse("0030 preserved schema fingerprint verification failed")
     _require_0030_lineage_schema(connection)
     if revision == "0031":
+        _require_frozen_0030_lineage_catalog(connection)
         _require_0031_scheduled_quota_schema(connection)
+
+
+def adopt_managed_preapplied_0031(connection: Any) -> bool:
+    """Adopt only a complete, empty managed 0031 schema; never perform DDL.
+
+    The caller owns a transaction and must commit only after this returns.
+    NOWAIT relation locks prevent both competing adopters and concurrent
+    changes to the catalog/data examined before the bookkeeping update.
+    """
+    if getattr(connection.dialect, "name", None) != "postgresql":
+        _refuse("0031 managed adoption requires PostgreSQL")
+    if not connection.in_transaction():
+        _refuse("0031 managed adoption requires a transaction")
+    if connection.get_isolation_level() != "READ COMMITTED":
+        _refuse("0031 managed adoption requires READ COMMITTED")
+
+    # Existing frozen inspectors and bookkeeping queries resolve unqualified
+    # names. Bind them to public for this entire transaction.
+    connection.execute(sa.text("SET LOCAL search_path TO public, pg_catalog"))
+    tables = (
+        "alembic_version",
+        *LINEAGE_PRESERVED_TABLES,
+        *LINEAGE_RUN_TABLES,
+        LINEAGE_RECONCILIATION_TABLE,
+        SCHEDULED_QUOTA_RESERVATIONS_TABLE,
+        "routine_publishing_control",
+        "pin_publications",
+        "routine_publishing_runs",
+        "routine_dispatch_permits",
+    )
+    try:
+        for table in sorted(set(tables)):
+            connection.execute(sa.text(
+                f'LOCK TABLE "public"."{table}" IN SHARE ROW EXCLUSIVE MODE NOWAIT'
+            ))
+    except sa.exc.DBAPIError as exc:
+        _refuse(f"0031 managed adoption lock or table availability failed: {exc.__class__.__name__}")
+
+    revisions = connection.execute(sa.text(
+        'SELECT version_num FROM "public"."alembic_version" ORDER BY version_num'
+    )).scalars().all()
+    if revisions == ["0031"]:
+        verify_frozen_schema_at_head(connection, revision="0031")
+        return False
+    if revisions != ["0030"]:
+        _refuse("0031 managed adoption requires exactly one Alembic revision 0030")
+
+    verify_frozen_schema_at_head(connection, revision="0030")
+    _require_frozen_0030_lineage_catalog(connection)
+    _require_0031_scheduled_quota_schema(connection)
+    if connection.scalar(sa.text(
+        'SELECT count(*) FROM "public"."routine_scheduled_quota_reservations"'
+    )) != 0:
+        _refuse("0031 scheduled quota reservations must be empty")
+
+    controls = connection.execute(sa.text(
+        'SELECT id, state FROM "public"."routine_publishing_control" ORDER BY id'
+    )).all()
+    if controls != [("default", "PAUSED")]:
+        _refuse("0031 managed adoption requires exactly one PAUSED default routine control")
+    for table, predicate, label in (
+        ("pin_publications", "status = 'PUBLISH_UNKNOWN'", "PUBLISH_UNKNOWN"),
+        ("pin_publications", "status = 'PUBLISHING'", "PUBLISHING"),
+        ("routine_publishing_runs", "status = 'RUNNING'", "running routine runs"),
+        ("routine_dispatch_permits", "status = 'ACTIVE'", "active permits"),
+    ):
+        # The table and predicate are fixed constants, not caller-provided SQL.
+        if connection.scalar(sa.text(
+            f'SELECT count(*) FROM "public"."{table}" WHERE {predicate}'
+        )) != 0:
+            _refuse(f"0031 managed adoption requires zero {label}")
+
+    updated = connection.execute(sa.text(
+        'UPDATE "public"."alembic_version" SET version_num=\'0031\' '
+        "WHERE version_num='0030' RETURNING version_num"
+    )).scalars().all()
+    if updated != ["0031"]:
+        _refuse("0031 managed adoption bookkeeping update was not exactly once")
+    verify_frozen_schema_at_head(connection, revision="0031")
+    return True
 
 
 def repair_known_legacy_preapplied_revision(connection: Any, revision: str) -> bool:

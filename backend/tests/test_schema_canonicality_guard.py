@@ -13,6 +13,9 @@ class RevisionConnection:
         self.revisions = revisions
         self.queries = []
 
+    def exec_driver_sql(self, query):
+        self.queries.append(query)
+
     def execute(self, query):
         self.queries.append(str(query))
         return SimpleNamespace(
@@ -25,13 +28,13 @@ def test_revision_check_refuses_any_state_other_than_exact_0031(revisions):
     connection = RevisionConnection(revisions)
     with pytest.raises(migration_adoption.SchemaAdoptionRefused, match="Alembic revision 0031"):
         migration_adoption._require_exact_alembic_revision(connection, "0031")
-    assert connection.queries == ["SELECT version_num FROM alembic_version ORDER BY version_num"]
+    assert connection.queries == ['SELECT version_num FROM "public"."alembic_version" ORDER BY version_num']
 
 
 def test_revision_check_accepts_exact_0031_without_writes():
     connection = RevisionConnection(["0031"])
     migration_adoption._require_exact_alembic_revision(connection, "0031")
-    assert connection.queries == ["SELECT version_num FROM alembic_version ORDER BY version_num"]
+    assert connection.queries == ['SELECT version_num FROM "public"."alembic_version" ORDER BY version_num']
 
 
 def test_guard_requires_postgresql_before_schema_verification(monkeypatch):

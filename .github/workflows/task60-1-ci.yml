@@ -1,0 +1,70 @@
+name: Managed schema 0031 adoption
+
+on:
+  push:
+    branches:
+      - task60-1-managed-schema-adoption
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-adoption:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["16", "17"]
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: task60_adoption
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d task60_adoption"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      PYTHONPATH: ${{ github.workspace }}/backend
+      DATABASE_URL: "sqlite:///:memory:"
+      TASK60_POSTGRES_URL: "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/task60_adoption"
+      TASK58_CATALOG_URL: "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/task60_adoption"
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Exact canonical ancestry
+        run: git merge-base --is-ancestor 6eca3bd213dd51955c116f83a25b17cce1cdf6c3 HEAD
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Focused disposable PostgreSQL and startup regressions
+        run: >-
+          pytest -q
+          tests/test_managed_schema_adoption_0031.py
+          tests/test_schema_canonicality_guard.py
+          tests/test_start_production.py
+          tests/test_production_startup_readiness.py
+          tests/test_migration_autonomous_retry_lineage_0030.py
+          tests/test_migration_schema_repair_0029.py
+          tests/test_migration_schema_repair_0028.py
+          tests/test_migration_schema_repair_0020.py
+      - name: Syntax and patch checks
+        run: |
+          python -m compileall -q app tests
+          git diff --check
