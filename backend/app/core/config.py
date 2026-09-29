@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     routine_claim_stale_seconds: int = Field(default=900, ge=60, le=86400)
     routine_pinterest_scheduler_enabled: bool = False
     routine_pinterest_scheduler_interval_seconds: int = Field(default=300, ge=60, le=86400)
+    routine_scheduled_autonomy_enabled: bool = False
     routine_autonomous_authorization_enabled: bool = False
     pinterest_portfolio_planner_enabled: bool = False
     pinterest_monthly_pin_target: int = Field(default=150, ge=1, le=10000)

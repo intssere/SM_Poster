@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from sqlalchemy import select
+
 from app.core.config import Settings, get_settings
 from app.integrations.buffer.gateway import BufferGateway
-from app.models.domain import PinPublication, PublicationStatus
+from app.models.domain import PinPublication, PinterestPortfolioPlanItem, PublicationStatus
 from app.services.buffer_execution_preflight import BufferPreflightError
 from app.services.publication_scheduler import due_publications
 from app.services.pinterest_publisher import normalize_persisted_utc
@@ -12,6 +14,7 @@ from app.services.routine_buffer_dispatch import RoutineDispatchError, dispatch_
 from app.services.routine_buffer_preflight import build_routine_execution_evidence
 from app.services.routine_offline_preflight import build_routine_offline_evidence, RoutineOfflinePreflightError
 from app.services.routine_dispatch_authorization import active_permit, validate_permit
+from app.services.scheduled_autonomous_readiness import scheduled_autonomous_readiness
 from app.services.routine_publishing_control import (
     RoutineControlError,
     daily_provider_write_count,
@@ -43,6 +46,8 @@ async def run_once(
     if control.state == "PAUSED":
         return {"status": "PAUSED", "dispatched": 0, "reason": control.pause_reason}
     mode = "DRY_RUN" if settings.routine_pinterest_dry_run or control.state == "DRY_RUN" else "LIVE"
+    if settings.routine_scheduled_autonomy_enabled and mode != "DRY_RUN":
+        return {"status": "SCHEDULED_AUTONOMY_LIVE_DISABLED", "dispatched": 0}
     if target_publication_id is not None and mode != "DRY_RUN" and not allow_targeted_live:
         return {"status": "ROUTINE_TARGETED_RUN_DRY_RUN_ONLY", "dispatched": 0}
     if allow_targeted_live and (target_publication_id is None or mode != "LIVE"):
@@ -70,7 +75,13 @@ async def run_once(
             return {"status": str(exc), "dispatched": 0}
     try:
         if target_publication_id is None:
-            recover_stale_routine_claims(db, stale_seconds=settings.routine_claim_stale_seconds, now=now)
+            # Scheduled-autonomy DRY_RUN must only observe existing publications.
+            # Recovery changes publication/attempt state and belongs to the
+            # separately gated live worker, never to this provider-free gate.
+            if not settings.routine_scheduled_autonomy_enabled:
+                recover_stale_routine_claims(
+                    db, stale_seconds=settings.routine_claim_stale_seconds, now=now,
+                )
             candidates = due_publications(db, now=now, limit=settings.routine_pinterest_batch_size)
         else:
             publication = db.get(PinPublication, target_publication_id)
@@ -99,10 +110,53 @@ async def run_once(
                 continue
             run.eligible += 1
             if mode == "DRY_RUN":
+                certificate = None
+                if settings.routine_scheduled_autonomy_enabled:
+                    items = list(db.scalars(
+                        select(PinterestPortfolioPlanItem)
+                        .where(PinterestPortfolioPlanItem.publication_id == publication.id)
+                        .limit(2)
+                    ).all())
+                    if len(items) != 1:
+                        run.skipped += 1
+                        run.error_code = "SCHEDULED_AUTONOMY_PLAN_BINDING_REQUIRED"
+                        continue
+                    certificate = scheduled_autonomous_readiness(
+                        db, items[0].id, settings=settings, now=now,
+                    )
+                    if not certificate["ready"]:
+                        run.skipped += 1
+                        run.error_code = certificate["blockers"][0]
+                    run.metadata_json = {
+                        **(run.metadata_json or {}),
+                        "scheduled_autonomy_certificates": [
+                            *((run.metadata_json or {}).get("scheduled_autonomy_certificates") or []),
+                            {
+                                "publication_id": publication.id,
+                                "portfolio_item_id": items[0].id,
+                                "fingerprint": certificate["certificate_fingerprint"],
+                                "ready": certificate["ready"],
+                                "blockers": certificate["blockers"],
+                                "external_requests": 0,
+                            },
+                        ],
+                    }
+                    if not certificate["ready"]:
+                        continue
                 try:
-                    build_routine_offline_evidence(
+                    offline = build_routine_offline_evidence(
                         db, publication, permit=permit, now=now,
                     )
+                    if certificate is not None:
+                        record = (run.metadata_json or {})["scheduled_autonomy_certificates"][-1]
+                        run.metadata_json = {
+                            **(run.metadata_json or {}),
+                            "scheduled_autonomy_certificates": [
+                                *((run.metadata_json or {})["scheduled_autonomy_certificates"][:-1]),
+                                {**record, "offline_validated": True,
+                                 "external_requests": offline.external_requests},
+                            ],
+                        }
                 except RoutineOfflinePreflightError as exc:
                     run.skipped += 1
                     run.error_code = str(exc)

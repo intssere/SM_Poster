@@ -1016,6 +1016,151 @@ def _require_0030_lineage_schema(connection: Any) -> None:
         _refuse("0030 reconciliation status check contract mismatch")
 
 
+SCHEDULED_QUOTA_RESERVATIONS_TABLE = "routine_scheduled_quota_reservations"
+
+
+def _require_0031_scheduled_quota_schema(connection: Any) -> None:
+    """Require the exact table contract introduced by migration 0031."""
+    table = SCHEDULED_QUOTA_RESERVATIONS_TABLE
+    inspector = sa.inspect(connection)
+    if table not in set(inspector.get_table_names(schema="public")):
+        _refuse("0031 scheduled quota reservations table missing")
+
+    expected_columns = {
+        "id": (sa.String, 36, False, None),
+        "publication_id": (sa.String, 36, False, None),
+        "plan_id": (sa.String, 36, False, None),
+        "plan_item_id": (sa.String, 36, False, None),
+        "product_id": (sa.String, 36, False, None),
+        "vendor_key": (sa.String, 255, False, None),
+        "board_id": (sa.String, 36, False, None),
+        "scheduled_for": (sa.Date, None, False, None),
+        "month_start": (sa.Date, None, False, None),
+        "reserved_at": (sa.DateTime, None, False, "now()"),
+    }
+    columns = {
+        row["name"]: row
+        for row in inspector.get_columns(table, schema="public")
+    }
+    if set(columns) != set(expected_columns):
+        _refuse("0031 scheduled quota reservations column contract mismatch")
+    for name, (type_class, length, nullable, default) in expected_columns.items():
+        column = columns[name]
+        column_type = column["type"]
+        if not isinstance(column_type, type_class):
+            _refuse(f"0031 scheduled quota reservations type mismatch: {name}")
+        if length is not None and getattr(column_type, "length", None) != length:
+            _refuse(f"0031 scheduled quota reservations length mismatch: {name}")
+        if isinstance(column_type, sa.DateTime) and column_type.timezone is not True:
+            _refuse("0031 scheduled quota reservations timezone mismatch: reserved_at")
+        if bool(column.get("nullable")) != nullable:
+            _refuse(f"0031 scheduled quota reservations nullability mismatch: {name}")
+        if _normalize_default(column.get("default")) != default:
+            _refuse(f"0031 scheduled quota reservations default mismatch: {name}")
+        if (
+            column.get("collation") is not None
+            or column.get("identity") is not None
+            or column.get("computed") is not None
+        ):
+            _refuse(f"0031 scheduled quota reservations column attributes mismatch: {name}")
+
+    primary_key = inspector.get_pk_constraint(table, schema="public")
+    if (
+        primary_key.get("name") != f"{table}_pkey"
+        or tuple(primary_key.get("constrained_columns") or ()) != ("id",)
+    ):
+        _refuse("0031 scheduled quota reservations primary key mismatch")
+
+    expected_uniques = {
+        "uq_routine_scheduled_quota_publication": ("publication_id",),
+    }
+    actual_uniques = {}
+    for row in inspector.get_unique_constraints(table, schema="public"):
+        actual_uniques[row.get("name")] = tuple(row.get("column_names") or ())
+        dialect_options = row.get("dialect_options") or {}
+        active_options = {
+            key: value
+            for key, value in dialect_options.items()
+            if value not in (None, False, [], {})
+        }
+        if (
+            row.get("deferrable") not in (None, False)
+            or row.get("initially") not in (None, False)
+            or active_options
+        ):
+            _refuse("0031 scheduled quota reservations unique contract mismatch")
+    if actual_uniques != expected_uniques:
+        _refuse("0031 scheduled quota reservations unique contract mismatch")
+
+    expected_indexes = {
+        "ix_routine_scheduled_quota_day": (
+            ("scheduled_for", "product_id", "vendor_key", "board_id"),
+            False,
+        ),
+        "ix_routine_scheduled_quota_month": (("month_start",), False),
+    }
+    actual_indexes = {}
+    for row in inspector.get_indexes(table, schema="public"):
+        # PostgreSQL may also report the backing index for the named unique
+        # constraint; it is covered by the exact unique-constraint check.
+        if row.get("duplicates_constraint"):
+            continue
+        actual_indexes[row.get("name")] = (
+            tuple(row.get("column_names") or ()),
+            bool(row.get("unique")),
+        )
+        dialect_options = row.get("dialect_options") or {}
+        active_options = {
+            key: value
+            for key, value in dialect_options.items()
+            if value not in (None, False, [], {})
+            and not (key == "postgresql_using" and value == "btree")
+        }
+        if row.get("column_names") is None or active_options:
+            _refuse("0031 scheduled quota reservations index definition mismatch")
+    if actual_indexes != expected_indexes:
+        _refuse("0031 scheduled quota reservations index contract mismatch")
+
+    expected_foreign_keys = {
+        "fk_routine_scheduled_quota_publication": (
+            ("publication_id",), "pin_publications", ("id",)
+        ),
+        "fk_routine_scheduled_quota_plan": (
+            ("plan_id",), "pinterest_portfolio_plans", ("id",)
+        ),
+        "fk_routine_scheduled_quota_plan_item": (
+            ("plan_item_id",), "pinterest_portfolio_plan_items", ("id",)
+        ),
+        "fk_routine_scheduled_quota_product": (
+            ("product_id",), "products", ("id",)
+        ),
+        "fk_routine_scheduled_quota_board": (
+            ("board_id",), "boards", ("id",)
+        ),
+    }
+    actual_foreign_keys = {}
+    for row in inspector.get_foreign_keys(table, schema="public"):
+        options = {
+            key: str(value).upper()
+            for key, value in (row.get("options") or {}).items()
+        }
+        actual_foreign_keys[row.get("name")] = (
+            tuple(row.get("constrained_columns") or ()),
+            row.get("referred_schema") or "public",
+            row.get("referred_table"),
+            tuple(row.get("referred_columns") or ()),
+            options,
+        )
+    expected_foreign_keys = {
+        name: (contract[0], "public", contract[1], contract[2], {"ondelete": "RESTRICT"})
+        for name, contract in expected_foreign_keys.items()
+    }
+    if actual_foreign_keys != expected_foreign_keys:
+        _refuse("0031 scheduled quota reservations foreign key contract mismatch")
+    if inspector.get_check_constraints(table, schema="public"):
+        _refuse("0031 scheduled quota reservations check constraint mismatch")
+
+
 def verify_frozen_schema_at_head(connection: Any, revision: str = "0030") -> None:
     """Read-only production startup guard for canonical migration contracts."""
     if getattr(connection.dialect, "name", None) != "postgresql":
@@ -1035,7 +1180,7 @@ def verify_frozen_schema_at_head(connection: Any, revision: str = "0030") -> Non
             _refuse("canonical schema fingerprint verification failed")
         return
 
-    if revision != "0030":
+    if revision not in {"0030", "0031"}:
         _refuse(f"unsupported canonical head revision: {revision}")
 
     present = _present_postgresql_tables(connection, LINEAGE_PRESERVED_TABLES)
@@ -1049,6 +1194,8 @@ def verify_frozen_schema_at_head(connection: Any, revision: str = "0030") -> Non
     if fingerprints != canonical:
         _refuse("0030 preserved schema fingerprint verification failed")
     _require_0030_lineage_schema(connection)
+    if revision == "0031":
+        _require_0031_scheduled_quota_schema(connection)
 
 
 def repair_known_legacy_preapplied_revision(connection: Any, revision: str) -> bool:

@@ -157,6 +157,15 @@ def _actor(request: Request):
 def status(db: Session = Depends(get_db)):
     settings = get_settings()
     snapshot = routine_operational_snapshot(db)
+    latest = db.scalar(select(RoutinePublishingRun).order_by(
+        RoutinePublishingRun.started_at.desc()
+    ).limit(1))
+    certificates = (
+        (latest.metadata_json or {}).get("scheduled_autonomy_certificates", [])
+        if latest and latest.mode == "DRY_RUN" else []
+    )
+    if not isinstance(certificates, list):
+        certificates = []
     return {
         "worker_enabled": settings.routine_pinterest_worker_enabled,
         "buffer_dispatch_enabled": settings.routine_buffer_dispatch_enabled,
@@ -164,6 +173,20 @@ def status(db: Session = Depends(get_db)):
         "batch_size": settings.routine_pinterest_batch_size,
         "daily_write_limit": settings.routine_pinterest_daily_write_limit,
         "scheduler": scheduler_status(settings),
+        "scheduled_autonomy": {
+            "readiness_enabled": settings.routine_scheduled_autonomy_enabled,
+            "live_enabled": False,
+            "authorization_enabled": settings.routine_autonomous_authorization_enabled,
+            "generation_enabled": settings.pinterest_autonomous_generation_enabled,
+            "execution_enabled": settings.pinterest_autonomous_execution_enabled,
+            "board_ensure_enabled": settings.pinterest_autonomous_board_ensure_enabled,
+            "last_dry_run": {
+                "run_id": latest.id,
+                "certified": sum(1 for row in certificates if isinstance(row, dict) and row.get("ready") is True and row.get("offline_validated") is True),
+                "blocked": sum(1 for row in certificates if isinstance(row, dict) and row.get("ready") is not True),
+                "external_requests": sum(row.get("external_requests", 0) for row in certificates if isinstance(row, dict) and type(row.get("external_requests")) is int),
+            } if certificates and latest else None,
+        },
         **snapshot,
     }
 
