@@ -174,6 +174,10 @@ async def run_once(
                         "scheduler_canary": {
                             "key": canary_context.idempotency_key,
                             "target_publication_id": canary_context.target_publication_id,
+                            "publication_fingerprint": canary_context.expected_publication_fingerprint,
+                            "request_fingerprint": canary_context.expected_request_fingerprint,
+                            "route_id": canary_context.expected_route_id,
+                            "lease_backend_pid": getattr(canary_context.lease, "backend_pid", None),
                         },
                     },
                 )

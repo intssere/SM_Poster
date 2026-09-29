@@ -32,6 +32,7 @@ from app.services.routine_offline_preflight import (
 from app.services.routine_operational_readiness import routine_readiness_snapshot
 from app.services.routine_pinterest_scheduler import scheduler_status, scheduler_tick
 from app.services.routine_scheduler_canary_context import (
+    _CLOSED_SETTINGS_GATES,
     CanarySafetyError,
     RoutineSchedulerCanaryContext,
     validate_canary_context,
@@ -488,6 +489,14 @@ async def run_routine_scheduler_canary(*, settings: Settings) -> dict:
         result = {
             "status": "PASS",
             "code": "CANARY_ADMISSION_EXERCISED_PROVIDER_FREE",
+            "release_commit_sha": target["release_commit_sha"],
+            "release_tree_sha": target["release_tree_sha"],
+            "schema_revision": "0031",
+            "gate_snapshot": {
+                "routine_scheduler_canary_enabled": True,
+                "routine_pinterest_dry_run": True,
+                **{key: False for key in _CLOSED_SETTINGS_GATES},
+            },
             "publication_id": target["publication_id"],
             "publication_fingerprint": target["publication_fingerprint"],
             "request_fingerprint": target["request_fingerprint"],

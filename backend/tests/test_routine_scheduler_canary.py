@@ -443,10 +443,12 @@ def test_paused_control_and_durable_boundaries_remain_unchanged(seeded_db):
     assert result["canary_evidence"]["claim_committed"] is False
     assert result["canary_evidence"]["reservation_committed"] is False
     assert _durable_snapshot(db, publication.id) == baseline
-    assert db.scalars(select(RoutinePublishingRun)).all()[-1].metadata_json["scheduler_canary"] == {
-        "key": context.idempotency_key,
-        "target_publication_id": publication.id,
-    }
+    marker = db.scalars(select(RoutinePublishingRun)).all()[-1].metadata_json["scheduler_canary"]
+    assert marker["key"] == context.idempotency_key
+    assert marker["target_publication_id"] == publication.id
+    assert marker["publication_fingerprint"] == context.expected_publication_fingerprint
+    assert marker["request_fingerprint"] == context.expected_request_fingerprint
+    assert marker["route_id"] == context.expected_route_id
 
 
 def test_crashed_running_run_blocks_idempotently_without_stale_recovery(seeded_db):
