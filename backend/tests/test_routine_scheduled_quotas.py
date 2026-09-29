@@ -2,7 +2,7 @@ from datetime import date
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session
 
 from app.models.routine_publishing import (
@@ -309,3 +309,67 @@ def test_read_only_assessment_does_not_autoflush_pending_ledger_rows(isolated_db
     )
     assert assessment.daily_used == 0
     assert pending in isolated_db.new
+
+
+@pytest.mark.parametrize(
+    ("corrupt_field", "value"),
+    [
+        ("month_start", date(2026, 5, 1)),
+        ("vendor_key", " Acme "),
+    ],
+)
+def test_inconsistent_ledger_fails_closed_for_assessment_and_reservation(
+    isolated_db, corrupt_field, value
+):
+    db = _PostgresReservationSession(isolated_db)
+    _reserve(db)
+    isolated_db.commit()
+    isolated_db.execute(
+        update(RoutineScheduledQuotaReservation)
+        .where(RoutineScheduledQuotaReservation.publication_id == "pub-1")
+        .values({corrupt_field: value})
+    )
+    isolated_db.commit()
+    request = dict(
+        publication_id="pub-2",
+        plan_id="plan-2",
+        plan_item_id="item-pub-2",
+        product_id="product-2",
+        vendor_key="Other",
+        board_id="board-2",
+        scheduled_for=date(2026, 4, 11),
+        limits=ScheduledQuotaLimits(daily=10, monthly=10, product=10, vendor=10, board=10),
+    )
+    for operation in (assess_scheduled_quota, reserve_scheduled_quota):
+        with pytest.raises(ScheduledQuotaError) as error:
+            operation(isolated_db if operation is assess_scheduled_quota else db, **request)
+        assert error.value.code == "SCHEDULED_QUOTA_LEDGER_INCONSISTENT"
+    assert isolated_db.scalar(select(RoutineScheduledQuotaReservation).where(
+        RoutineScheduledQuotaReservation.publication_id == "pub-2"
+    )) is None
+
+
+def test_duplicate_reservation_fails_closed_if_limits_shrink_below_committed_usage(
+    isolated_db,
+):
+    db = _PostgresReservationSession(isolated_db)
+    _reserve(db, publication="pub-1")
+    _reserve(db, publication="pub-2")
+    isolated_db.commit()
+    reduced = ScheduledQuotaLimits(daily=1, monthly=10, product=10, vendor=10, board=10)
+    with pytest.raises(ScheduledQuotaError) as error:
+        _reserve(db, publication="pub-1", limits=reduced)
+    assert error.value.code == "SCHEDULED_QUOTA_EXISTING_LIMIT_EXCEEDED"
+    with pytest.raises(ScheduledQuotaError) as error:
+        assess_scheduled_quota(
+            isolated_db,
+            publication_id="pub-1",
+            plan_id="plan-1",
+            plan_item_id="item-pub-1",
+            product_id="product-1",
+            vendor_key="Acme",
+            board_id="board-1",
+            scheduled_for=date(2026, 4, 10),
+            limits=reduced,
+        )
+    assert error.value.code == "SCHEDULED_QUOTA_EXISTING_LIMIT_EXCEEDED"

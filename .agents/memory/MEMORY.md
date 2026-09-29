@@ -1,3 +1,4 @@
 - [Historical migration baseline](historical-migration-baseline.md) — freeze the remaining Phase 0 schema before future model migrations to prevent clean-install drift.
 - [Alembic table adoption](alembic-table-adoption.md) — model metadata may pre-create a pending table; migrations must verify full schema equivalence before adoption.
 - [Migration-free readiness work](migration-free-readiness.md) — branch-only readiness work must not let dev workflows auto-apply a pending migration.
+- [GitHub branch push auth](github-push-auth.md) — when the configured Git helper rejects pushes, check the authenticated GitHub CLI before requesting a new grant.

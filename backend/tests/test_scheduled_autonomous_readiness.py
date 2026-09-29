@@ -37,6 +37,7 @@ from app.models.routine_publishing import (
     RoutineDispatchPermit,
     RoutinePublishingControl,
     RoutinePublishingRun,
+    RoutineScheduledQuotaReservation,
 )
 from app.services import routine_pinterest_scheduler as scheduler
 from app.services import routine_pinterest_worker as worker
@@ -719,6 +720,54 @@ async def test_positive_certificate_gates_scheduler_worker_dry_run_without_write
         "external_requests": 0,
     }]
     check.close()
+    scheduler.reset_scheduler_state_for_tests()
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_stale_quota_bucket_blocks_scheduler_dry_run_without_provider_mutation():
+    scheduler.reset_scheduler_state_for_tests()
+    engine, Session = _database()
+    with Session() as seed:
+        item, publication, permit = _seed_positive_ready_autonomous_chain(seed)
+        seed.add(RoutineScheduledQuotaReservation(
+            publication_id=publication.id,
+            plan_id=item.plan_id,
+            plan_item_id=item.id,
+            product_id=item.product_id,
+            vendor_key="diamond shelf",
+            board_id=item.local_board_id,
+            scheduled_for=item.planned_date,
+            month_start=date(2026, 11, 1),
+        ))
+        seed.commit()
+
+    settings = _settings(routine_scheduled_autonomy_enabled=True)
+    gateway = TripwireProviderGateway()
+
+    async def real_worker(db, *, settings):
+        return await worker.run_once(db, settings=settings, gateway=gateway, now=NOW)
+
+    result = await scheduler.scheduler_tick(
+        settings=settings,
+        session_factory=Session,
+        runner=real_worker,
+        leader_lease=FakeLease(),
+    )
+    with Session() as check:
+        receipts = check.scalar(select(RoutinePublishingRun)).metadata_json[
+            "scheduled_autonomy_certificates"
+        ]
+        assert receipts[0]["ready"] is False
+        assert "SCHEDULED_QUOTA_HEADROOM" in receipts[0]["blockers"]
+        assert check.get(PinPublication, publication.id).status == PublicationStatus.SCHEDULED
+        assert check.get(RoutineDispatchPermit, permit.id).status == "ACTIVE"
+        assert check.scalars(select(PublicationAttempt)).all() == []
+        assert check.scalars(select(RoutineAttemptBoundary)).all() == []
+    assert result["scanned"] == 1
+    assert result["skipped"] == 1
+    assert result["dispatched"] == 0
+    assert gateway.calls == []
     scheduler.reset_scheduler_state_for_tests()
     engine.dispose()
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.models.routine_publishing import (
@@ -20,6 +20,9 @@ class ScheduledQuotaError(RuntimeError):
     def __init__(self, code: str):
         self.code = code
         super().__init__(code)
+
+
+MAX_MONTH_ROWS_TO_VALIDATE = 10000
 
 
 @dataclass(frozen=True)
@@ -109,9 +112,18 @@ def _validate_limits(limits: ScheduledQuotaLimits):
 
 
 def _quota_usage(db, identity: dict) -> tuple[dict[str, int], object | None]:
-    """Read all relevant counts without flushing caller-owned pending changes."""
+    """Read and validate the relevant ledger month without autoflushing changes.
+
+    A corrupt month bucket or noncanonical vendor could evade one of the five
+    counts. Inspect both the bucket and the actual scheduled dates so those
+    rows cannot silently disappear from the cap calculation.
+    """
     ledger = RoutineScheduledQuotaReservation
     month = ledger.month_start == identity["month_start"]
+    first = identity["month_start"]
+    following = date(first.year + 1, 1, 1) if first.month == 12 else date(
+        first.year, first.month + 1, 1
+    )
 
     def count_for(*criteria):
         return int(
@@ -124,9 +136,38 @@ def _quota_usage(db, identity: dict) -> tuple[dict[str, int], object | None]:
         )
 
     with db.no_autoflush:
-        existing = db.scalar(
-            select(ledger).where(ledger.publication_id == identity["publication_id"])
-        )
+        # Fetch columns, not ORM instances: an already-loaded identity-map
+        # object can be stale after another transaction changes a ledger row.
+        existing = db.execute(
+            select(
+                ledger.id,
+                ledger.publication_id,
+                ledger.plan_id,
+                ledger.plan_item_id,
+                ledger.product_id,
+                ledger.vendor_key,
+                ledger.board_id,
+                ledger.scheduled_for,
+                ledger.month_start,
+            ).where(ledger.publication_id == identity["publication_id"])
+        ).one_or_none()
+        month_rows = db.execute(
+            select(ledger.scheduled_for, ledger.month_start, ledger.vendor_key).where(
+                or_(
+                    month,
+                    (ledger.scheduled_for >= first) & (ledger.scheduled_for < following),
+                )
+            ).limit(MAX_MONTH_ROWS_TO_VALIDATE + 1)
+        ).all()
+        if len(month_rows) > MAX_MONTH_ROWS_TO_VALIDATE:
+            raise ScheduledQuotaError("SCHEDULED_QUOTA_LEDGER_TOO_LARGE")
+        for row in month_rows:
+            if (
+                row.month_start != date(row.scheduled_for.year, row.scheduled_for.month, 1)
+                or not row.vendor_key
+                or row.vendor_key != row.vendor_key.strip().casefold()
+            ):
+                raise ScheduledQuotaError("SCHEDULED_QUOTA_LEDGER_INCONSISTENT")
         counts = {
             "daily": count_for(ledger.scheduled_for == identity["scheduled_for"]),
             "monthly": count_for(month),
@@ -176,6 +217,11 @@ def assess_scheduled_quota(
     except SQLAlchemyError as exc:
         raise ScheduledQuotaError("SCHEDULED_QUOTA_LEDGER_UNAVAILABLE") from exc
 
+    if existing is not None and any(
+        counts[name] > getattr(limits, name)
+        for name in ("daily", "monthly", "product", "vendor", "board")
+    ):
+        raise ScheduledQuotaError("SCHEDULED_QUOTA_EXISTING_LIMIT_EXCEEDED")
     remaining = {
         name: max(0, getattr(limits, name) - counts[name])
         for name in ("daily", "monthly", "product", "vendor", "board")
@@ -235,34 +281,30 @@ def reserve_scheduled_quota(
     if control is None:
         raise ScheduledQuotaError("SCHEDULED_QUOTA_CONTROL_ROW_MISSING")
 
-    existing = db.scalar(
-        select(RoutineScheduledQuotaReservation).where(
-            RoutineScheduledQuotaReservation.publication_id == publication_id
-        )
-    )
+    try:
+        counts, existing = _quota_usage(db, identity)
+    except SQLAlchemyError as exc:
+        raise ScheduledQuotaError("SCHEDULED_QUOTA_LEDGER_UNAVAILABLE") from exc
     if existing is not None:
-        if all(getattr(existing, key) == value for key, value in identity.items()):
-            return existing
-        raise ScheduledQuotaError("SCHEDULED_QUOTA_PUBLICATION_IDENTITY_CONFLICT")
+        if any(
+            counts[name] > getattr(limits, name)
+            for name in ("daily", "monthly", "product", "vendor", "board")
+        ):
+            raise ScheduledQuotaError("SCHEDULED_QUOTA_EXISTING_LIMIT_EXCEEDED")
+        current = db.get(RoutineScheduledQuotaReservation, existing.id, populate_existing=True)
+        if current is None:
+            raise ScheduledQuotaError("SCHEDULED_QUOTA_LEDGER_INCONSISTENT")
+        return current
 
-    def count_for(*criteria):
-        return db.scalar(
-            select(func.count())
-            .select_from(RoutineScheduledQuotaReservation)
-            .where(*criteria)
-        ) or 0
-
-    ledger = RoutineScheduledQuotaReservation
-    month = ledger.month_start == identity["month_start"]
-    if count_for(ledger.scheduled_for == scheduled_for) >= limits.daily:
+    if counts["daily"] >= limits.daily:
         raise ScheduledQuotaError("SCHEDULED_QUOTA_DAILY_LIMIT")
-    if count_for(month) >= limits.monthly:
+    if counts["monthly"] >= limits.monthly:
         raise ScheduledQuotaError("SCHEDULED_QUOTA_MONTHLY_LIMIT")
-    if count_for(month, ledger.product_id == product_id) >= limits.product:
+    if counts["product"] >= limits.product:
         raise ScheduledQuotaError("SCHEDULED_QUOTA_PRODUCT_LIMIT")
-    if count_for(month, ledger.vendor_key == identity["vendor_key"]) >= limits.vendor:
+    if counts["vendor"] >= limits.vendor:
         raise ScheduledQuotaError("SCHEDULED_QUOTA_VENDOR_LIMIT")
-    if count_for(month, ledger.board_id == board_id) >= limits.board:
+    if counts["board"] >= limits.board:
         raise ScheduledQuotaError("SCHEDULED_QUOTA_BOARD_LIMIT")
 
     reservation = RoutineScheduledQuotaReservation(**identity)
