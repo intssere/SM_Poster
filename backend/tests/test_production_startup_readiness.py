@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -290,5 +291,8 @@ def test_run_omits_frontend_lifecycle_events_on_readiness_failure(monkeypatch, c
 
 def test_replit_deployment_uses_readiness_wrapper():
     replit = (Path(__file__).parents[2] / ".replit").read_text(encoding="utf-8")
-    assert 'run = ["python", "scripts/start_production.py"]' in replit
+    command = tomllib.loads(replit)["deployment"]["run"]
+    assert command[0] == "env"
+    assert command[-2:] == ["python", "scripts/start_production.py"]
+    assert "ROUTINE_SCHEDULED_LIVE_ADMISSION_ENABLED=false" in command
     assert "exec npm --prefix frontend run preview" not in replit

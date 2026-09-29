@@ -86,7 +86,7 @@ jobs:
           export DATABASE_URL="${TASK58_CATALOG_URL}"
           alembic upgrade head
           alembic current 2>&1 | tee /tmp/task58-current
-          grep -Fx '0030 (head)' /tmp/task58-current
+          grep -Fx '0031 (head)' /tmp/task58-current
 
       - name: Task 58 focused and dependent regressions
         run: >-
