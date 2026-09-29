@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, inspect, select, text
@@ -38,6 +38,99 @@ from test_scheduled_autonomous_readiness import (
 
 async def _run_one_shot_canary(settings):
     return await one_shot_canary.run_routine_scheduler_canary(settings=settings)
+
+
+def _canary_settings(publication, permit, **overrides):
+    values = {
+        "routine_scheduler_canary_enabled": True,
+        "routine_pinterest_scheduler_enabled": False,
+        "routine_pinterest_worker_enabled": False,
+        "routine_scheduled_autonomy_enabled": False,
+        "routine_scheduler_canary_publication_id": publication.id,
+        "routine_scheduler_canary_permit_id": permit.id,
+        "routine_scheduler_canary_publication_fingerprint": publication.publication_fingerprint,
+        "routine_scheduler_canary_request_fingerprint": request_fingerprint_for(publication),
+        "routine_scheduler_canary_route_id": publication.pinterest_board_record_id,
+        "routine_scheduler_canary_release_commit_sha": "a" * 40,
+        "routine_scheduler_canary_release_tree_sha": "b" * 40,
+        "routine_scheduler_canary_timeout_seconds": 5,
+    }
+    values.update(overrides)
+    return _settings(**values)
+
+
+def _postgres_rows(db, model):
+    columns = list(model.__table__.columns)
+    statement = select(model)
+    for primary_key in model.__table__.primary_key.columns:
+        statement = statement.order_by(primary_key)
+    return tuple(
+        tuple(getattr(row, column.key) for column in columns)
+        for row in db.scalars(statement).all()
+    )
+
+
+def _postgres_canary_snapshot(db):
+    db.expire_all()
+    models = (
+        PinPublication,
+        RoutineDispatchPermit,
+        PublicationAttempt,
+        RoutineAttemptBoundary,
+        RoutineScheduledQuotaReservation,
+        RoutinePublishingControl,
+        RoutinePublishingRun,
+    )
+    return tuple(_postgres_rows(db, model) for model in models)
+
+
+class FakeCanaryLease:
+    def __init__(self):
+        self.supported = True
+        self.held = False
+        self.last_status = "NOT_ATTEMPTED"
+        self.last_error = None
+        self.backend_pid = 24680
+        self.acquire_calls = 0
+
+    def acquire(self):
+        self.acquire_calls += 1
+        self.held = True
+        self.last_status = "ACQUIRED"
+        return "ACQUIRED"
+
+    def validate(self):
+        return self.held
+
+    def release(self):
+        self.held = False
+        self.last_status = "RELEASED"
+
+
+def _patch_canary_service(monkeypatch, engine, lease):
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW if tz is not None else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr(one_shot_canary, "engine", engine)
+    monkeypatch.setattr(one_shot_canary, "datetime", FrozenDateTime)
+    monkeypatch.setattr(one_shot_canary, "_schema_is_exact_0031", lambda *_args: True)
+    monkeypatch.setattr(one_shot_canary, "_release_matches_pins", lambda _target: True)
+    monkeypatch.setattr(
+        one_shot_canary, "PostgresSchedulerLeaderLease", lambda _engine: lease,
+    )
+    monkeypatch.setattr(
+        one_shot_canary, "scheduler_status",
+        lambda _settings: {
+            "enabled": False, "started": False, "task_running": False,
+            "tick_running": False, "lease_supported": True, "lease_held": False,
+        },
+    )
+    monkeypatch.setattr(
+        one_shot_canary, "routine_readiness_snapshot",
+        lambda *args, **kwargs: {"alerts": []},
+    )
 
 
 @pytest.fixture
@@ -171,13 +264,196 @@ async def test_positive_canary_runs_real_postgres_dry_run_without_durable_admiss
         assert scheduler._state["last_lease_status"] == "RELEASED"
         assert scheduler.scheduler_status(settings)["lease_held"] is False
 
+        with sessions() as check:
+            before_replay = _postgres_canary_snapshot(check)
         replay = await _run_one_shot_canary(settings)
         assert replay["status"] == "BLOCKED"
         assert replay["code"] == "CANARY_IDEMPOTENCY_REQUIRES_RECONCILIATION"
         with sessions() as check:
-            assert len(check.scalars(select(RoutinePublishingRun)).all()) == 1
+            assert _postgres_canary_snapshot(check) == before_replay
     finally:
         scheduler.reset_scheduler_state_for_tests()
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_status", "expected_code"),
+    [
+        ("gate_disabled", "BLOCKED", "CANARY_GATE_DISABLED"),
+        ("absent_candidate", "NOT_EXERCISED", "CANARY_DUE_PUBLICATION_IDENTITY_OR_CARDINALITY"),
+        ("absent_permit", "NOT_EXERCISED", "CANARY_ACTIVE_PERMIT_IDENTITY_OR_CARDINALITY"),
+        ("duplicate_candidate", "NOT_EXERCISED", "CANARY_DUE_PUBLICATION_IDENTITY_OR_CARDINALITY"),
+        ("publication_fingerprint", "NOT_EXERCISED", "CANARY_FIXED_TARGET_BINDING_MISMATCH"),
+        ("request_fingerprint", "NOT_EXERCISED", "CANARY_FIXED_TARGET_BINDING_MISMATCH"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_postgres_preflight_rejections_leave_durable_rows_unchanged(
+    postgres_sessions, monkeypatch, case, expected_status, expected_code,
+):
+    engine, sessions = postgres_sessions
+    with sessions() as seed:
+        _, publication, permit = _seed_positive_ready_autonomous_chain(seed)
+        seed.get(RoutinePublishingControl, "default").state = "PAUSED"
+        if case == "absent_candidate":
+            publication.scheduled_for = NOW + timedelta(days=1)
+        elif case == "absent_permit":
+            permit.status = "REVOKED"
+        elif case == "duplicate_candidate":
+            fields = {
+                column.name: getattr(publication, column.name)
+                for column in PinPublication.__table__.columns
+            }
+            fields.update(
+                id="duplicate-canary-publication",
+                publication_fingerprint="f" * 64,
+            )
+            seed.add(PinPublication(**fields))
+        seed.commit()
+
+    overrides = {}
+    if case == "gate_disabled":
+        overrides["routine_scheduler_canary_enabled"] = False
+    elif case == "publication_fingerprint":
+        overrides["routine_scheduler_canary_publication_fingerprint"] = "0" * 64
+    elif case == "request_fingerprint":
+        overrides["routine_scheduler_canary_request_fingerprint"] = "1" * 64
+    settings = _canary_settings(publication, permit, **overrides)
+    lease = FakeCanaryLease()
+    _patch_canary_service(monkeypatch, engine, lease)
+    with sessions() as check:
+        before = _postgres_canary_snapshot(check)
+        assert check.scalars(select(RoutinePublishingRun)).all() == []
+
+    result = await _run_one_shot_canary(settings)
+
+    assert (result["status"], result["code"]) == (expected_status, expected_code), result
+    assert result["external_calls"] == 0
+    assert lease.acquire_calls == (0 if case == "gate_disabled" else 1)
+    with sessions() as check:
+        assert _postgres_canary_snapshot(check) == before
+        assert check.scalars(select(RoutinePublishingRun)).all() == []
+
+
+@pytest.mark.parametrize("provider_arg", ["gateway", "media_client", "resolver"])
+def test_postgres_worker_rejects_provider_handles_without_mutation(
+    postgres_sessions, provider_arg,
+):
+    _, sessions = postgres_sessions
+    with sessions() as seed:
+        _, publication, permit = _seed_positive_ready_autonomous_chain(seed)
+        seed.get(RoutinePublishingControl, "default").state = "PAUSED"
+        seed.commit()
+
+    class HeldLease:
+        held = True
+
+        def validate(self):
+            return True
+
+    context = RoutineSchedulerCanaryContext(
+        lease=HeldLease(),
+        idempotency_key="provider-handle-postgres-canary",
+        target_publication_id=publication.id,
+        target_permit_id=permit.id,
+        expected_publication_fingerprint=publication.publication_fingerprint,
+        expected_request_fingerprint=request_fingerprint_for(publication),
+        expected_route_id=publication.pinterest_board_record_id,
+        deadline_monotonic=time.monotonic() + 60,
+    )
+    settings = _canary_settings(publication, permit)
+    with sessions() as check:
+        before = _postgres_canary_snapshot(check)
+        assert check.scalars(select(RoutinePublishingRun)).all() == []
+
+    with sessions() as db:
+        with pytest.raises(
+            CanarySafetyError,
+            match="CANARY_PROVIDER_OR_TARGETED_LIVE_PATH_FORBIDDEN",
+        ):
+            asyncio.run(worker.run_once(
+                db,
+                settings=settings,
+                now=NOW,
+                canary_context=context,
+                **{provider_arg: object()},
+            ))
+
+    with sessions() as check:
+        assert _postgres_canary_snapshot(check) == before
+        assert check.scalars(select(RoutinePublishingRun)).all() == []
+
+
+@pytest.mark.asyncio
+async def test_postgres_one_shot_timeout_leaves_candidate_and_ledgers_unchanged(
+    postgres_sessions, monkeypatch,
+):
+    engine, sessions = postgres_sessions
+    with sessions() as seed:
+        _, publication, permit = _seed_positive_ready_autonomous_chain(seed)
+        seed.get(RoutinePublishingControl, "default").state = "PAUSED"
+        seed.commit()
+
+    settings = _canary_settings(
+        publication, permit, routine_scheduler_canary_timeout_seconds=1,
+    )
+    lease = FakeCanaryLease()
+    _patch_canary_service(monkeypatch, engine, lease)
+    calls = []
+
+    async def hanging_tick(**kwargs):
+        calls.append(kwargs)
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(one_shot_canary, "scheduler_tick", hanging_tick)
+    with sessions() as check:
+        before = _postgres_canary_snapshot(check)
+        assert check.scalars(select(RoutinePublishingRun)).all() == []
+
+    result = await _run_one_shot_canary(settings)
+
+    assert result["status"] == "BLOCKED"
+    assert result["code"] == "CANARY_TICK_TIMEOUT"
+    assert result["external_calls"] == 0
+    assert calls and lease.acquire_calls == 1
+    assert lease.held is False
+    with sessions() as check:
+        assert _postgres_canary_snapshot(check) == before
+        assert check.scalars(select(RoutinePublishingRun)).all() == []
+
+
+@pytest.mark.asyncio
+async def test_postgres_preflight_blocks_crashed_running_run_without_recovery(
+    postgres_sessions, monkeypatch,
+):
+    engine, sessions = postgres_sessions
+    with sessions() as seed:
+        _, publication, permit = _seed_positive_ready_autonomous_chain(seed)
+        seed.get(RoutinePublishingControl, "default").state = "PAUSED"
+        crashed = RoutinePublishingRun(
+            id="crashed-postgres-canary-run",
+            mode="DRY_RUN",
+            status="RUNNING",
+            started_at=NOW - timedelta(days=1),
+            heartbeat_at=NOW - timedelta(days=1),
+        )
+        seed.add(crashed)
+        seed.commit()
+
+    settings = _canary_settings(publication, permit)
+    lease = FakeCanaryLease()
+    _patch_canary_service(monkeypatch, engine, lease)
+    with sessions() as check:
+        before = _postgres_canary_snapshot(check)
+
+    result = await _run_one_shot_canary(settings)
+
+    assert result["status"] == "BLOCKED"
+    assert result["code"] == "ROUTINE_WORKER_ALREADY_RUNNING"
+    with sessions() as check:
+        assert _postgres_canary_snapshot(check) == before
+        only_run = check.scalars(select(RoutinePublishingRun)).all()
+        assert len(only_run) == 1
+        assert only_run[0].status == "RUNNING"
 
 
 def test_schema_guard_rejects_metadata_created_schema_at_revision_0031(
@@ -246,8 +522,15 @@ def test_real_postgres_canary_lease_excludes_second_instance_and_fails_over(
         engine.dispose()
 
 
-def test_lease_loss_after_real_pg_admission_rolls_back_the_preview(
-    postgres_sessions, monkeypatch,
+@pytest.mark.parametrize(
+    ("drift", "expected_error"),
+    [
+        ("lease", "CANARY_LEASE_INVALID"),
+        ("provider_gate", "CANARY_SETTINGS_NOT_CLOSED"),
+    ],
+)
+def test_lease_or_gate_drift_after_real_pg_admission_rolls_back_preview(
+    postgres_sessions, monkeypatch, drift, expected_error,
 ):
     _, sessions = postgres_sessions
 
@@ -283,14 +566,17 @@ def test_lease_loss_after_real_pg_admission_rolls_back_the_preview(
 
     real_admit = worker.admit_scheduled_publication
 
-    def admit_then_lose_lease(db, **kwargs):
+    def admit_then_drift(db, **kwargs):
         result = real_admit(db, **kwargs)
-        lease.valid = False
+        if drift == "lease":
+            lease.valid = False
+        else:
+            object.__setattr__(settings, "publishing_enabled", True)
         return result
 
-    monkeypatch.setattr(worker, "admit_scheduled_publication", admit_then_lose_lease)
+    monkeypatch.setattr(worker, "admit_scheduled_publication", admit_then_drift)
     with sessions() as db:
-        with pytest.raises(CanarySafetyError, match="CANARY_LEASE_INVALID"):
+        with pytest.raises(CanarySafetyError, match=expected_error):
             asyncio.run(worker.run_once(
                 db, settings=settings, now=NOW, canary_context=context,
             ))
