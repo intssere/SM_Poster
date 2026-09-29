@@ -404,13 +404,21 @@ def _seed_positive_ready_autonomous_chain(db):
         status=PublicationStatus.SCHEDULED,
         scheduled_for=scheduled_for,
     )
-    db.add_all([
-        store, product, local_board, angle, connection, provider_board,
-        template, source_image, concept, draft, creative, plan, optimizer,
-        item, seo, generation, approval, publication,
-        RoutinePublishingControl(id="default", state="DRY_RUN"),
-    ])
-    db.flush()
+    # Explicitly flush FK parents first: SQLite's default FK behavior masks
+    # ordering mistakes that disposable PostgreSQL correctly rejects.
+    for layer in (
+        [store, angle, connection, template, RoutinePublishingControl(
+            id="default", state="DRY_RUN",
+        )],
+        [product, local_board, provider_board, plan],
+        [source_image, concept, optimizer],
+        [draft, item],
+        [creative, seo],
+        [generation, approval],
+        [publication],
+    ):
+        db.add_all(layer)
+        db.flush()
 
     quality, duplicate, readiness = _snapshots(
         db,
@@ -441,6 +449,7 @@ def _seed_positive_ready_autonomous_chain(db):
         status="ACTIVE",
     )
     db.add(permit)
+    db.flush()
     item.publication_id = publication.id
     execution = PinterestAutonomousExecutionRun(
         id="ready-execution",
@@ -625,7 +634,7 @@ async def test_scheduler_to_worker_dry_run_never_calls_provider_or_creates_permi
 
 
 @pytest.mark.asyncio
-async def test_positive_certificate_gates_scheduler_worker_dry_run_without_writes(monkeypatch):
+async def test_positive_certificate_does_not_admit_on_unsupported_sqlite(monkeypatch):
     scheduler.reset_scheduler_state_for_tests()
     monkeypatch.setattr(
         worker,
@@ -698,7 +707,7 @@ async def test_positive_certificate_gates_scheduler_worker_dry_run_without_write
     assert result["mode"] == "DRY_RUN"
     assert result["scanned"] == 1
     assert result["eligible"] == 1
-    assert result["skipped"] == 0
+    assert result["skipped"] == 1
     assert result["dispatched"] == 0
     assert gateway.calls == []
     assert len(worker_sessions) == 1 and worker_sessions[0].closed is True
@@ -714,9 +723,15 @@ async def test_positive_certificate_gates_scheduler_worker_dry_run_without_write
         "publication_id": publication.id,
         "portfolio_item_id": item.id,
         "fingerprint": certificate["certificate_fingerprint"],
-        "ready": True,
-        "blockers": [],
-        "offline_validated": True,
+        "ready": False,
+        "blockers": ["SCHEDULED_QUOTA_ATOMIC_ADMISSION"],
+        "atomic_admission": {
+            "evaluated": True,
+            "would_admit": False,
+            "reason": "SCHEDULED_QUOTA_DATABASE_UNSUPPORTED",
+            "claim_committed": False,
+            "reservation_committed": False,
+        },
         "external_requests": 0,
     }]
     check.close()

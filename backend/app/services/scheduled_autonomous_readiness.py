@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, ROUND_CEILING
 import hashlib
 import json
 
@@ -43,7 +42,7 @@ from app.services.routine_offline_preflight import (
 from app.services.routine_autonomous_authorization import AUTONOMOUS_ACTOR
 from app.services.routine_scheduled_quotas import (
     ScheduledQuotaError,
-    ScheduledQuotaLimits,
+    scheduled_quota_limits,
 )
 from app.services.routine_scheduled_commitments import assess_scheduled_quota_with_commitments
 
@@ -447,46 +446,28 @@ def scheduled_autonomous_readiness(
     quota_reason = None
     quota_headroom = None
     if plan and product and publication and scheduled and item.local_board_id:
-        in_month = bool(
-            plan.month_start <= scheduled.date() <= plan.month_end
-            and plan.month_start.day == 1
-            and plan.target_pins <= settings.pinterest_monthly_pin_target
-            and product.vendor and product.vendor.strip()
-        )
-        if in_month:
-            try:
-                target = plan.target_pins
-                limits = ScheduledQuotaLimits(
-                    daily=settings.routine_pinterest_daily_write_limit,
-                    monthly=target,
-                    product=settings.pinterest_portfolio_max_pins_per_product,
-                    vendor=max(1, int((Decimal(target) * Decimal(
-                        str(settings.pinterest_portfolio_max_vendor_share)
-                    )).to_integral_value(rounding=ROUND_CEILING))),
-                    board=max(1, int((Decimal(target) * Decimal(
-                        str(settings.pinterest_portfolio_max_board_share)
-                    )).to_integral_value(rounding=ROUND_CEILING))),
-                )
-                quota = assess_scheduled_quota_with_commitments(
-                    db, publication_id=publication.id, plan_id=plan.id,
-                    plan_item_id=item.id, product_id=item.product_id,
-                    vendor_key=product.vendor, board_id=item.local_board_id,
-                    scheduled_for=scheduled.date(), limits=limits,
-                )
-                quota_ready = quota.can_reserve or quota.already_committed
-                quota_headroom = {
-                    "daily": quota.daily_remaining, "monthly": quota.monthly_remaining,
-                    "product": quota.product_remaining, "vendor": quota.vendor_remaining,
-                    "board": quota.board_remaining,
-                    "already_reserved": quota.already_reserved,
-                    "already_committed": quota.already_committed,
-                }
-                if not quota_ready:
-                    quota_reason = "SCHEDULED_QUOTA_LIMIT_REACHED"
-            except (ScheduledQuotaError, ValueError) as exc:
-                quota_reason = getattr(exc, "code", str(exc))
-        else:
-            quota_reason = "SCHEDULED_QUOTA_PLAN_ENVELOPE_INVALID"
+        try:
+            limits = scheduled_quota_limits(plan, settings, scheduled.date())
+            if not product.vendor or not product.vendor.strip():
+                raise ScheduledQuotaError("SCHEDULED_QUOTA_IDENTITY_REQUIRED")
+            quota = assess_scheduled_quota_with_commitments(
+                db, publication_id=publication.id, plan_id=plan.id,
+                plan_item_id=item.id, product_id=item.product_id,
+                vendor_key=product.vendor, board_id=item.local_board_id,
+                scheduled_for=scheduled.date(), limits=limits,
+            )
+            quota_ready = quota.can_reserve or quota.already_committed
+            quota_headroom = {
+                "daily": quota.daily_remaining, "monthly": quota.monthly_remaining,
+                "product": quota.product_remaining, "vendor": quota.vendor_remaining,
+                "board": quota.board_remaining,
+                "already_reserved": quota.already_reserved,
+                "already_committed": quota.already_committed,
+            }
+            if not quota_ready:
+                quota_reason = "SCHEDULED_QUOTA_LIMIT_REACHED"
+        except (ScheduledQuotaError, ValueError) as exc:
+            quota_reason = getattr(exc, "code", str(exc))
     _check(checks, "SCHEDULED_QUOTA_HEADROOM", quota_ready,
            "All five quota dimensions must admit this bound publication.",
            reason=quota_reason, headroom=quota_headroom)
@@ -542,6 +523,7 @@ def scheduled_autonomous_readiness(
         "publishing_enabled": getattr(settings, "publishing_enabled", False),
         "buffer_publishing_enabled": getattr(settings, "buffer_publishing_enabled", False),
         "routine_buffer_dispatch_enabled": getattr(settings, "routine_buffer_dispatch_enabled", False),
+        "routine_scheduled_live_admission_enabled": getattr(settings, "routine_scheduled_live_admission_enabled", False),
         "routine_autonomous_authorization_enabled": getattr(settings, "routine_autonomous_authorization_enabled", False),
         "pinterest_seo_brief_persistence_enabled": getattr(settings, "pinterest_seo_brief_persistence_enabled", False),
         "pinterest_autonomous_generation_enabled": getattr(settings, "pinterest_autonomous_generation_enabled", False),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, ROUND_CEILING
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -38,6 +39,32 @@ class ScheduledQuotaLimits:
     def __post_init__(self):
         if any(type(value) is not int or value < 1 for value in self.__dict__.values()):
             raise ValueError("SCHEDULED_QUOTA_LIMITS_MUST_BE_POSITIVE_INTEGERS")
+
+
+def scheduled_quota_limits(plan, settings, scheduled_for: date) -> ScheduledQuotaLimits:
+    """Derive the same five limits at readiness and transactional admission."""
+    if not (
+        plan
+        and type(scheduled_for) is date
+        and plan.month_start
+        and plan.month_start.day == 1
+        and plan.month_start <= scheduled_for <= plan.month_end
+        and type(plan.target_pins) is int
+        and 1 <= plan.target_pins <= settings.pinterest_monthly_pin_target
+    ):
+        raise ScheduledQuotaError("SCHEDULED_QUOTA_PLAN_ENVELOPE_INVALID")
+    target = plan.target_pins
+    return ScheduledQuotaLimits(
+        daily=settings.routine_pinterest_daily_write_limit,
+        monthly=target,
+        product=settings.pinterest_portfolio_max_pins_per_product,
+        vendor=max(1, int((Decimal(target) * Decimal(
+            str(settings.pinterest_portfolio_max_vendor_share)
+        )).to_integral_value(rounding=ROUND_CEILING))),
+        board=max(1, int((Decimal(target) * Decimal(
+            str(settings.pinterest_portfolio_max_board_share)
+        )).to_integral_value(rounding=ROUND_CEILING))),
+    )
 
 
 @dataclass(frozen=True)

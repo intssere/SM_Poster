@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     buffer_single_pin_pilot_request_fingerprint: str = ""
     routine_pinterest_worker_enabled: bool = False
     routine_buffer_dispatch_enabled: bool = False
+    routine_scheduled_live_admission_enabled: bool = False
     routine_pinterest_dry_run: bool = True
     routine_pinterest_batch_size: int = Field(default=1, ge=1, le=25)
     routine_pinterest_daily_write_limit: int = Field(default=1, ge=1, le=25)

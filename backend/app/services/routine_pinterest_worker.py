@@ -14,6 +14,8 @@ from app.services.routine_buffer_dispatch import RoutineDispatchError, dispatch_
 from app.services.routine_buffer_preflight import build_routine_execution_evidence
 from app.services.routine_offline_preflight import build_routine_offline_evidence, RoutineOfflinePreflightError
 from app.services.routine_dispatch_authorization import active_permit, validate_permit
+from app.services.routine_scheduled_admission import admit_scheduled_publication
+from app.services.routine_scheduled_quotas import ScheduledQuotaError
 from app.services.scheduled_autonomous_readiness import scheduled_autonomous_readiness
 from app.services.routine_publishing_control import (
     RoutineControlError,
@@ -124,9 +126,29 @@ async def run_once(
                     certificate = scheduled_autonomous_readiness(
                         db, items[0].id, settings=settings, now=now,
                     )
-                    if not certificate["ready"]:
+                    admission_ready = False
+                    admission_reason = None
+                    if certificate["ready"]:
+                        try:
+                            # Exercise the actual PostgreSQL row lock, reconciliation,
+                            # reservation, and claim CAS. Roll back *all* of them before
+                            # the run receipt is persisted; no permit is consumed.
+                            with db.begin_nested() as preview:
+                                admit_scheduled_publication(
+                                    db, publication_id=publication.id,
+                                    plan_item_id=items[0].id,
+                                    settings=settings, now=now,
+                                )
+                                preview.rollback()
+                            admission_ready = True
+                        except (ScheduledQuotaError, ValueError) as exc:
+                            admission_reason = getattr(exc, "code", str(exc))
+                    blockers = list(certificate["blockers"])
+                    if certificate["ready"] and not admission_ready:
+                        blockers.append("SCHEDULED_QUOTA_ATOMIC_ADMISSION")
+                    if blockers:
                         run.skipped += 1
-                        run.error_code = certificate["blockers"][0]
+                        run.error_code = blockers[0]
                     run.metadata_json = {
                         **(run.metadata_json or {}),
                         "scheduled_autonomy_certificates": [
@@ -135,13 +157,20 @@ async def run_once(
                                 "publication_id": publication.id,
                                 "portfolio_item_id": items[0].id,
                                 "fingerprint": certificate["certificate_fingerprint"],
-                                "ready": certificate["ready"],
-                                "blockers": certificate["blockers"],
+                                "ready": certificate["ready"] and admission_ready,
+                                "blockers": blockers,
+                                "atomic_admission": {
+                                    "evaluated": certificate["ready"],
+                                    "would_admit": admission_ready,
+                                    "reason": admission_reason,
+                                    "claim_committed": False,
+                                    "reservation_committed": False,
+                                },
                                 "external_requests": 0,
                             },
                         ],
                     }
-                    if not certificate["ready"]:
+                    if blockers:
                         continue
                 try:
                     offline = build_routine_offline_evidence(
