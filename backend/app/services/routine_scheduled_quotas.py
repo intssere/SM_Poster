@@ -56,6 +56,7 @@ class ScheduledQuotaAssessment:
     board_remaining: int
     can_reserve: bool
     already_reserved: bool
+    already_committed: bool = False
 
 
 def _reservation_identity(
@@ -194,11 +195,12 @@ def assess_scheduled_quota(
     scheduled_for: date,
     limits: ScheduledQuotaLimits,
 ) -> ScheduledQuotaAssessment:
-    """Assess quota headroom using read-only queries; never reserves or commits.
+    """Assess ledger-only headroom; never reserves or commits.
 
-    Unlike reservation, assessment can run on any database dialect because it
-    takes no lock and makes no write. Missing ledger/schema and query failures
-    are reported as a fail-closed ``ScheduledQuotaError``.
+    For a scheduled publication, use the read-only commitment reconciliation
+    assessment instead; this primitive alone cannot see unreserved publications.
+    Unlike reservation, this query takes no lock and works on any dialect.
+    Missing ledger/schema and query failures fail closed.
     """
     identity = _reservation_identity(
         publication_id=publication_id,

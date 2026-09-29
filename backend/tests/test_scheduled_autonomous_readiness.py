@@ -772,6 +772,86 @@ async def test_stale_quota_bucket_blocks_scheduler_dry_run_without_provider_muta
     engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_unreserved_scheduled_commitment_exhausts_quota_before_dry_run_worker():
+    scheduler.reset_scheduler_state_for_tests()
+    engine, Session = _database()
+    with Session() as seed:
+        item, publication, permit = _seed_positive_ready_autonomous_chain(seed)
+        other = PinPublication(
+            id="other-scheduled-commitment",
+            draft_id=publication.draft_id,
+            creative_id=publication.creative_id,
+            publication_fingerprint="9" * 64,
+            status=PublicationStatus.SCHEDULED,
+            scheduled_for=datetime(2026, 10, 3, 18, 0, tzinfo=timezone.utc),
+        )
+        seed.add(other)
+        seed.flush()
+        seed.add(PinterestPortfolioPlanItem(
+            id="other-committed-item",
+            plan_id=item.plan_id,
+            slot_index=2,
+            is_reserve=False,
+            planned_date=date(2026, 10, 3),
+            product_id=item.product_id,
+            local_board_id=item.local_board_id,
+            board_key_snapshot=item.board_key_snapshot,
+            content_angle_id=item.content_angle_id,
+            angle_key_snapshot=item.angle_key_snapshot,
+            seed_keywords=[],
+            selection_score=Decimal("1.0"),
+            selection_metadata={},
+            item_fingerprint="8" * 64,
+            status="SCHEDULED",
+            publication_id=other.id,
+        ))
+        seed.commit()
+
+    settings = _settings(routine_scheduled_autonomy_enabled=True)
+    with Session() as certificate_db:
+        certificate = scheduled_autonomous_readiness(
+            certificate_db, item.id, settings=settings, now=NOW,
+        )
+        quota_check = next(
+            check for check in certificate["checks"]
+            if check["code"] == "SCHEDULED_QUOTA_HEADROOM"
+        )
+        assert quota_check["blocking"] is True
+        assert quota_check["context"]["reason"] == "SCHEDULED_QUOTA_EXISTING_LIMIT_EXCEEDED"
+        assert certificate["live_ready"] is False
+        assert certificate["quota_reservation_committed"] is False
+
+    gateway = TripwireProviderGateway()
+
+    async def real_worker(db, *, settings):
+        return await worker.run_once(db, settings=settings, gateway=gateway, now=NOW)
+
+    result = await scheduler.scheduler_tick(
+        settings=settings,
+        session_factory=Session,
+        runner=real_worker,
+        leader_lease=FakeLease(),
+    )
+    with Session() as check:
+        receipts = check.scalar(select(RoutinePublishingRun)).metadata_json[
+            "scheduled_autonomy_certificates"
+        ]
+        assert receipts[0]["ready"] is False
+        assert "SCHEDULED_QUOTA_HEADROOM" in receipts[0]["blockers"]
+        assert check.get(PinPublication, publication.id).status == PublicationStatus.SCHEDULED
+        assert check.get(RoutineDispatchPermit, permit.id).status == "ACTIVE"
+        assert check.scalars(select(RoutineScheduledQuotaReservation)).all() == []
+        assert check.scalars(select(PublicationAttempt)).all() == []
+        assert check.scalars(select(RoutineAttemptBoundary)).all() == []
+    assert result["scanned"] == 1
+    assert result["skipped"] == 1
+    assert result["dispatched"] == 0
+    assert gateway.calls == []
+    scheduler.reset_scheduler_state_for_tests()
+    engine.dispose()
+
+
 def test_readiness_certificate_for_missing_item_is_bounded_read_only():
     engine, Session = _database()
     db = Session()

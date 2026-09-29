@@ -44,8 +44,8 @@ from app.services.routine_autonomous_authorization import AUTONOMOUS_ACTOR
 from app.services.routine_scheduled_quotas import (
     ScheduledQuotaError,
     ScheduledQuotaLimits,
-    assess_scheduled_quota,
 )
+from app.services.routine_scheduled_commitments import assess_scheduled_quota_with_commitments
 
 MAX_ROUTE_ROWS = 200
 MAX_SAME_DAY_ITEMS = 200
@@ -467,18 +467,19 @@ def scheduled_autonomous_readiness(
                         str(settings.pinterest_portfolio_max_board_share)
                     )).to_integral_value(rounding=ROUND_CEILING))),
                 )
-                quota = assess_scheduled_quota(
+                quota = assess_scheduled_quota_with_commitments(
                     db, publication_id=publication.id, plan_id=plan.id,
                     plan_item_id=item.id, product_id=item.product_id,
                     vendor_key=product.vendor, board_id=item.local_board_id,
                     scheduled_for=scheduled.date(), limits=limits,
                 )
-                quota_ready = quota.can_reserve or quota.already_reserved
+                quota_ready = quota.can_reserve or quota.already_committed
                 quota_headroom = {
                     "daily": quota.daily_remaining, "monthly": quota.monthly_remaining,
                     "product": quota.product_remaining, "vendor": quota.vendor_remaining,
                     "board": quota.board_remaining,
                     "already_reserved": quota.already_reserved,
+                    "already_committed": quota.already_committed,
                 }
                 if not quota_ready:
                     quota_reason = "SCHEDULED_QUOTA_LIMIT_REACHED"
