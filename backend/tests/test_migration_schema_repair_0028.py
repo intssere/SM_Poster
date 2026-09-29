@@ -573,7 +573,7 @@ def test_startup_guard_accepts_canonical_head_and_refuses_drift_read_only(
                 verify_frozen_schema_at_head(connection)
             assert connection.execute(
                 sa.text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == "0030"
+            ).scalar_one() == "0031"
             assert connection.execute(
                 sa.text(
                     "SELECT to_regclass("

@@ -173,7 +173,7 @@ def test_0029_to_0030_preserves_failed_rows_and_allows_superseding_attempts(
     engine = sa.create_engine(isolated_database)
     try:
         with engine.begin() as connection:
-            verify_frozen_schema_at_head(connection)
+            verify_frozen_schema_at_head(connection, revision="0030")
             for table, row_id in (
                 ("pinterest_autonomous_destination_runs", "dest-1"),
                 ("pinterest_autonomous_execution_runs", "exec-1"),

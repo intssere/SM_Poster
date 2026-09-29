@@ -72,7 +72,7 @@ def _current(url: str) -> str:
         check=True,
     )
     lines = [line.strip() for line in (result.stdout + result.stderr).splitlines()]
-    return next(line for line in lines if line == "0030 (head)")
+    return next(line for line in lines if line == "0031 (head)")
 
 
 def _set_bookkeeping(url: str, revision: str) -> None:
@@ -121,7 +121,7 @@ def _assert_frozen_owned_tables(url: str) -> None:
 
 def test_fresh_postgresql_upgrade_reaches_exact_head(isolated_database: str) -> None:
     _alembic(isolated_database, "head")
-    assert _current(isolated_database) == "0030 (head)"
+    assert _current(isolated_database) == "0031 (head)"
     _assert_frozen_owned_tables(isolated_database)
 
 
@@ -130,7 +130,7 @@ def test_simulated_production_0020_is_adopted(isolated_database: str) -> None:
     _alembic(isolated_database, "0020")
     _set_bookkeeping(isolated_database, "0019")
     _alembic(isolated_database, "head")
-    assert _current(isolated_database) == "0030 (head)"
+    assert _current(isolated_database) == "0031 (head)"
     _assert_frozen_owned_tables(isolated_database)
 
 
@@ -139,7 +139,7 @@ def test_full_preapply_adopts_each_revision_sequentially(
 ) -> None:
     # The adoption contract is historical through 0027. Pre-apply exactly the
     # 0029 schema, replay its bookkeeping from 0019, then advance normally to
-    # the new 0030 lineage schema. A pre-applied 0030 run table must not be
+    # the 0030 lineage and 0031 quota schemas. A pre-applied 0030 run table must not be
     # mistaken for its older 0022/0026/0027 frozen catalog.
     _alembic(isolated_database, "0019")
     _alembic(isolated_database, "0029")
@@ -149,7 +149,7 @@ def test_full_preapply_adopts_each_revision_sequentially(
         assert "Running upgrade" in output
         assert revision in output
     _alembic(isolated_database, "head")
-    assert _current(isolated_database) == "0030 (head)"
+    assert _current(isolated_database) == "0031 (head)"
 
 
 def test_partial_0020_refuses_before_bookkeeping(isolated_database: str) -> None:

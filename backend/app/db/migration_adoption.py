@@ -1161,7 +1161,7 @@ def _require_0031_scheduled_quota_schema(connection: Any) -> None:
         _refuse("0031 scheduled quota reservations check constraint mismatch")
 
 
-def verify_frozen_schema_at_head(connection: Any, revision: str = "0030") -> None:
+def verify_frozen_schema_at_head(connection: Any, revision: str = "0031") -> None:
     """Read-only production startup guard for canonical migration contracts."""
     if getattr(connection.dialect, "name", None) != "postgresql":
         return
