@@ -13,7 +13,7 @@ def main() -> int:
     with engine.connect() as connection:
         if connection.dialect.name != "postgresql":
             raise RuntimeError("schema canonicality guard requires PostgreSQL")
-        verify_frozen_schema_at_head(connection, revision="0030")
+        verify_frozen_schema_at_head(connection, revision="0031")
     return 0
 
 

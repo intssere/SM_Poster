@@ -11,8 +11,20 @@ from app.integrations.buffer.gateway import (
     BufferDefinitiveRejection,
     BufferGateway,
 )
-from app.models.domain import PinPublication, PublicationAttempt, PublicationStatus
-from app.models.routine_publishing import RoutineAttemptBoundary, RoutineDispatchPermit, RoutinePublishingControl
+from app.models.domain import (
+    PinApproval,
+    PinPublication,
+    PinterestAutonomousExecutionRun,
+    PinterestPortfolioPlanItem,
+    PublicationAttempt,
+    PublicationStatus,
+)
+from app.models.routine_publishing import (
+    RoutineAttemptBoundary,
+    RoutineDispatchPermit,
+    RoutinePublishingControl,
+    RoutineScheduledQuotaReservation,
+)
 from app.services.buffer_pinterest_adapter import build_pinterest_payload, verify_destination
 from app.services.buffer_publication_reconciliation import BufferReconciliationError, reconcile_buffer
 from app.services.publication_scheduler import request_fingerprint_for
@@ -20,6 +32,9 @@ from app.services.pinterest_publisher import PublicationReconciliationError, nor
 from app.services.routine_buffer_preflight import RoutineExecutionEvidence, evidence_matches
 from app.services.routine_dispatch_authorization import active_permit, validate_permit
 from app.services.routine_publishing_control import get_control, pause_on_unknown
+from app.services.routine_autonomous_authorization import AUTONOMOUS_ACTOR
+from app.services.routine_scheduled_admission import admit_scheduled_publication
+from app.services.routine_scheduled_quotas import ScheduledQuotaError
 
 
 logger = logging.getLogger(__name__)
@@ -49,21 +64,90 @@ def _live_gates(settings: Settings, control) -> tuple[bool, str]:
     return True, "READY"
 
 
-def claim_for_routine(db, publication, permit, *, now=None):
+def _scheduled_plan_item_id(db, publication_id, *, permit=None):
+    """Return a unique scheduled plan item linkage, rejecting inconsistent rows."""
+    items = db.scalars(
+        select(PinterestPortfolioPlanItem.id)
+        .where(PinterestPortfolioPlanItem.publication_id == publication_id)
+        .order_by(PinterestPortfolioPlanItem.id)
+        .limit(2)
+    ).all()
+    reservations = db.scalars(
+        select(RoutineScheduledQuotaReservation)
+        .where(RoutineScheduledQuotaReservation.publication_id == publication_id)
+        .order_by(RoutineScheduledQuotaReservation.id)
+        .limit(2)
+    ).all()
+    if len(items) > 1 or len(reservations) > 1:
+        raise RoutineDispatchError("SCHEDULED_ADMISSION_LINKAGE_AMBIGUOUS")
+    item_id = items[0] if items else None
+    reservation_item_id = reservations[0].plan_item_id if reservations else None
+    if item_id and reservation_item_id and item_id != reservation_item_id:
+        raise RoutineDispatchError("SCHEDULED_ADMISSION_LINKAGE_AMBIGUOUS")
+    if item_id is None and reservation_item_id is None:
+        # A missing plan link must not reclassify an autonomous publication as
+        # an ordinary manual pin and bypass the scheduled quota boundary.
+        autonomous_execution = db.scalar(
+            select(PinterestAutonomousExecutionRun.id)
+            .where(PinterestAutonomousExecutionRun.publication_id == publication_id)
+            .limit(1)
+        )
+        approval_actor = db.scalar(
+            select(PinApproval.decided_by)
+            .join(PinPublication, PinPublication.approval_id == PinApproval.id)
+            .where(PinPublication.id == publication_id)
+            .limit(1)
+        )
+        if (
+            autonomous_execution is not None
+            or approval_actor == AUTONOMOUS_ACTOR
+            or (permit is not None and permit.authorized_by == AUTONOMOUS_ACTOR)
+        ):
+            raise RoutineDispatchError("SCHEDULED_ADMISSION_LINEAGE_MISSING")
+    return item_id or reservation_item_id
+
+
+def claim_for_routine(db, publication, permit, *, settings: Settings | None = None, now=None):
     now = normalize_persisted_utc(now or _now())
     validation = validate_permit(db, publication, permit, now=now, require_due=True)
     if not validation["valid"]:
         raise RoutineDispatchError(validation["status"])
     try:
-        pub = db.execute(update(PinPublication).execution_options(synchronize_session=False).where(
-            PinPublication.id == publication.id,
-            PinPublication.status == PublicationStatus.SCHEDULED,
-            PinPublication.scheduled_for.is_not(None),
-            PinPublication.scheduled_for <= now,
-        ).values(status=PublicationStatus.PUBLISHING, attempt_started_at=now))
-        if pub.rowcount != 1:
-            db.rollback()
-            return None
+        plan_item_id = _scheduled_plan_item_id(db, publication.id, permit=permit)
+        if plan_item_id is not None:
+            if (
+                settings is None
+                or getattr(settings, "routine_scheduled_live_admission_enabled", False) is not True
+            ):
+                raise RoutineDispatchError("SCHEDULED_LIVE_ADMISSION_DISABLED")
+            control = db.scalar(
+                select(RoutinePublishingControl)
+                .where(RoutinePublishingControl.id == "default")
+                .with_for_update()
+            )
+            ready, reason = _live_gates(settings, control)
+            if not ready:
+                raise RoutineDispatchError(reason)
+            try:
+                admit_scheduled_publication(
+                    db,
+                    publication_id=publication.id,
+                    plan_item_id=plan_item_id,
+                    settings=settings,
+                    now=now,
+                )
+            except ScheduledQuotaError as exc:
+                raise RoutineDispatchError(exc.code) from exc
+        else:
+            pub = db.execute(update(PinPublication).execution_options(synchronize_session=False).where(
+                PinPublication.id == publication.id,
+                PinPublication.status == PublicationStatus.SCHEDULED,
+                PinPublication.scheduled_for.is_not(None),
+                PinPublication.scheduled_for <= now,
+            ).values(status=PublicationStatus.PUBLISHING, attempt_started_at=now))
+            if pub.rowcount != 1:
+                db.rollback()
+                return None
         consumed = db.execute(update(RoutineDispatchPermit).execution_options(synchronize_session=False).where(
             RoutineDispatchPermit.id == permit.id,
             RoutineDispatchPermit.publication_id == publication.id,
@@ -283,7 +367,7 @@ async def dispatch_routine_buffer(
     if normalize_persisted_utc(evidence.observed_at) > now or now - normalize_persisted_utc(evidence.observed_at) > timedelta(minutes=15):
         raise RoutineDispatchError("ROUTINE_EXECUTION_EVIDENCE_STALE")
     gateway = gateway or BufferGateway(settings)
-    attempt = claim_for_routine(db, publication, permit, now=now)
+    attempt = claim_for_routine(db, publication, permit, settings=settings, now=now)
     if attempt is None:
         raise RoutineDispatchError("ROUTINE_AUTHORIZED_CLAIM_FAILED")
     publication_id, attempt_id = publication.id, attempt.id

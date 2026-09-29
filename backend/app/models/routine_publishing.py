@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, String, Text, func, text
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -101,3 +101,67 @@ class RoutineAttemptBoundary(Base):
     provider_mutation_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     safe_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class RoutineScheduledQuotaReservation(Base):
+    """Durable, one-per-publication reservation for scheduled autonomous work."""
+
+    __tablename__ = "routine_scheduled_quota_reservations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    publication_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "pin_publications.id",
+            ondelete="RESTRICT",
+            name="fk_routine_scheduled_quota_publication",
+        ),
+        nullable=False,
+    )
+    plan_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "pinterest_portfolio_plans.id",
+            ondelete="RESTRICT",
+            name="fk_routine_scheduled_quota_plan",
+        ),
+        nullable=False,
+    )
+    plan_item_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "pinterest_portfolio_plan_items.id",
+            ondelete="RESTRICT",
+            name="fk_routine_scheduled_quota_plan_item",
+        ),
+        nullable=False,
+    )
+    product_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "products.id",
+            ondelete="RESTRICT",
+            name="fk_routine_scheduled_quota_product",
+        ),
+        nullable=False,
+    )
+    vendor_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    board_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "boards.id",
+            ondelete="RESTRICT",
+            name="fk_routine_scheduled_quota_board",
+        ),
+        nullable=False,
+    )
+    scheduled_for: Mapped[date] = mapped_column(Date, nullable=False)
+    month_start: Mapped[date] = mapped_column(Date, nullable=False)
+    reserved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        UniqueConstraint("publication_id", name="uq_routine_scheduled_quota_publication"),
+        Index(
+            "ix_routine_scheduled_quota_day",
+            "scheduled_for",
+            "product_id",
+            "vendor_key",
+            "board_id",
+        ),
+        Index("ix_routine_scheduled_quota_month", "month_start"),
+    )
