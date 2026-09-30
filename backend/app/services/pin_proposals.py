@@ -875,19 +875,37 @@ def _serialize_proposal(
     versions: list[dict[str, Any]] | None = None,
     active: ContentRevision | None = None,
     active_id: str | None = None,
+    *,
+    persisted_concept_fingerprint: str | None = None,
 ) -> dict[str, Any]:
+    authentic_image = rationale.get("authentic_image")
+    if (not isinstance(authentic_image, dict)
+            or not isinstance(authentic_image.get("url"), str)
+            or not authentic_image["url"]):
+        raise ValueError("Proposal requires authentic image URL provenance.")
+    board_mapping = rationale.get("board_mapping")
+    if not isinstance(board_mapping, dict) or not board_mapping.get("key"):
+        raise ValueError("Proposal requires board mapping identity.")
+    # Older stored rationales may omit this copy of the concept identity.
+    # Read it from the persisted concept, never reconstruct or invent a hash.
+    duplicate_fingerprint = rationale.get(
+        "duplicate_fingerprint", persisted_concept_fingerprint
+    )
+    if (not isinstance(duplicate_fingerprint, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", duplicate_fingerprint)):
+        raise ValueError("Proposal requires a valid concept fingerprint.")
     payload = {
         "id": draft.id,
         "concept_id": rationale.get("concept_id"),
         "product_id": product.id,
         "product_title": product.title,
         "vendor": product.vendor,
-        "image_url": rationale["authentic_image"]["url"],
+        "image_url": authentic_image["url"],
         "headline": rationale["headline"],
         "title": draft.title,
         "description": draft.description,
         "alt_text": draft.alt_text,
-        "cta": rationale["cta"],
+        "cta": rationale.get("cta", ""),
         "canonical_url": draft.destination_url,
         "utm_url": draft.utm_url,
         "keywords": rationale["keywords"],
@@ -895,12 +913,12 @@ def _serialize_proposal(
         "content_angle_key": rationale["content_angle_key"],
         "creative_template": rationale["creative_template"],
         "creative_template_key": rationale["creative_template_key"],
-        "intended_board": rationale["board_mapping"],
+        "intended_board": board_mapping,
         "intelligence_facts_used": rationale["facts_used"],
-        "warnings": rationale["warnings"],
-        "missing_facts": rationale["missing_facts"],
-        "unsupported_claims": rationale["unsupported_claims"],
-        "duplicate_fingerprint": rationale["duplicate_fingerprint"],
+        "warnings": rationale.get("warnings", []),
+        "missing_facts": rationale.get("missing_facts", []),
+        "unsupported_claims": rationale.get("unsupported_claims", []),
+        "duplicate_fingerprint": duplicate_fingerprint,
         "text_fingerprint": draft.text_fingerprint,
         "normalization_status": intelligence.normalization_status,
         "approval_status": "REVIEW" if draft.status == DraftStatus.READY_FOR_REVIEW else draft.status.value,
@@ -1319,6 +1337,7 @@ class PinProposalService:
                     versions,
                     active,
                     active_id,
+                    persisted_concept_fingerprint=concept.fingerprint,
                 )
                 if api_status == "APPROVED":
                     approval = db.scalar(select(PinApproval).where(
