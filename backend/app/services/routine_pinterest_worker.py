@@ -62,7 +62,7 @@ async def run_once(
         target_permit_id = canary_context.target_permit_id
     if settings.routine_pinterest_worker_enabled is not True and canary_context is None:
         return {"status": "WORKER_DISABLED", "dispatched": 0}
-    control = get_control(db, create=canary_context is None)
+    control = get_control(db) if canary_context is None else get_control(db, create=False)
     if control is None:
         if canary_context is not None:
             return {"status": "NOT_EXERCISED", "reason": "CANARY_CONTROL_ROW_MISSING", "dispatched": 0}
