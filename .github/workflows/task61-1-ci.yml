@@ -1,0 +1,55 @@
+name: One-shot scheduled DRY_RUN canary
+
+on:
+  push:
+    branches:
+      - feature/task61-1-one-shot-scheduler-canary
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  provider-free-canary:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}/backend
+      DATABASE_URL: "sqlite:///:memory:"
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require canonical release parent
+        run: git merge-base --is-ancestor 1749426ab50b1e7e0925da4683f301f3d1529c5c HEAD
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies and disposable PostgreSQL binaries
+        run: |
+          python -m pip install -r requirements.txt
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+      - name: Focused canary and related regressions
+        run: >-
+          pytest -q
+          tests/test_routine_scheduler_canary.py
+          tests/test_routine_scheduler_canary_postgres.py
+          tests/test_routine_pinterest_scheduler.py
+          tests/test_routine_scheduler_postgres_lease.py
+          tests/test_scheduled_autonomous_readiness.py
+          tests/test_routine_scheduled_dry_run_postgres.py
+          tests/test_routine_scheduled_admission_postgres.py
+          tests/test_routine_operational_readiness.py
+          tests/test_schema_canonicality_guard.py
+      - name: Syntax and patch checks
+        run: |
+          python -m compileall -q app tests
+          git diff --check

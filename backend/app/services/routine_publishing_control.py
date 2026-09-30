@@ -79,10 +79,21 @@ def _recover_stale_running_run(db, *, now: datetime, stale_seconds: int) -> bool
     return True
 
 
-def start_run(db, *, mode: str, now=None, stale_seconds: int = 900):
+def start_run(
+    db, *, mode: str, now=None, stale_seconds: int = 900,
+    metadata_json: dict | None = None, recover_stale: bool = True,
+):
     now = now or utcnow()
-    _recover_stale_running_run(db, now=now, stale_seconds=stale_seconds)
-    row = RoutinePublishingRun(mode=mode, started_at=now, heartbeat_at=now, status="RUNNING")
+    if recover_stale:
+        _recover_stale_running_run(db, now=now, stale_seconds=stale_seconds)
+    elif db.scalar(select(RoutinePublishingRun.id).where(
+        RoutinePublishingRun.status == "RUNNING"
+    ).limit(1)) is not None:
+        raise RoutineControlError("ROUTINE_WORKER_ALREADY_RUNNING")
+    row = RoutinePublishingRun(
+        mode=mode, started_at=now, heartbeat_at=now, status="RUNNING",
+        metadata_json=metadata_json or {},
+    )
     db.add(row)
     try:
         db.commit()

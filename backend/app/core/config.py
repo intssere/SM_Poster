@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     routine_claim_stale_seconds: int = Field(default=900, ge=60, le=86400)
     routine_pinterest_scheduler_enabled: bool = False
     routine_pinterest_scheduler_interval_seconds: int = Field(default=300, ge=60, le=86400)
+    routine_scheduler_canary_enabled: bool = False
+    routine_scheduler_canary_publication_id: str = ""
+    routine_scheduler_canary_permit_id: str = ""
+    routine_scheduler_canary_publication_fingerprint: str = ""
+    routine_scheduler_canary_request_fingerprint: str = ""
+    routine_scheduler_canary_route_id: str = ""
+    routine_scheduler_canary_release_commit_sha: str = ""
+    routine_scheduler_canary_release_tree_sha: str = ""
+    routine_scheduler_canary_timeout_seconds: int = Field(default=30, ge=1, le=120)
     routine_scheduled_autonomy_enabled: bool = False
     routine_autonomous_authorization_enabled: bool = False
     pinterest_portfolio_planner_enabled: bool = False

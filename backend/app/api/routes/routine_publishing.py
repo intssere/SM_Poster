@@ -68,6 +68,12 @@ class RunOnceDryRunRequest(BaseModel):
     confirmation_text_version: str
 
 
+class RoutineSchedulerCanaryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmed: bool = Field(strict=True)
+    confirmation_text_version: str
+
+
 class CertifiedCanaryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     confirmed: bool
@@ -194,6 +200,24 @@ def status(db: Session = Depends(get_db)):
 @router.get("/readiness")
 def readiness(db: Session = Depends(get_db)):
     return routine_readiness_snapshot(db, settings=get_settings())
+
+
+@router.post("/scheduler-canary/run-once")
+async def run_scheduler_canary_once(
+    request: Request,
+    payload: RoutineSchedulerCanaryRequest,
+):
+    _actor(request)
+    from app.services.routine_scheduler_canary import (
+        CONFIRMATION_TEXT_VERSION,
+        run_routine_scheduler_canary,
+    )
+    if not payload.confirmed or payload.confirmation_text_version != CONFIRMATION_TEXT_VERSION:
+        raise HTTPException(422, "INVALID_ROUTINE_SCHEDULER_CANARY_CONFIRMATION")
+    result = await run_routine_scheduler_canary(settings=get_settings())
+    if result.get("status") != "PASS":
+        raise HTTPException(409, result)
+    return result
 
 
 @router.get("/activation-readiness")
