@@ -1,5 +1,9 @@
 import io
 
+import pytest
+from fastapi import FastAPI
+from fastapi.encoders import jsonable_encoder
+from fastapi.testclient import TestClient
 from PIL import Image
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
@@ -430,6 +434,130 @@ def test_approval_requires_review_and_creates_audit_decision():
         assert "Only proposals in REVIEW" in str(exc)
     else:
         raise AssertionError("Expected a second decision to be rejected")
+    db.close()
+
+
+def test_legacy_approved_proposal_reads_without_changing_stored_rationale(tmp_path, monkeypatch):
+    from app.api.routes import proposals as proposal_routes
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy-proposals.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    db = factory()
+    store = Store(name="Diamond Shelf", shop_domain="diamondshelf.test")
+    db.add(store)
+    db.commit()
+    service = PinProposalService(session_factory=factory)
+
+    def create_proposal(suffix, *, approved):
+        product = add_product(db, store, suffix=suffix)
+        report = service.generate_controlled_batch(
+            product_limit=1, max_proposals_per_product=1, exact_product_id=product.id
+        )
+        draft_id = report["representative_proposals"][0]["id"]
+        if approved:
+            creative = add_review_creative(db, draft_id, suffix=suffix)
+            service.decide(draft_id, "APPROVED", reviewed_creative_id=creative.id)
+        return db.get(PinDraft, draft_id)
+
+    legacy = create_proposal("legacy", approved=True)
+    current = create_proposal("current", approved=True)
+    review = create_proposal("review", approved=False)
+    current_before = jsonable_encoder(
+        next(row for row in service.list_proposals(status="APPROVED") if row["id"] == current.id)
+    )
+    concept = db.get(PinConcept, legacy.concept_id)
+    legacy_rationale = dict(concept.rationale)
+    legacy_rationale.pop("cta")
+    legacy_rationale.pop("duplicate_fingerprint")
+    concept.rationale = legacy_rationale
+    db.commit()
+
+    monkeypatch.setattr(proposal_routes, "PinProposalService", lambda: service)
+    app = FastAPI()
+    app.include_router(proposal_routes.router, prefix="/api")
+    with TestClient(app) as client:
+        all_response = client.get("/api/pins/proposals")
+        approved_response = client.get("/api/pins/proposals?status=APPROVED")
+        review_response = client.get("/api/pins/proposals?status=REVIEW")
+        generated_response = client.get("/api/pins/proposals?status=GENERATED")
+
+    assert all_response.status_code == approved_response.status_code == 200
+    assert review_response.status_code == generated_response.status_code == 200
+    assert {row["id"] for row in all_response.json()["items"]} == {
+        legacy.id, current.id, review.id
+    }
+    approved_items = {row["id"]: row for row in approved_response.json()["items"]}
+    assert set(approved_items) == {legacy.id, current.id}
+    assert approved_items[current.id] == current_before
+    assert approved_items[legacy.id]["cta"] == ""
+    assert approved_items[legacy.id]["duplicate_fingerprint"] == concept.fingerprint
+    assert approved_items[legacy.id]["image_url"] == legacy_rationale["authentic_image"]["url"]
+    assert approved_items[legacy.id]["intended_board"] == legacy_rationale["board_mapping"]
+    assert approved_items[legacy.id]["text_fingerprint"] == legacy.text_fingerprint
+    assert [row["id"] for row in review_response.json()["items"]] == [review.id]
+    assert generated_response.json()["items"] == []
+    db.expire_all()
+    assert db.get(PinConcept, legacy.concept_id).rationale == legacy_rationale
+    db.close()
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("invalid_field", "message"),
+    [
+        ("authentic_image", "authentic image URL provenance"),
+        ("board_mapping", "board mapping identity"),
+        ("duplicate_fingerprint", "valid concept fingerprint"),
+    ],
+)
+def test_proposal_read_fails_closed_on_invalid_identity_or_provenance(
+    invalid_field, message,
+):
+    db, store, service = setup_service()
+    product = add_product(db, store, suffix="invalid-read")
+    draft_id = service.generate_controlled_batch(
+        product_limit=1, max_proposals_per_product=1, exact_product_id=product.id
+    )["representative_proposals"][0]["id"]
+    draft = db.get(PinDraft, draft_id)
+    concept = db.get(PinConcept, draft.concept_id)
+    rationale = dict(concept.rationale)
+    if invalid_field == "duplicate_fingerprint":
+        rationale[invalid_field] = "not-a-fingerprint"
+    else:
+        rationale.pop(invalid_field)
+    concept.rationale = rationale
+    db.commit()
+    with pytest.raises(ValueError, match=message):
+        service.list_proposals(status="REVIEW")
+    db.close()
+
+
+@pytest.mark.parametrize(
+    ("rationale_key", "response_key"),
+    [
+        ("warnings", "warnings"),
+        ("missing_facts", "missing_facts"),
+        ("unsupported_claims", "unsupported_claims"),
+    ],
+)
+def test_legacy_optional_rationale_annotations_read_as_empty_lists(
+    rationale_key, response_key,
+):
+    db, store, service = setup_service()
+    product = add_product(db, store, suffix="legacy-annotation")
+    draft_id = service.generate_controlled_batch(
+        product_limit=1, max_proposals_per_product=1, exact_product_id=product.id
+    )["representative_proposals"][0]["id"]
+    concept = db.get(PinConcept, db.get(PinDraft, draft_id).concept_id)
+    rationale = dict(concept.rationale)
+    rationale.pop(rationale_key)
+    concept.rationale = rationale
+    db.commit()
+
+    assert service.list_proposals(status="REVIEW")[0][response_key] == []
+    db.expire_all()
+    assert db.get(PinConcept, concept.id).rationale == rationale
     db.close()
 
 
