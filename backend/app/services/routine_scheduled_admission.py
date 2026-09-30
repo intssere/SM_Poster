@@ -23,6 +23,7 @@ from app.services.routine_scheduled_quotas import (
     reserve_scheduled_quota,
     scheduled_quota_limits,
 )
+from app.services.local_canary_admission import publication_has_pending_local_canary_media
 
 DIMENSIONS = ("daily", "monthly", "product", "vendor", "board")
 
@@ -65,6 +66,8 @@ def admit_scheduled_publication(
     )
     if control_id is None:
         raise ScheduledQuotaError("SCHEDULED_QUOTA_CONTROL_ROW_MISSING")
+    if publication_has_pending_local_canary_media(db, publication_id):
+        raise ScheduledQuotaError("LOCAL_CANARY_MEDIA_PENDING")
     item = PinterestPortfolioPlanItem
     plan = PinterestPortfolioPlan
     pub = PinPublication

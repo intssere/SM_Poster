@@ -1,0 +1,50 @@
+name: Task 61.6A local staged-media protocol
+
+on:
+  push:
+    branches:
+      - feature/task61-6-local-canary-fixture
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  local-staged-media:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}/backend
+      DATABASE_URL: "sqlite:///:memory:"
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend dependencies and disposable PostgreSQL binaries
+        run: |
+          python -m pip install -r requirements.txt
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+      - name: Task 61.6A PostgreSQL/filesystem suites and regressions
+        run: >-
+          pytest -q
+          tests/test_pinterest_local_canary_fixture_postgres.py
+          tests/test_pinterest_local_canary_media.py
+          tests/test_local_canary_admission.py
+          tests/test_pinterest_autonomous_generation.py
+          tests/test_pinterest_autonomous_execution.py
+          tests/test_publication_scheduler.py
+          tests/test_publication_candidate_preflight.py
+          tests/test_publication_candidate_preflight_postgres.py
+      - name: Syntax and patch checks
+        run: |
+          python -m compileall -q app tests
+          git diff --check

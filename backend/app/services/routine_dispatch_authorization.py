@@ -13,6 +13,7 @@ from app.services.publication_dispatch_authorization import manual_structural_re
 from app.services.publication_duplicates import SAFE_TO_CONTINUE, evaluate_publication_duplicates
 from app.services.publication_scheduler import request_fingerprint_for
 from app.services.pinterest_publisher import normalize_persisted_utc
+from app.services.local_canary_admission import publication_has_pending_local_canary_media
 
 PERMIT_TTL = timedelta(hours=24)
 
@@ -62,6 +63,8 @@ def create_permit(db, publication: PinPublication, *, actor: str, now=None, comm
         raise RoutinePermitError("ACTOR_REQUIRED")
     if publication.status != PublicationStatus.SCHEDULED or not publication.scheduled_for:
         raise RoutinePermitError("PUBLICATION_NOT_SCHEDULED")
+    if publication_has_pending_local_canary_media(db, publication):
+        raise RoutinePermitError("LOCAL_CANARY_MEDIA_PENDING")
     expire_stale_permits(db, publication.id, now=now)
     db.flush()
     if active_permit(db, publication.id):
@@ -127,6 +130,8 @@ def revoke_permit(db, permit, *, actor: str, reason: str, now=None):
 
 def validate_permit(db, publication, permit, *, now=None, expected_status=PublicationStatus.SCHEDULED, require_due=True, allowed_status="ACTIVE"):
     now = normalize_persisted_utc(now or _now())
+    if publication_has_pending_local_canary_media(db, publication):
+        return {"valid": False, "status": "LOCAL_CANARY_MEDIA_PENDING"}
     if not permit or permit.status != allowed_status:
         return {"valid": False, "status": "ROUTINE_PERMIT_REQUIRED" if permit is None else f"ROUTINE_PERMIT_{permit.status}"}
     if permit.publication_id != publication.id or permit.dispatch_provider != "buffer":

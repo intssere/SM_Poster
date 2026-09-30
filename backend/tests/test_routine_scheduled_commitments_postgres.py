@@ -148,26 +148,41 @@ def isolated_postgres(local_postgres_url: sa.engine.URL):
         )
         # Minimal FK targets for unneeded publication attributes and store ownership.
         stub_metadata = sa.MetaData(schema=schema)
-        stub_tables = {
-            name: sa.Table(
-                name,
-                stub_metadata,
-                sa.Column("id", sa.String(36), primary_key=True),
-            )
-            for name in (
-                "stores",
-                "keyword_clusters",
-                "campaigns",
-                "pin_creatives",
-                "content_revisions",
-                "pin_approvals",
-                "product_images",
-                "creative_templates",
-                "integration_accounts",
-                "pinterest_connections",
-                "pinterest_boards",
-            )
-        }
+        stub_tables = {}
+        for name in (
+            "stores",
+            "keyword_clusters",
+            "campaigns",
+            "pin_creatives",
+            "content_revisions",
+            "pin_approvals",
+            "product_images",
+            "creative_templates",
+            "integration_accounts",
+            "pinterest_connections",
+            "pinterest_boards",
+        ):
+            columns = [sa.Column("id", sa.String(36), primary_key=True)]
+            if name == "pin_creatives":
+                columns.extend(
+                    [
+                        sa.Column(
+                            "render_status",
+                            sa.String(30),
+                            nullable=False,
+                            server_default="PENDING",
+                        ),
+                        sa.Column(
+                            "render_spec",
+                            sa.JSON(),
+                            nullable=False,
+                            server_default=sa.text("'{}'"),
+                        ),
+                        sa.Column("sha256", sa.String(64)),
+                        sa.Column("source_image_id", sa.String(36)),
+                    ]
+                )
+            stub_tables[name] = sa.Table(name, stub_metadata, *columns)
         stub_metadata.create_all(engine)
         domain_tables = [
             Product.__table__,
