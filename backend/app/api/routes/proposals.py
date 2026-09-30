@@ -3,9 +3,10 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query, Depends, Request
 from app.db.session import get_db
 from app.models.domain import PinCreative
-from app.services.public_creative_media import verified_png
+from app.services.public_creative_media import public_creative_url, verified_png
 from fastapi.responses import FileResponse, Response
 from app.services.media_storage import StorageMissing, StorageUnavailable
+from app.core.config import get_settings
 
 from app.schemas.pins import (
     CreativeRenderBatchRequest,
@@ -29,12 +30,40 @@ from app.services.routine_autonomous_authorization import autonomous_authorizati
 router = APIRouter(prefix="/pins", tags=["pin-proposals"])
 
 
+def _local_canary_media_route_allowed(creative) -> bool:
+    if getattr(creative, "render_status", None) != "RENDERED":
+        return False
+    settings = get_settings()
+    return public_creative_url(creative, settings=settings) is not None
+
+
 @router.get("/public-creatives/{creative_id}/{digest}.png", operation_id="public_creative_image_get")
 @router.head("/public-creatives/{creative_id}/{digest}.png", include_in_schema=False)
 def public_creative_image(creative_id: str, digest: str, request: Request, db=Depends(get_db)):
     try:
         with db.no_autoflush:
             row = db.get(PinCreative, creative_id)
+            from app.services.pinterest_local_canary_media import (
+                LocalCanaryMediaError,
+                has_local_canary_media_marker,
+                read_verified_promoted,
+            )
+            if has_local_canary_media_marker(row):
+                if not _local_canary_media_route_allowed(row):
+                    raise HTTPException(status_code=404, detail="Not found")
+                try:
+                    contents = read_verified_promoted(row, digest=digest)
+                except LocalCanaryMediaError:
+                    raise HTTPException(status_code=404, detail="Not found") from None
+                return Response(
+                    content=contents if request.method == "GET" else b"",
+                    media_type="image/png",
+                    headers={
+                        "Cache-Control": "public, max-age=31536000, immutable",
+                        "Content-Length": str(len(contents)),
+                        "X-Content-Type-Options": "nosniff",
+                    },
+                )
             storage = CreativeStorage()
             contents = verified_png(row, digest, storage=storage)
     except StorageUnavailable:
@@ -202,8 +231,25 @@ def reject_image_background_revision(draft_id: str, revision_id: str):
 @router.get("/creatives/{creative_id}/image")
 def creative_image(creative_id: str, db=Depends(get_db)):
     try:
-        storage = CreativeStorage()
         row = db.get(PinCreative, creative_id) if hasattr(db, "get") else None
+        from app.services.pinterest_local_canary_media import (
+            LocalCanaryMediaError,
+            has_local_canary_media_marker,
+            read_verified_promoted,
+        )
+        if has_local_canary_media_marker(row):
+            if not _local_canary_media_route_allowed(row):
+                raise HTTPException(status_code=404, detail="Creative image was not found.")
+            try:
+                contents = read_verified_promoted(row)
+            except LocalCanaryMediaError:
+                raise HTTPException(status_code=404, detail="Creative image was not found.") from None
+            return Response(
+                content=contents,
+                media_type="image/png",
+                headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+            )
+        storage = CreativeStorage()
         if row is not None and row.sha256:
             contents = storage.read_png(creative_id, row.sha256)
             return Response(content=contents, media_type="image/png", headers={"Cache-Control": "private, no-store"})

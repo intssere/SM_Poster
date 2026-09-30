@@ -59,7 +59,26 @@ def snapshot_media_url(creative, *, settings=None):
 
 
 def verified_png(creative, digest, *, root=None, storage=None):
-    if (creative is None or creative.render_status != "RENDERED"
+    if creative is None:
+        return None
+    from app.services.pinterest_local_canary_media import (
+        LocalCanaryMediaError,
+        has_local_canary_media_marker,
+        read_verified_promoted,
+    )
+    if has_local_canary_media_marker(creative):
+        if (
+            getattr(creative, "render_status", None) != "RENDERED"
+            or not re.fullmatch(r"[a-f0-9]{64}", digest)
+            or getattr(creative, "sha256", None) != digest
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,36}", getattr(creative, "id", "") or "")
+        ):
+            return None
+        try:
+            return read_verified_promoted(creative, digest=digest)
+        except LocalCanaryMediaError:
+            return None
+    if (creative.render_status != "RENDERED"
             or not re.fullmatch(r"[a-f0-9]{64}", digest) or creative.sha256 != digest
             or not re.fullmatch(r"[A-Za-z0-9_-]{1,36}", creative.id or "")):
         return None
