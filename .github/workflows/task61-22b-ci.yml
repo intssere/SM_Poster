@@ -2,7 +2,7 @@ name: Task 61.22B isolated readiness management
 
 on:
   push:
-    branches: [feature/task61-22b-durable-management-admission]
+    branches: [feature/task61-22b-durable-management-admission, feature/task61-22c-canonical-runtime-certification]
   pull_request:
     branches: [main]
 
@@ -29,6 +29,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-16
           echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+      - name: Supported runtime and real SDK import without client or network
+        run: |
+          python scripts/certify_readiness_supported_runtime.py | tee supported-runtime-certification.txt
       - name: Focused management, real PostgreSQL and migration regressions
         run: |
           python scripts/run_isolated_readiness_tests.py --with-postgres -q \
@@ -63,8 +66,25 @@ jobs:
           python -m pip check
           python -m compileall -q backend/app backend/scripts backend/alembic scripts
           git diff --check
+      - name: Exact validation summary
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          for name in ("focused", "compatibility"):
+              path = Path(f"backend/readiness-{name}-results.xml")
+              if not path.exists():
+                  print(f"{name}: report unavailable")
+                  continue
+              root = ET.parse(path).getroot()
+              for suite in root.iter("testsuite"):
+                  print(f"{name}: {suite.attrib}")
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: readiness-test-results-${{ matrix.python }}
-          path: backend/readiness-*-results.xml
+          path: |
+            backend/readiness-*-results.xml
+            supported-runtime-certification.txt
