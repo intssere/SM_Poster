@@ -43,29 +43,23 @@ def public_creative_image(creative_id: str, digest: str, request: Request, db=De
     try:
         with db.no_autoflush:
             row = db.get(PinCreative, creative_id)
-            from app.services.pinterest_local_canary_media import (
-                LocalCanaryMediaError,
-                has_local_canary_media_marker,
-                read_verified_promoted,
-            )
-            if has_local_canary_media_marker(row):
-                if not _local_canary_media_route_allowed(row):
+            from app.services.pinterest_local_canary_media import has_local_canary_media_marker
+            if row is None:
+                contents = None
+            elif has_local_canary_media_marker(row):
+                settings = get_settings()
+                if (
+                    not _local_canary_media_route_allowed(row)
+                    or row.id != creative_id
+                    or row.sha256 != digest
+                ):
                     raise HTTPException(status_code=404, detail="Not found")
-                try:
-                    contents = read_verified_promoted(row, digest=digest)
-                except LocalCanaryMediaError:
-                    raise HTTPException(status_code=404, detail="Not found") from None
-                return Response(
-                    content=contents if request.method == "GET" else b"",
-                    media_type="image/png",
-                    headers={
-                        "Cache-Control": "public, max-age=31536000, immutable",
-                        "Content-Length": str(len(contents)),
-                        "X-Content-Type-Options": "nosniff",
-                    },
+                contents = verified_png(
+                    row, digest, settings=settings
                 )
-            storage = CreativeStorage()
-            contents = verified_png(row, digest, storage=storage)
+            else:
+                storage = CreativeStorage()
+                contents = verified_png(row, digest, storage=storage)
     except StorageUnavailable:
         raise HTTPException(status_code=503, detail="Media storage unavailable.")
     if contents is None:
@@ -233,17 +227,16 @@ def creative_image(creative_id: str, db=Depends(get_db)):
     try:
         row = db.get(PinCreative, creative_id) if hasattr(db, "get") else None
         from app.services.pinterest_local_canary_media import (
-            LocalCanaryMediaError,
             has_local_canary_media_marker,
-            read_verified_promoted,
         )
         if has_local_canary_media_marker(row):
             if not _local_canary_media_route_allowed(row):
                 raise HTTPException(status_code=404, detail="Creative image was not found.")
-            try:
-                contents = read_verified_promoted(row)
-            except LocalCanaryMediaError:
-                raise HTTPException(status_code=404, detail="Creative image was not found.") from None
+            contents = verified_png(
+                row, row.sha256, settings=get_settings()
+            )
+            if contents is None:
+                raise HTTPException(status_code=404, detail="Creative image was not found.")
             return Response(
                 content=contents,
                 media_type="image/png",

@@ -1,8 +1,8 @@
-"""Offline, filesystem-staged creative media for the local canary fixture.
+"""Offline-rendered creative media and recoverable canary promotion.
 
 This module deliberately accepts verified source bytes from its caller instead
-of resolving URLs or selecting an application storage backend.  It never
-constructs an Object Storage client and does not publish or expose staged PNGs.
+of resolving URLs. It stages locally before promoting into the configured
+digest-addressed storage backend. It never publishes or exposes staged PNGs.
 """
 from __future__ import annotations
 
@@ -21,7 +21,15 @@ from app.services.creative_rendering import (
     edge_connected_near_white_cutout,
     render_png,
 )
-from app.services.media_storage import PNG_SIGNATURE
+from app.services.media_storage import (
+    PNG_SIGNATURE,
+    LocalStorage,
+    PNGMediaStorage,
+    StorageCorrupt,
+    StorageMissing,
+    StorageUnavailable,
+    media_key,
+)
 
 
 class LocalCanaryMediaError(RuntimeError):
@@ -31,6 +39,8 @@ class LocalCanaryMediaError(RuntimeError):
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,36}\Z")
 _SHA256 = re.compile(r"[a-f0-9]{64}\Z")
 _STAGING_DIRECTORY = ".task61-6-staging"
+LOCAL_CANARY_PROTOCOL = "TASK61_6A_LOCAL_MEDIA_STAGED_V1"
+DURABLE_CANARY_PROTOCOL = "TASK61_14_DURABLE_PNG_V1"
 
 
 @dataclass(frozen=True)
@@ -50,7 +60,8 @@ class StagedCreativeArtifact:
 
     def as_dict(self) -> dict[str, Any]:
         return {
-            "protocol": "TASK61_6A_LOCAL_MEDIA_STAGED_V1",
+            "protocol": LOCAL_CANARY_PROTOCOL,
+            "creative_id": self.provenance["creative_id"],
             "stage_path": self.stage_path,
             "final_path": self.final_path,
             "artifact_sha256": self.artifact_sha256,
@@ -170,6 +181,7 @@ def stage_creative_png(
     artifact_sha256 = hashlib.sha256(png).hexdigest()
     bound_provenance = {
         **provenance,
+        "creative_id": creative_id,
         "source_image_id": source_image_id,
         "source_sha256": source_sha256,
         "input_fingerprint": input_fingerprint,
@@ -213,11 +225,13 @@ def stage_creative_png(
 def _receipt_paths(
     root: Path, receipt: dict[str, Any], creative_id: str
 ) -> tuple[Path, Path]:
-    if receipt.get("protocol") != "TASK61_6A_LOCAL_MEDIA_STAGED_V1":
+    if receipt.get("protocol") != LOCAL_CANARY_PROTOCOL:
         raise LocalCanaryMediaError("STAGED_MEDIA_RECEIPT_INVALID")
     if _safe_root(receipt.get("local_root")) != root:
         raise LocalCanaryMediaError("STAGED_MEDIA_ROOT_MISMATCH")
     digest = _safe_digest(receipt.get("artifact_sha256"), "STAGED_MEDIA_RECEIPT_INVALID")
+    if receipt.get("creative_id") != creative_id:
+        raise LocalCanaryMediaError("STAGED_MEDIA_PROVENANCE_INVALID")
     if receipt.get("provenance_fingerprint") != _canonical_fingerprint(
         receipt.get("provenance")
     ):
@@ -232,6 +246,7 @@ def _receipt_paths(
     provenance = receipt["provenance"]
     if (
         not isinstance(provenance, dict)
+        or provenance.get("creative_id") != creative_id
         or provenance.get("source_image_id") != receipt["source_image_id"]
         or provenance.get("source_sha256") != receipt["source_sha256"]
         or provenance.get("input_fingerprint") != receipt["input_fingerprint"]
@@ -293,8 +308,20 @@ def promote_staged_creative(
     *,
     creative_id: str,
     receipt: dict[str, Any],
-) -> Path:
+    creative: Any = None,
+    storage=None,
+    settings=None,
+) -> Path | dict[str, Any]:
     """Idempotently atomically promote a committed receipt's artifact."""
+    if durable_media_required(settings):
+        return promote_staged_creative_durable(
+            root,
+            creative_id=creative_id,
+            receipt=receipt,
+            creative=creative,
+            storage=storage,
+            settings=settings,
+        )
     root_path = _safe_root(root)
     creative_id = _safe_creative_id(creative_id)
     stage, final = _receipt_paths(root_path, receipt, creative_id)
@@ -323,6 +350,362 @@ def promote_staged_creative(
         raise LocalCanaryMediaError("STAGED_MEDIA_PROMOTION_FAILED") from exc
 
 
+def cleanup_committed_staged_creative(
+    root: str | Path,
+    *,
+    creative_id: str,
+    receipt: dict[str, Any],
+) -> bool:
+    """Remove a local stage only after the caller commits its durable receipt."""
+    root_path = _safe_root(root)
+    creative_id = _safe_creative_id(creative_id)
+    receipt_root = _safe_root(receipt.get("local_root") if isinstance(receipt, dict) else None)
+    stage, _ = _receipt_paths(receipt_root, receipt, creative_id)
+    if root_path != receipt_root or not stage.is_file():
+        return False
+    try:
+        _verified_artifact(stage, receipt)
+    except LocalCanaryMediaError:
+        return False
+    try:
+        stage.unlink()
+        if stage.parent.exists():
+            _fsync_directory(stage.parent)
+        return True
+    except OSError as exc:
+        raise LocalCanaryMediaError("STAGED_MEDIA_CLEANUP_FAILED") from exc
+
+
+def durable_media_required(settings=None) -> bool:
+    """Whether this runtime must use the shared durable creative store."""
+    if settings is None:
+        from app.core.config import get_settings
+
+        settings = get_settings()
+    return getattr(settings, "is_exposed", False) is True
+
+
+def _media_storage(storage=None, *, settings=None):
+    if storage is not None and hasattr(storage, "media"):
+        storage = storage.media
+    if storage is None:
+        try:
+            storage = PNGMediaStorage("creative", settings=settings)
+        except Exception as exc:
+            raise LocalCanaryMediaError("DURABLE_MEDIA_STORAGE_UNAVAILABLE") from exc
+    if not isinstance(storage, PNGMediaStorage) or storage.kind != "creative":
+        raise LocalCanaryMediaError("DURABLE_MEDIA_STORAGE_UNAVAILABLE")
+    if durable_media_required(settings) and isinstance(
+        getattr(storage, "backend", None), LocalStorage
+    ):
+        raise LocalCanaryMediaError("DURABLE_MEDIA_LOCAL_BACKEND_FORBIDDEN")
+    return storage
+
+
+def immutable_render_spec_fingerprint(spec: Any) -> str:
+    if not isinstance(spec, dict):
+        raise LocalCanaryMediaError("DURABLE_MEDIA_RENDER_SPEC_INVALID")
+    immutable = {
+        key: value for key, value in spec.items()
+        if key not in {"local_canary_stage", "durable_media_protocol"}
+    }
+    return _canonical_fingerprint(immutable)
+
+
+def _validate_durable_provenance(
+    creative: Any,
+    receipt: dict[str, Any],
+    *,
+    expected_input_fingerprint: str | None = None,
+) -> str:
+    creative_id = _safe_creative_id(getattr(creative, "id", None))
+    provenance = receipt.get("provenance")
+    spec = getattr(creative, "render_spec", None)
+    if not isinstance(provenance, dict) or not isinstance(spec, dict):
+        raise LocalCanaryMediaError("DURABLE_MEDIA_PROVENANCE_MISMATCH")
+    image = spec.get("image")
+    if not isinstance(image, dict):
+        raise LocalCanaryMediaError("DURABLE_MEDIA_PROVENANCE_MISMATCH")
+    source_image_id = getattr(creative, "source_image_id", None)
+    source_sha256 = image.get("checksum_sha256")
+    input_fingerprint = receipt.get("input_fingerprint")
+    creative_fingerprint = getattr(creative, "creative_fingerprint", None)
+    size = getattr(creative, "size_bytes", None)
+    if size is None:
+        size = getattr(creative, "rendered_size", None)
+    if (
+        receipt.get("creative_id") != creative_id
+        or not source_image_id
+        or image.get("id") != source_image_id
+        or not _SHA256.fullmatch(str(source_sha256 or ""))
+        or receipt.get("source_image_id") != source_image_id
+        or receipt.get("source_sha256") != source_sha256
+        or not _SHA256.fullmatch(str(input_fingerprint or ""))
+        or provenance.get("generation_input_fingerprint") != input_fingerprint
+        or (
+            expected_input_fingerprint is not None
+            and input_fingerprint != expected_input_fingerprint
+        )
+        or not _SHA256.fullmatch(str(creative_fingerprint or ""))
+        or provenance.get("creative_fingerprint") != creative_fingerprint
+        or provenance.get("render_spec_fingerprint")
+        != immutable_render_spec_fingerprint(spec)
+        or getattr(creative, "sha256", None) != receipt.get("artifact_sha256")
+        or isinstance(size, bool)
+        or not isinstance(size, int)
+        or size != receipt.get("artifact_size")
+        or provenance.get("source_bytes_unchanged") is not True
+        or provenance.get("source_bytes_basis") != "verified_local_input"
+    ):
+        raise LocalCanaryMediaError("DURABLE_MEDIA_PROVENANCE_MISMATCH")
+    _safe_digest(source_sha256, "DURABLE_MEDIA_PROVENANCE_MISMATCH")
+    _safe_digest(creative_fingerprint, "DURABLE_MEDIA_PROVENANCE_MISMATCH")
+    return creative_id
+
+
+def _durable_receipt_fingerprint(creative_id: str, receipt: dict[str, Any]) -> str:
+    return _canonical_fingerprint({
+        "protocol": receipt.get("durable_protocol"),
+        "creative_id": creative_id,
+        "artifact_sha256": receipt.get("artifact_sha256"),
+        "artifact_size": receipt.get("artifact_size"),
+        "source_image_id": receipt.get("source_image_id"),
+        "source_sha256": receipt.get("source_sha256"),
+        "input_fingerprint": receipt.get("input_fingerprint"),
+        "provenance_fingerprint": receipt.get("provenance_fingerprint"),
+        "storage_key": receipt.get("storage_key"),
+    })
+
+
+def _verified_local_stage_or_final(
+    root: Path,
+    creative_id: str,
+    receipt: dict[str, Any],
+) -> bytes:
+    stage, final = _receipt_paths(root, receipt, creative_id)
+    candidate = stage if stage.is_file() else final
+    if not candidate.is_file():
+        raise LocalCanaryMediaError("STAGED_MEDIA_ARTIFACT_MISSING")
+    return _verified_artifact(candidate, receipt)
+
+
+def promote_staged_creative_durable(
+    root: str | Path,
+    *,
+    creative_id: str,
+    receipt: dict[str, Any],
+    creative: Any,
+    storage=None,
+    settings=None,
+) -> dict[str, Any]:
+    """Promote a verified local stage to digest-addressed storage, idempotently.
+
+    The returned receipt is safe to persist in ``PinCreative.render_spec``.
+    Local staging is retained until the caller commits that receipt; this lets
+    a failed DB finalization retry safely. If the receipt commit is interrupted,
+    the deterministic object key lets reconciliation rediscover the object.
+    """
+    if not durable_media_required(settings):
+        raise LocalCanaryMediaError("DURABLE_MEDIA_EXPOSED_RUNTIME_REQUIRED")
+    root_path = _safe_root(root)
+    creative_id = _safe_creative_id(creative_id)
+    if (
+        not isinstance(receipt, dict)
+        or getattr(creative, "render_status", None) != "STAGED"
+    ):
+        raise LocalCanaryMediaError("STAGED_MEDIA_RECEIPT_INVALID")
+    receipt_root = _safe_root(receipt.get("local_root"))
+    stage, final = _receipt_paths(receipt_root, receipt, creative_id)
+    digest = receipt["artifact_sha256"]
+    if _validate_durable_provenance(creative, receipt) != creative_id:
+        raise LocalCanaryMediaError("DURABLE_MEDIA_PROVENANCE_MISMATCH")
+    adapter = _media_storage(storage, settings=settings)
+    try:
+        expected_key = media_key("creative", creative_id, digest)
+        if adapter.key(creative_id, digest) != expected_key:
+            raise LocalCanaryMediaError("DURABLE_MEDIA_KEY_INVALID")
+        if not isinstance(expected_key, str) or not expected_key:
+            raise LocalCanaryMediaError("DURABLE_MEDIA_KEY_INVALID")
+        if receipt.get("durable_protocol") is not None and (
+            receipt.get("durable_protocol") != DURABLE_CANARY_PROTOCOL
+            or receipt.get("storage_key") != expected_key
+            or receipt.get("durable_receipt_fingerprint")
+            != _durable_receipt_fingerprint(creative_id, receipt)
+        ):
+            raise LocalCanaryMediaError("DURABLE_MEDIA_RECEIPT_INVALID")
+        # A pre-existing object is a recovery boundary, not permission to
+        # overwrite it. Verify it first; corruption fails closed.
+        try:
+            stored = adapter.read(creative_id, digest)
+        except StorageMissing:
+            if receipt.get("durable_protocol") is not None:
+                raise LocalCanaryMediaError("DURABLE_MEDIA_OBJECT_MISSING")
+            stored = None
+        if stored is not None:
+            if (
+                not isinstance(stored, bytes)
+                or not stored.startswith(PNG_SIGNATURE)
+                or hashlib.sha256(stored).hexdigest() != digest
+                or len(stored) != receipt.get("artifact_size")
+            ):
+                raise LocalCanaryMediaError("DURABLE_MEDIA_OBJECT_MISMATCH")
+        else:
+            if root_path != receipt_root:
+                raise LocalCanaryMediaError("STAGED_MEDIA_ROOT_MISMATCH")
+            if stage.is_file() or final.is_file():
+                local = _verified_local_stage_or_final(receipt_root, creative_id, receipt)
+            else:
+                raise LocalCanaryMediaError("STAGED_MEDIA_ARTIFACT_MISSING")
+            written_key = adapter.write(creative_id, local)
+            if written_key != expected_key:
+                raise LocalCanaryMediaError("DURABLE_MEDIA_KEY_INVALID")
+            stored = adapter.read(creative_id, digest)
+            if (
+                not isinstance(stored, bytes)
+                or not stored.startswith(PNG_SIGNATURE)
+                or hashlib.sha256(stored).hexdigest() != digest
+                or len(stored) != receipt.get("artifact_size")
+                or stored != local
+            ):
+                raise LocalCanaryMediaError("DURABLE_MEDIA_READBACK_MISMATCH")
+        durable_receipt = {
+            **receipt,
+            "durable_protocol": DURABLE_CANARY_PROTOCOL,
+            "storage_key": expected_key,
+        }
+        durable_receipt["durable_receipt_fingerprint"] = (
+            _durable_receipt_fingerprint(creative_id, durable_receipt)
+        )
+        return durable_receipt
+    except LocalCanaryMediaError:
+        raise
+    except (StorageCorrupt, StorageUnavailable) as exc:
+        raise LocalCanaryMediaError("DURABLE_MEDIA_STORAGE_UNAVAILABLE") from exc
+    except StorageMissing as exc:
+        raise LocalCanaryMediaError("DURABLE_MEDIA_OBJECT_MISSING") from exc
+    except Exception as exc:
+        raise LocalCanaryMediaError("DURABLE_MEDIA_PROMOTION_FAILED") from exc
+
+
+def _durable_receipt_for_creative(
+    creative: Any,
+    *,
+    digest: str | None,
+    expected_input_fingerprint: str | None,
+) -> tuple[str, dict[str, Any]]:
+    if creative is None:
+        raise LocalCanaryMediaError("DURABLE_MEDIA_CREATIVE_REQUIRED")
+    creative_id = _safe_creative_id(getattr(creative, "id", None))
+    spec = getattr(creative, "render_spec", None)
+    spec = spec if isinstance(spec, dict) else {}
+    receipt = spec.get("local_canary_stage")
+    if not isinstance(receipt, dict):
+        raise LocalCanaryMediaError("DURABLE_MEDIA_RECEIPT_INVALID")
+    _, _ = _receipt_paths(_safe_root(receipt.get("local_root")), receipt, creative_id)
+    expected_digest = _safe_digest(
+        digest if digest is not None else getattr(creative, "sha256", None),
+        "DURABLE_MEDIA_RECEIPT_INVALID",
+    )
+    expected_source = (
+        (spec.get("image") or {}).get("checksum_sha256")
+        if isinstance(spec.get("image"), dict)
+        else None
+    )
+    if (
+        getattr(creative, "sha256", None) != expected_digest
+        or receipt.get("artifact_sha256") != expected_digest
+        or receipt.get("provenance_fingerprint")
+        != _canonical_fingerprint(receipt.get("provenance"))
+    ):
+        raise LocalCanaryMediaError("DURABLE_MEDIA_PROVENANCE_MISMATCH")
+    if expected_source and (
+        not isinstance(spec.get("image"), dict)
+        or spec["image"].get("checksum_sha256") != expected_source
+    ):
+        raise LocalCanaryMediaError("DURABLE_MEDIA_PROVENANCE_MISMATCH")
+    _validate_durable_provenance(
+        creative,
+        receipt,
+        expected_input_fingerprint=expected_input_fingerprint,
+    )
+    return creative_id, receipt
+
+
+def read_verified_durable_creative(
+    creative: Any,
+    *,
+    digest: str | None = None,
+    expected_input_fingerprint: str | None = None,
+    storage=None,
+    settings=None,
+    require_rendered: bool = True,
+) -> bytes:
+    """Read and verify a durable canary PNG, independent of local final files."""
+    if require_rendered and getattr(creative, "render_status", None) != "RENDERED":
+        raise LocalCanaryMediaError("DURABLE_MEDIA_NOT_RENDERED")
+    creative_id, receipt = _durable_receipt_for_creative(
+        creative,
+        digest=digest,
+        expected_input_fingerprint=expected_input_fingerprint,
+    )
+    if (
+        receipt.get("durable_protocol") != DURABLE_CANARY_PROTOCOL
+        or not durable_media_required(settings)
+    ):
+        raise LocalCanaryMediaError("DURABLE_MEDIA_RECEIPT_REQUIRED")
+    adapter = _media_storage(storage, settings=settings)
+    expected_key = media_key("creative", creative_id, receipt["artifact_sha256"])
+    if (
+        adapter.key(creative_id, receipt["artifact_sha256"]) != expected_key
+        or receipt.get("storage_key") != expected_key
+        or receipt.get("durable_receipt_fingerprint")
+        != _durable_receipt_fingerprint(creative_id, receipt)
+    ):
+        raise LocalCanaryMediaError("DURABLE_MEDIA_RECEIPT_INVALID")
+    try:
+        contents = adapter.read(creative_id, receipt["artifact_sha256"])
+    except StorageMissing as exc:
+        raise LocalCanaryMediaError("DURABLE_MEDIA_OBJECT_MISSING") from exc
+    except (StorageCorrupt, StorageUnavailable) as exc:
+        raise LocalCanaryMediaError("DURABLE_MEDIA_STORAGE_UNAVAILABLE") from exc
+    except Exception as exc:
+        raise LocalCanaryMediaError("DURABLE_MEDIA_STORAGE_UNAVAILABLE") from exc
+    if (
+        not isinstance(contents, bytes)
+        or not contents.startswith(PNG_SIGNATURE)
+        or hashlib.sha256(contents).hexdigest() != receipt.get("artifact_sha256")
+        or len(contents) != receipt.get("artifact_size")
+    ):
+        raise LocalCanaryMediaError("DURABLE_MEDIA_OBJECT_MISMATCH")
+    return contents
+
+
+def read_verified_canary_creative(
+    creative: Any,
+    *,
+    digest: str | None = None,
+    expected_input_fingerprint: str | None = None,
+    storage=None,
+    settings=None,
+) -> bytes:
+    """Public-media/admission entry point for either runtime storage mode."""
+    if durable_media_required(settings):
+        return read_verified_durable_creative(
+            creative,
+            digest=digest,
+            expected_input_fingerprint=expected_input_fingerprint,
+            storage=storage,
+            settings=settings,
+        )
+    return read_verified_promoted(
+        creative,
+        digest=digest,
+        expected_input_fingerprint=expected_input_fingerprint,
+        storage=storage,
+        settings=settings,
+    )
+
+
 def has_local_canary_media_marker(creative: Any) -> bool:
     """Return true for both pending and promoted Task #61.6A creatives."""
     if creative is None:
@@ -341,11 +724,23 @@ def read_verified_promoted(
     creative: Any,
     *,
     digest: str | None = None,
+    expected_input_fingerprint: str | None = None,
+    storage=None,
+    settings=None,
 ) -> bytes:
     """Read only the promoted artifact from a valid RENDERED local receipt."""
     if creative is None or creative.render_status != "RENDERED":
         raise LocalCanaryMediaError("LOCAL_CANARY_MEDIA_NOT_PROMOTED")
     spec = creative.render_spec if isinstance(creative.render_spec, dict) else {}
+    if durable_media_required(settings):
+        return read_verified_durable_creative(
+            creative,
+            digest=digest,
+            expected_input_fingerprint=expected_input_fingerprint,
+            storage=storage,
+            settings=settings,
+            require_rendered=True,
+        )
     receipt = spec.get("local_canary_stage")
     if not isinstance(receipt, dict):
         raise LocalCanaryMediaError("LOCAL_CANARY_MEDIA_RECEIPT_INVALID")
@@ -369,10 +764,30 @@ def read_verified_promoted(
         raise LocalCanaryMediaError("LOCAL_CANARY_MEDIA_NOT_PROMOTED") from exc
 
 
-def verify_promoted_pending(creative: Any, receipt: dict[str, Any]) -> bytes:
+def verify_promoted_pending(
+    creative: Any,
+    receipt: dict[str, Any],
+    *,
+    storage=None,
+    settings=None,
+    expected_input_fingerprint: str | None = None,
+) -> bytes:
     """Internal reconciliation verification; never use this in a media route."""
     if creative is None or creative.render_status != "STAGED":
         raise LocalCanaryMediaError("LOCAL_CANARY_MEDIA_NOT_PENDING")
+    if durable_media_required(settings):
+        if not isinstance(creative.render_spec, dict) or (
+            creative.render_spec.get("local_canary_stage") != receipt
+        ):
+            raise LocalCanaryMediaError("DURABLE_MEDIA_PROVENANCE_MISMATCH")
+        return read_verified_durable_creative(
+            creative,
+            digest=creative.sha256,
+            storage=storage,
+            settings=settings,
+            expected_input_fingerprint=expected_input_fingerprint,
+            require_rendered=False,
+        )
     root = _safe_root(receipt.get("local_root"))
     _, final = _receipt_paths(root, receipt, _safe_creative_id(creative.id))
     if creative.sha256 != receipt.get("artifact_sha256"):

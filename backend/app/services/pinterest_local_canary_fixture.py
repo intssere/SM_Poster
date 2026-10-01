@@ -65,6 +65,7 @@ from app.services.pinterest_seo_intelligence import (
 )
 from app.services.public_creative_media import (
     public_creative_url,
+    public_creative_url_matches,
     public_origin,
 )
 from app.services.publication_identity import build_publication_candidate
@@ -86,9 +87,13 @@ from app.services.routine_dispatch_authorization import (
 )
 from app.services.routine_pinterest_scheduler import scheduler_status
 from app.services.pinterest_local_canary_media import (
+    DURABLE_CANARY_PROTOCOL,
     LocalCanaryMediaError,
     cleanup_orphan_staging,
+    cleanup_committed_staged_creative,
+    durable_media_required,
     has_local_canary_media_marker,
+    immutable_render_spec_fingerprint,
     promote_staged_creative,
     read_verified_promoted,
     render_verified_local_png,
@@ -492,7 +497,10 @@ def _pending_reconciliation_error(db) -> LocalCanaryFixtureError:
     return error
 
 
-def _validate_succeeded(db, item, execution, generation, publication, creative, approval):
+def _validate_succeeded(
+    db, item, execution, generation, publication, creative, approval, *,
+    storage=None, settings=None,
+):
     if (
         execution.status != "SUCCEEDED"
         or execution.stage != "PERMITTED"
@@ -507,8 +515,18 @@ def _validate_succeeded(db, item, execution, generation, publication, creative, 
     ):
         raise LocalCanaryFixtureError("LOCAL_CANARY_SUCCEEDED_STATE_DRIFT")
     receipt = _pending_receipt(creative)
+    if not public_creative_url_matches(
+        creative, publication.media_url_snapshot, settings=settings
+    ):
+        raise LocalCanaryFixtureError("LOCAL_CANARY_PUBLIC_MEDIA_MISMATCH")
     try:
-        read_verified_promoted(creative, digest=receipt["artifact_sha256"])
+        read_verified_promoted(
+            creative,
+            digest=receipt["artifact_sha256"],
+            expected_input_fingerprint=generation.input_fingerprint,
+            storage=storage,
+            settings=settings,
+        )
     except LocalCanaryMediaError as exc:
         raise LocalCanaryFixtureError("LOCAL_CANARY_MEDIA_PROMOTED_ARTIFACT_INVALID") from exc
     permit = db.get(RoutineDispatchPermit, execution.routine_permit_id)
@@ -529,6 +547,7 @@ def prepare_local_canary_fixture(
     source_bytes: bytes,
     local_media_root: str | Path,
     actor: str,
+    media_storage=None,
     settings: Settings | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -545,6 +564,7 @@ def prepare_local_canary_fixture(
             db,
             portfolio_item_id,
             local_media_root=local_media_root,
+            media_storage=media_storage,
             settings=settings,
             now=now,
         )
@@ -762,6 +782,11 @@ def prepare_local_canary_fixture(
             input_fingerprint=generation_ready["input_fingerprint"],
             provenance={
                 **render_provenance,
+                "creative_fingerprint": creative_fp,
+                "render_spec_fingerprint": immutable_render_spec_fingerprint({
+                    **spec,
+                    "local_canary_protocol": LOCAL_CANARY_PROTOCOL,
+                }),
                 "portfolio_item_id": item.id,
                 "portfolio_item_fingerprint": item.item_fingerprint,
                 "seo_brief_id": seo.id,
@@ -998,6 +1023,7 @@ def prepare_local_canary_fixture(
         db,
         portfolio_item_id,
         local_media_root=local_media_root,
+        media_storage=media_storage,
         settings=settings,
         now=now,
     )
@@ -1185,6 +1211,7 @@ def reconcile_local_canary_fixture(
     portfolio_item_id: str,
     *,
     local_media_root: str | Path,
+    media_storage=None,
     settings: Settings | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -1198,7 +1225,8 @@ def reconcile_local_canary_fixture(
         )
         if execution.status == "SUCCEEDED":
             permit = _validate_succeeded(
-                db, item, execution, generation, publication, creative, approval
+                db, item, execution, generation, publication, creative, approval,
+                storage=media_storage, settings=settings,
             )
             db.commit()
             return _result(
@@ -1221,11 +1249,33 @@ def reconcile_local_canary_fixture(
         raise _pending_reconciliation_error(db) from exc
 
     try:
-        promote_staged_creative(
+        promoted_receipt = promote_staged_creative(
             local_media_root,
             creative_id=creative.id,
             receipt=receipt,
+            creative=creative,
+            storage=media_storage,
+            settings=settings,
         )
+        if durable_media_required(settings):
+            if not isinstance(promoted_receipt, dict) or (
+                promoted_receipt.get("durable_protocol") != DURABLE_CANARY_PROTOCOL
+            ):
+                raise LocalCanaryFixtureError("DURABLE_MEDIA_RECEIPT_REQUIRED")
+            # Persist this recoverable receipt before any final RENDERED or
+            # permit-admission transition. If this commit is interrupted, the
+            # next reconciliation deterministically discovers the same object.
+            creative.render_spec = {
+                **(creative.render_spec if isinstance(creative.render_spec, dict) else {}),
+                "local_canary_stage": promoted_receipt,
+                "durable_media_protocol": DURABLE_CANARY_PROTOCOL,
+            }
+            db.commit()
+            cleanup_committed_staged_creative(
+                local_media_root,
+                creative_id=creative.id,
+                receipt=promoted_receipt,
+            )
     except Exception as exc:
         raise _pending_reconciliation_error(db) from exc
 
@@ -1235,7 +1285,8 @@ def reconcile_local_canary_fixture(
         )
         if execution.status == "SUCCEEDED":
             permit = _validate_succeeded(
-                db, item, execution, generation, publication, creative, approval
+                db, item, execution, generation, publication, creative, approval,
+                storage=media_storage, settings=settings,
             )
             db.commit()
             return _result(
@@ -1253,7 +1304,13 @@ def reconcile_local_canary_fixture(
             settings=settings,
             now=now,
         )
-        artifact = verify_promoted_pending(creative, receipt)
+        artifact = verify_promoted_pending(
+            creative,
+            receipt,
+            storage=media_storage,
+            settings=settings,
+            expected_input_fingerprint=generation.input_fingerprint,
+        )
         if hashlib.sha256(artifact).hexdigest() != creative.sha256:
             raise LocalCanaryFixtureError("LOCAL_CANARY_MEDIA_DIGEST_MISMATCH")
         creative.render_status = "RENDERED"

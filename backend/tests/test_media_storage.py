@@ -208,7 +208,10 @@ def test_route_constructor_storage_failures_are_safe_503(monkeypatch):
         proposal_routes.creative_image("c-1", SimpleNamespace(get=lambda *_: None))
     assert creative.value.status_code == 503 and creative.value.detail == "Media storage unavailable."
     request = Request({"type": "http", "method": "GET", "path": "/"})
-    db = SimpleNamespace(no_autoflush=nullcontext(), get=lambda *_: None)
+    row = SimpleNamespace(
+        id="c-1", sha256="a" * 64, render_status="RENDERED", render_spec={}
+    )
+    db = SimpleNamespace(no_autoflush=nullcontext(), get=lambda *_: row)
     with pytest.raises(HTTPException) as public:
         proposal_routes.public_creative_image("c-1", "a" * 64, request, db)
     assert public.value.status_code == 503 and public.value.detail == "Media storage unavailable."

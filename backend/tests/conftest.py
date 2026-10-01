@@ -1,6 +1,68 @@
+import ipaddress
+import socket
+
 import pytest
+import replit.object_storage as sdk
+
+
+def _forbid_live_storage_client(*args, **kwargs):
+    raise AssertionError("Live Object Storage clients are forbidden in tests")
+
+
+# Install before test collection, not just before each test: a test module
+# importing application code must never attach a real bucket as a side effect.
+sdk.Client = _forbid_live_storage_client
 
 from app.models.domain import PinApproval
+
+
+@pytest.fixture(autouse=True)
+def _only_local_test_network(monkeypatch):
+    """Allow disposable PostgreSQL, but never live provider traffic or DNS."""
+    resolve = socket.getaddrinfo
+    connect = socket.socket.connect
+    connect_ex = socket.socket.connect_ex
+
+    def is_local(host):
+        if host is None:
+            return True
+        if isinstance(host, bytes):
+            host = host.decode("ascii")
+        if host == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
+    def local_resolve(host, *args, **kwargs):
+        if not is_local(host):
+            raise AssertionError("External DNS is forbidden in tests")
+        return resolve(host, *args, **kwargs)
+
+    def local_connect(sock, address):
+        if isinstance(address, tuple) and not is_local(address[0]):
+            raise AssertionError("External connections are forbidden in tests")
+        return connect(sock, address)
+
+    def local_connect_ex(sock, address):
+        if isinstance(address, tuple) and not is_local(address[0]):
+            raise AssertionError("External connections are forbidden in tests")
+        return connect_ex(sock, address)
+
+    monkeypatch.setattr(socket, "getaddrinfo", local_resolve)
+    monkeypatch.setattr(socket.socket, "connect", local_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", local_connect_ex)
+
+
+@pytest.fixture(autouse=True)
+def _never_initialize_live_object_storage(monkeypatch):
+    """Tests must inject fake storage, even inside a credentialed workspace.
+
+    Adapter tests may replace this sentinel with their own fake SDK client.
+    No test may accidentally construct the real attached-bucket client.
+    """
+    monkeypatch.setattr(sdk, "Client", _forbid_live_storage_client)
 
 
 @pytest.fixture(autouse=True)

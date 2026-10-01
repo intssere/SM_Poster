@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from app.models.domain import PinCreative, PinPublication
 from app.services.pinterest_local_canary_media import (
+    durable_media_required,
     has_local_canary_media_marker,
     read_verified_promoted,
 )
@@ -16,7 +17,9 @@ def pending_local_canary_creative_ids():
     return select(PinCreative.id).where(PinCreative.render_status == "STAGED")
 
 
-def publication_has_pending_local_canary_media(db, publication_or_id) -> bool:
+def publication_has_pending_local_canary_media(
+    db, publication_or_id, *, settings=None, storage=None
+) -> bool:
     """Check only this publication's local artifact, leaving history untouched."""
     if isinstance(publication_or_id, PinPublication):
         creative_id = publication_or_id.creative_id
@@ -55,7 +58,27 @@ def publication_has_pending_local_canary_media(db, publication_or_id) -> bool:
     if creative.render_status != "RENDERED":
         return True
     try:
-        read_verified_promoted(creative, digest=creative.sha256)
+        # Preserve the small ordinary-media projection. Full authoritative
+        # provenance is required only for a marked canary, never optional.
+        if durable_media_required(settings):
+            binding = db.execute(
+                select(
+                    PinCreative.creative_fingerprint,
+                    PinCreative.size_bytes.label("rendered_size"),
+                ).where(PinCreative.id == creative_id)
+            ).one_or_none()
+            if binding is None:
+                return True
+            creative.creative_fingerprint = binding.creative_fingerprint
+            creative.rendered_size = binding.rendered_size
+        read_options = {}
+        if settings is not None:
+            read_options["settings"] = settings
+        if storage is not None:
+            read_options["storage"] = storage
+        read_verified_promoted(
+            creative, digest=creative.sha256, **read_options
+        )
     except Exception:
         # A persisted local receipt with missing, corrupt, or inaccessible bytes
         # is never sufficient to admit this publication.

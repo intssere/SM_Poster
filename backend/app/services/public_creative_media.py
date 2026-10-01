@@ -58,7 +58,7 @@ def snapshot_media_url(creative, *, settings=None):
     return creative.rendered_url
 
 
-def verified_png(creative, digest, *, root=None, storage=None):
+def verified_png(creative, digest, *, root=None, storage=None, settings=None):
     if creative is None:
         return None
     from app.services.pinterest_local_canary_media import (
@@ -67,6 +67,7 @@ def verified_png(creative, digest, *, root=None, storage=None):
         read_verified_promoted,
     )
     if has_local_canary_media_marker(creative):
+        settings = settings or get_settings()
         if (
             getattr(creative, "render_status", None) != "RENDERED"
             or not re.fullmatch(r"[a-f0-9]{64}", digest)
@@ -74,9 +75,23 @@ def verified_png(creative, digest, *, root=None, storage=None):
             or not re.fullmatch(r"[A-Za-z0-9_-]{1,36}", getattr(creative, "id", "") or "")
         ):
             return None
+        # Canary receipts are verified by their protocol implementation, which
+        # selects durable PNGMediaStorage in exposed runtimes and validates the
+        # receipt/key/provenance before returning bytes. Accept either the
+        # CreativeStorage facade used by routes or the media storage directly.
+        media_storage = getattr(storage, "media", storage)
         try:
-            return read_verified_promoted(creative, digest=digest)
-        except LocalCanaryMediaError:
+            return read_verified_promoted(
+                creative,
+                digest=digest,
+                settings=settings,
+                storage=media_storage,
+            )
+        except LocalCanaryMediaError as exc:
+            if str(exc) == "DURABLE_MEDIA_STORAGE_UNAVAILABLE":
+                if isinstance(exc.__cause__, StorageCorrupt):
+                    return None
+                raise StorageUnavailable("Durable media storage unavailable.") from exc
             return None
     if (creative.render_status != "RENDERED"
             or not re.fullmatch(r"[a-f0-9]{64}", digest) or creative.sha256 != digest
