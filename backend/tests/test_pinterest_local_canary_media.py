@@ -1,11 +1,21 @@
 """Focused offline tests for the local Pinterest canary media helper."""
 from hashlib import sha256
 from io import BytesIO
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
 from app.services import pinterest_local_canary_media as local_media
+
+
+@pytest.fixture(autouse=True)
+def _explicit_development_runtime(monkeypatch):
+    """This historical suite tests disk behavior, not the host's deployment."""
+    monkeypatch.setattr(
+        "app.core.config.get_settings",
+        lambda: SimpleNamespace(is_exposed=False),
+    )
 
 
 def source_png() -> bytes:

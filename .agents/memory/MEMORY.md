@@ -1,3 +1,4 @@
 - [Historical migration baseline](historical-migration-baseline.md) — freeze the remaining Phase 0 schema before future model migrations to prevent clean-install drift.
 - [Alembic table adoption](alembic-table-adoption.md) — model metadata may pre-create a pending table; migrations must verify full schema equivalence before adoption.
 - [GitHub push authorization](github-push-authorization.md) — GitHub reads can work while branch writes fail; verify write scope rather than assuming repo access implies push access.
+- [Credentialed test isolation](credentialed-test-isolation.md) — synthetic fixture data is not a sandbox; isolate tests before collection to prevent attached-service access.
