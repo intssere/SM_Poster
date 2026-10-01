@@ -127,7 +127,8 @@ def test_wrong_or_ambiguous_revision_refuses(database, versions):
             connection.execute(sa.text(
                 "INSERT INTO alembic_version (version_num) VALUES (:revision)"
             ), {"revision": version})
-    with pytest.raises(SchemaAdoptionRefused, match="exactly one Alembic revision"):
+    expected = "0032 readiness admissions table missing" if versions == ("0032",) else "exactly one Alembic revision"
+    with pytest.raises(SchemaAdoptionRefused, match=expected):
         adopt(database)
     assert revision(database) == list(versions)
 
@@ -284,7 +285,10 @@ def test_shadow_search_path_cannot_redirect_bookkeeping_or_guard(database, monke
         schema_canonicality_guard, "engine",
         type("ShadowEngine", (), {"connect": staticmethod(shadowed_connection)})(),
     )
-    assert schema_canonicality_guard.main() == 0
+    # Historical adoption still reaches 0031, but cannot bypass the new 0032
+    # production guard, including through a shadow bookkeeping table.
+    with pytest.raises(SchemaAdoptionRefused, match="Alembic revision 0032"):
+        schema_canonicality_guard.main()
 
 
 def test_temporary_table_cannot_shadow_locked_public_bookkeeping(database):
@@ -305,7 +309,7 @@ def test_temporary_table_cannot_shadow_locked_public_bookkeeping(database):
     assert revision(database) == ["0031"]
 
 
-def test_startup_adopts_then_runs_existing_read_only_guard_before_app(database, monkeypatch):
+def test_startup_adopts_0031_but_new_guard_blocks_app_until_reviewed_0032(database, monkeypatch):
     script = BACKEND.parent / "scripts" / "start_production.py"
     spec = importlib.util.spec_from_file_location("task60_production_startup", script)
     assert spec and spec.loader
@@ -330,8 +334,9 @@ def test_startup_adopts_then_runs_existing_read_only_guard_before_app(database, 
     monkeypatch.setattr(startup, "start_frontend", lambda: events.append("frontend") or object())
     monkeypatch.setattr(startup, "supervise", lambda *_a: 0)
     monkeypatch.setattr(startup, "terminate_process", lambda _process: None)
-    assert startup.run() == 0
-    assert events == ["adoption", "guard", "backend", "ready", "frontend"]
+    with pytest.raises(SchemaAdoptionRefused, match="Alembic revision 0032"):
+        startup.run()
+    assert events == ["adoption", "guard"]
     assert revision(database) == ["0031"]
 
 

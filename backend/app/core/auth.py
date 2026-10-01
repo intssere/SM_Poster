@@ -47,6 +47,8 @@ def verify_session(token: str | None) -> str | None:
     try:
         padding = "=" * (-len(body) % 4)
         payload: dict[str, Any] = json.loads(base64.urlsafe_b64decode(body + padding))
+        if not isinstance(payload, dict) or type(payload.get("exp")) is not int:
+            return None
         if int(payload.get("exp", 0)) < int(time.time()) or payload.get("sub") != get_settings().admin_username:
             return None
         return str(payload["sub"])

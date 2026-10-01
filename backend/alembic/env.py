@@ -8,6 +8,7 @@ from app.core.config import get_settings
 from app.db.session import sqlalchemy_database_url
 from app.db.migration_adoption import verify_reconciled_bundle
 from app.models import domain  # noqa: F401
+from app.services.readiness_execution_admission import metadata as management_metadata
 
 
 MIGRATION_ADVISORY_LOCK_KEY = 490019
@@ -15,7 +16,9 @@ MIGRATION_ADVISORY_LOCK_KEY = 490019
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
-target_metadata = Base.metadata
+# Keep management tables visible to Alembic, without putting them into business
+# ORM Base.metadata/create_all or changing historical model-based migrations.
+target_metadata = [Base.metadata, management_metadata]
 config.set_main_option(
     "sqlalchemy.url",
     sqlalchemy_database_url(get_settings().database_url).replace("%", "%%"),

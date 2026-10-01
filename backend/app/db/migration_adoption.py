@@ -1033,6 +1033,7 @@ def _require_0030_lineage_schema(connection: Any) -> None:
 
 
 SCHEDULED_QUOTA_RESERVATIONS_TABLE = "routine_scheduled_quota_reservations"
+READINESS_ADMISSIONS_TABLE = "management_readiness_admissions"
 
 
 def _require_0031_scheduled_quota_schema(connection: Any) -> None:
@@ -1177,6 +1178,422 @@ def _require_0031_scheduled_quota_schema(connection: Any) -> None:
         _refuse("0031 scheduled quota reservations check constraint mismatch")
 
 
+def _normalize_readiness_check(value: Any) -> str:
+    text = str(value or "").lower()
+    text = re.sub(r"^\s*check\s*", "", text)
+    text = re.sub(r"::(?:text|character varying|varchar)\b", "", text)
+    return re.sub(r"[\s()]", "", text)
+
+
+def _normalize_trigger_body(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).lower()
+
+
+def _require_0032_readiness_admissions_schema(connection: Any) -> None:
+    """Require the exact frozen management coordinator table and guards."""
+    table = READINESS_ADMISSIONS_TABLE
+    inspector = sa.inspect(connection)
+    if table not in set(inspector.get_table_names(schema="public")):
+        _refuse("0032 readiness admissions table missing")
+
+    from sqlalchemy.dialects import postgresql
+
+    expected_columns = {
+        "operation": (sa.String, 64, False, None),
+        "release_commit_sha": (sa.String, 64, False, None),
+        "release_tree_sha": (sa.String, 64, False, None),
+        "descriptor_sha256": (sa.String, 64, False, None),
+        "grant_id": (sa.String, 255, False, None),
+        "actor_hash": (sa.String, 64, False, None),
+        "consumed_at": (sa.DateTime, None, False, "now()"),
+        "outcome": (sa.String, 16, False, "'ADMITTED'"),
+        "exit_code": (sa.Integer, None, True, None),
+        "receipt": (postgresql.JSONB, None, True, None),
+        "finished_at": (sa.DateTime, None, True, None),
+    }
+    columns = {
+        row["name"]: row
+        for row in inspector.get_columns(table, schema="public")
+    }
+    if set(columns) != set(expected_columns):
+        _refuse("0032 readiness admissions column contract mismatch")
+    for name, (type_class, length, nullable, default) in expected_columns.items():
+        column = columns[name]
+        column_type = column["type"]
+        if not isinstance(column_type, type_class):
+            _refuse(f"0032 readiness admissions type mismatch: {name}")
+        if length is not None and getattr(column_type, "length", None) != length:
+            _refuse(f"0032 readiness admissions length mismatch: {name}")
+        if isinstance(column_type, sa.DateTime) and column_type.timezone is not True:
+            _refuse(f"0032 readiness admissions timezone mismatch: {name}")
+        if bool(column.get("nullable")) != nullable:
+            _refuse(f"0032 readiness admissions nullability mismatch: {name}")
+        if _normalize_default(column.get("default")) != default:
+            _refuse(f"0032 readiness admissions default mismatch: {name}")
+        if (
+            column.get("collation") is not None
+            or column.get("identity") is not None
+            or column.get("computed") is not None
+        ):
+            _refuse(f"0032 readiness admissions column attributes mismatch: {name}")
+
+    primary_key = inspector.get_pk_constraint(table, schema="public")
+    if (
+        primary_key.get("name") != "pk_management_readiness_admissions"
+        or tuple(primary_key.get("constrained_columns") or ())
+        != ("operation", "release_commit_sha", "release_tree_sha")
+    ):
+        _refuse("0032 readiness admissions primary key mismatch")
+
+    uniques = {
+        row.get("name"): tuple(row.get("column_names") or ())
+        for row in inspector.get_unique_constraints(table, schema="public")
+    }
+    if uniques != {
+        "uq_management_readiness_admissions_grant": ("grant_id",),
+    }:
+        _refuse("0032 readiness admissions unique contract mismatch")
+    if inspector.get_foreign_keys(table, schema="public"):
+        _refuse("0032 readiness admissions must not reference business tables")
+
+    checks = {
+        row.get("name"): _normalize_readiness_check(row.get("sqltext"))
+        for row in inspector.get_check_constraints(table, schema="public")
+    }
+    expected_checks = {
+        "ck_management_readiness_admissions_operation":
+            "operation='object_storage_readiness_v1'",
+        "ck_management_readiness_admissions_descriptor_hash":
+            "descriptor_sha256~'^[0-9a-f]{64}$'",
+        "ck_management_readiness_admissions_actor_hash":
+            "actor_hash~'^[0-9a-f]{64}$'",
+        "ck_management_readiness_admissions_outcome":
+            "outcome='admitted'oroutcome='pass'or"
+            "outcome='failed'oroutcome='unknown'",
+        "ck_management_readiness_admissions_outcome_evidence":
+            "outcome='admitted'andexit_codeisnullandreceiptisnull"
+            "andfinished_atisnullor"
+            "outcome='pass'andexit_code=0andreceiptisnotnulland"
+            "jsonb_typeofreceipt='object'andnotreceipt->>'final_status'"
+            "isdistinctfrom'pass'andfinished_atisnotnullor"
+            "outcome='failed'andexit_codeisnotnulland"
+            "exit_code=anyarray[1,2]"
+            "andreceiptisnotnullandjsonb_typeofreceipt='object'and"
+            "exit_code=1andnotreceipt->>'final_status'isdistinctfrom"
+            "'failed'or"
+            "exit_code=2andnotreceipt->>'final_status'isdistinctfrom"
+            "'blocked'andfinished_atisnotnullor"
+            "outcome='unknown'andfinished_atisnotnulland"
+            "receiptisnullorjsonb_typeofreceipt='object'and"
+            "exit_codeisnotnulland"
+            "exit_code=0andnotreceipt->>'final_status'isdistinctfrom"
+            "'pass'or"
+            "exit_code=1andnotreceipt->>'final_status'isdistinctfrom"
+            "'failed'or"
+            "exit_code=2andnotreceipt->>'final_status'isdistinctfrom"
+            "'blocked'",
+    }
+    if checks != expected_checks:
+        _refuse("0032 readiness admissions check contract mismatch")
+    constraint_rows = connection.execute(sa.text(
+        """SELECT conname, contype, condeferrable, condeferred, convalidated
+           FROM pg_constraint c
+           JOIN pg_class t ON t.oid = c.conrelid
+           JOIN pg_namespace n ON n.oid = t.relnamespace
+           WHERE n.nspname = 'public' AND t.relname = :table"""
+    ), {"table": table}).mappings().all()
+    actual_constraints = {
+        str(row["conname"]): (
+            str(row["contype"]),
+            bool(row["condeferrable"]),
+            bool(row["condeferred"]),
+            bool(row["convalidated"]),
+        )
+        for row in constraint_rows
+    }
+    if actual_constraints != {
+        "pk_management_readiness_admissions": ("p", False, False, True),
+        "uq_management_readiness_admissions_grant": ("u", False, False, True),
+        "ck_management_readiness_admissions_operation": ("c", False, False, True),
+        "ck_management_readiness_admissions_descriptor_hash":
+            ("c", False, False, True),
+        "ck_management_readiness_admissions_actor_hash": ("c", False, False, True),
+        "ck_management_readiness_admissions_outcome": ("c", False, False, True),
+        "ck_management_readiness_admissions_outcome_evidence":
+            ("c", False, False, True),
+    }:
+        _refuse("0032 readiness admissions constraint catalog mismatch")
+
+    # Constraint backing indexes are required; no standalone index, partial
+    # index, invalid index or additional access path is accepted.
+    standalone_indexes = [
+        row for row in inspector.get_indexes(table, schema="public")
+        if not row.get("duplicates_constraint")
+    ]
+    if standalone_indexes:
+        _refuse("0032 readiness admissions index contract mismatch")
+    index_rows = connection.execute(sa.text(
+        """SELECT idx.relname AS name, i.indisunique AS is_unique,
+                  i.indisvalid AS is_valid, i.indisready AS is_ready,
+                  i.indnkeyatts AS key_count, i.indnatts AS column_count,
+                  i.indnullsnotdistinct AS nulls_not_distinct,
+                  am.amname AS access_method,
+                  pg_get_expr(i.indpred, i.indrelid) AS predicate,
+                  pg_get_indexdef(i.indexrelid) AS definition
+           FROM pg_index i
+           JOIN pg_class tbl ON tbl.oid = i.indrelid
+           JOIN pg_class idx ON idx.oid = i.indexrelid
+           JOIN pg_am am ON am.oid = idx.relam
+           JOIN pg_namespace n ON n.oid = tbl.relnamespace
+           WHERE n.nspname = 'public' AND tbl.relname = :table
+           ORDER BY idx.relname"""
+    ), {"table": table}).mappings().all()
+    actual_indexes = {
+        str(row["name"]): (
+            bool(row["is_unique"]),
+            bool(row["is_valid"]),
+            bool(row["is_ready"]),
+            int(row["key_count"]),
+            int(row["column_count"]),
+            bool(row["nulls_not_distinct"]),
+            str(row["access_method"]),
+            row["predicate"],
+            _normalize_sql(row["definition"]),
+        )
+        for row in index_rows
+    }
+    if actual_indexes != {
+        "pk_management_readiness_admissions":
+            (
+                True, True, True, 3, 3, False, "btree", None,
+                "CREATE UNIQUE INDEX pk_management_readiness_admissions ON "
+                "public.management_readiness_admissions USING btree "
+                "(operation, release_commit_sha, release_tree_sha)",
+            ),
+        "uq_management_readiness_admissions_grant":
+            (
+                True, True, True, 1, 1, False, "btree", None,
+                "CREATE UNIQUE INDEX uq_management_readiness_admissions_grant "
+                "ON public.management_readiness_admissions USING btree (grant_id)",
+            ),
+    }:
+        _refuse("0032 readiness admissions index catalog mismatch")
+
+    table_state = connection.execute(sa.text(
+        """SELECT c.relkind, c.relpersistence, c.relispartition,
+                  c.relrowsecurity, c.relforcerowsecurity
+           FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = 'public' AND c.relname = :table"""
+    ), {"table": table}).mappings().one()
+    if (
+        table_state["relkind"] != "r"
+        or table_state["relpersistence"] != "p"
+        or table_state["relispartition"]
+        or table_state["relrowsecurity"]
+        or table_state["relforcerowsecurity"]
+    ):
+        _refuse("0032 readiness admissions relation attributes mismatch")
+
+    inheritance_count = connection.scalar(sa.text(
+        """SELECT count(*)
+           FROM pg_inherits i
+           JOIN pg_class parent ON parent.oid = i.inhparent
+           JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
+           JOIN pg_class child ON child.oid = i.inhrelid
+           JOIN pg_namespace child_ns ON child_ns.oid = child.relnamespace
+           WHERE (parent_ns.nspname = 'public' AND parent.relname = :table)
+              OR (child_ns.nspname = 'public' AND child.relname = :table)"""
+    ), {"table": table})
+    if inheritance_count:
+        _refuse("0032 readiness admissions inheritance mismatch")
+    rules = connection.scalar(sa.text(
+        """SELECT count(*)
+           FROM pg_rewrite r
+           JOIN pg_class c ON c.oid = r.ev_class
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = 'public' AND c.relname = :table
+             AND r.rulename <> '_RETURN'"""
+    ), {"table": table})
+    if rules:
+        _refuse("0032 readiness admissions rewrite-rule mismatch")
+
+    guard_body = _normalize_trigger_body("""
+        BEGIN
+            IF TG_OP = 'INSERT' THEN
+                IF NEW.outcome <> 'ADMITTED'
+                   OR NEW.finished_at IS NOT NULL
+                   OR NEW.exit_code IS NOT NULL
+                   OR NEW.receipt IS NOT NULL THEN
+                    RAISE EXCEPTION 'readiness admission must start ADMITTED'
+                        USING ERRCODE = '55000';
+                END IF;
+                RETURN NEW;
+            ELSIF TG_OP = 'DELETE' THEN
+                RAISE EXCEPTION 'readiness admissions cannot be deleted'
+                    USING ERRCODE = '55000';
+            ELSIF TG_OP = 'UPDATE' THEN
+                IF OLD.outcome <> 'ADMITTED' THEN
+                    RAISE EXCEPTION 'terminal readiness outcomes are immutable'
+                        USING ERRCODE = '55000';
+                END IF;
+                IF ROW(
+                    NEW.operation,
+                    NEW.release_commit_sha,
+                    NEW.release_tree_sha,
+                    NEW.descriptor_sha256,
+                    NEW.grant_id,
+                    NEW.actor_hash,
+                    NEW.consumed_at
+                ) IS DISTINCT FROM ROW(
+                    OLD.operation,
+                    OLD.release_commit_sha,
+                    OLD.release_tree_sha,
+                    OLD.descriptor_sha256,
+                    OLD.grant_id,
+                    OLD.actor_hash,
+                    OLD.consumed_at
+                ) THEN
+                    RAISE EXCEPTION 'readiness admission binding is immutable'
+                        USING ERRCODE = '55000';
+                END IF;
+                IF NEW.outcome NOT IN ('PASS', 'FAILED', 'UNKNOWN')
+                   OR NEW.finished_at IS NULL THEN
+                    RAISE EXCEPTION 'readiness outcome must transition once to terminal'
+                        USING ERRCODE = '55000';
+                END IF;
+                IF NEW.outcome = 'PASS' AND (
+                    NEW.exit_code IS DISTINCT FROM 0
+                    OR NEW.receipt IS NULL
+                    OR jsonb_typeof(NEW.receipt) IS DISTINCT FROM 'object'
+                    OR NEW.receipt ->> 'final_status' IS DISTINCT FROM 'PASS'
+                ) THEN
+                    RAISE EXCEPTION 'PASS readiness requires a valid PASS receipt'
+                        USING ERRCODE = '55000';
+                END IF;
+                IF NEW.outcome = 'FAILED' AND (
+                    NEW.receipt IS NULL
+                    OR jsonb_typeof(NEW.receipt) IS DISTINCT FROM 'object'
+                    OR NEW.exit_code IS NULL
+                    OR NOT (
+                        (NEW.exit_code = 1 AND
+                         NEW.receipt ->> 'final_status' IS NOT DISTINCT FROM 'FAILED')
+                        OR
+                        (NEW.exit_code = 2 AND
+                         NEW.receipt ->> 'final_status' IS NOT DISTINCT FROM 'BLOCKED')
+                    )
+                ) THEN
+                    RAISE EXCEPTION 'FAILED readiness requires matching failed receipt'
+                        USING ERRCODE = '55000';
+                END IF;
+                IF NEW.outcome = 'UNKNOWN' AND NEW.receipt IS NOT NULL AND (
+                    jsonb_typeof(NEW.receipt) IS DISTINCT FROM 'object'
+                    OR NEW.exit_code IS NULL
+                    OR NOT (
+                        (NEW.exit_code = 0 AND
+                         NEW.receipt ->> 'final_status' IS NOT DISTINCT FROM 'PASS')
+                        OR
+                        (NEW.exit_code = 1 AND
+                         NEW.receipt ->> 'final_status' IS NOT DISTINCT FROM 'FAILED')
+                        OR
+                        (NEW.exit_code = 2 AND
+                         NEW.receipt ->> 'final_status' IS NOT DISTINCT FROM 'BLOCKED')
+                    )
+                ) THEN
+                    RAISE EXCEPTION 'UNKNOWN readiness receipt and exit code mismatch'
+                        USING ERRCODE = '55000';
+                END IF;
+                RETURN NEW;
+            END IF;
+            RAISE EXCEPTION 'unsupported readiness admission operation'
+                USING ERRCODE = '55000';
+        END;
+    """)
+    truncate_body = _normalize_trigger_body("""
+        BEGIN
+            RAISE EXCEPTION 'readiness admissions cannot be truncated'
+                USING ERRCODE = '55000';
+        END;
+    """)
+    trigger_rows = connection.execute(sa.text(
+        """SELECT t.tgname, t.tgenabled, t.tgtype, t.tgisinternal,
+                  t.tgattr::text <> '' AS has_update_columns,
+                  t.tgqual IS NOT NULL AS has_when,
+                  t.tgnargs, t.tgoldtable, t.tgnewtable,
+                  p.proname, p.prosrc, p.prosecdef, p.proconfig,
+                  p.pronargs, l.lanname, pn.nspname AS function_schema,
+                  p.provolatile, p.proisstrict, p.proleakproof, p.proparallel,
+                  p.prokind, p.proretset, rt.typname AS return_type
+           FROM pg_trigger t
+           JOIN pg_class c ON c.oid = t.tgrelid
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           JOIN pg_proc p ON p.oid = t.tgfoid
+           JOIN pg_namespace pn ON pn.oid = p.pronamespace
+           JOIN pg_language l ON l.oid = p.prolang
+           JOIN pg_type rt ON rt.oid = p.prorettype
+           WHERE n.nspname = 'public' AND c.relname = :table
+           ORDER BY t.tgname"""
+    ), {"table": table}).mappings().all()
+    actual_triggers = {}
+    for row in trigger_rows:
+        actual_triggers[str(row["tgname"])] = (
+            str(row["tgenabled"]),
+            int(row["tgtype"]),
+            bool(row["tgisinternal"]),
+            bool(row["has_update_columns"]),
+            bool(row["has_when"]),
+            int(row["tgnargs"]),
+            bool(row["tgoldtable"]),
+            bool(row["tgnewtable"]),
+            str(row["function_schema"]),
+            str(row["proname"]),
+            _normalize_trigger_body(row["prosrc"]),
+            bool(row["prosecdef"]),
+            row["proconfig"],
+            int(row["pronargs"]),
+            str(row["lanname"]),
+            str(row["provolatile"]),
+            bool(row["proisstrict"]),
+            bool(row["proleakproof"]),
+            str(row["proparallel"]),
+            str(row["prokind"]),
+            bool(row["proretset"]),
+            str(row["return_type"]),
+        )
+    if actual_triggers != {
+        "management_readiness_admissions_immutable": (
+            "O", 31, False, False, False, 0, False, False,
+            "public", "management_readiness_admission_guard",
+            guard_body, False, None, 0, "plpgsql",
+            "v", False, False, "u", "f", False, "trigger",
+        ),
+        "management_readiness_admissions_no_truncate": (
+            "O", 34, False, False, False, 0, False, False,
+            "public", "management_readiness_admission_truncate_guard",
+            truncate_body, False, None, 0, "plpgsql",
+            "v", False, False, "u", "f", False, "trigger",
+        ),
+    }:
+        _refuse("0032 readiness admissions trigger contract mismatch")
+
+    function_names = connection.execute(sa.text(
+        """SELECT p.proname, count(*) AS count
+           FROM pg_proc p
+           JOIN pg_namespace n ON n.oid = p.pronamespace
+           WHERE n.nspname = 'public'
+             AND p.proname IN (
+                 'management_readiness_admission_guard',
+                 'management_readiness_admission_truncate_guard'
+             )
+           GROUP BY p.proname"""
+    )).mappings().all()
+    if {row["proname"]: int(row["count"]) for row in function_names} != {
+        "management_readiness_admission_guard": 1,
+        "management_readiness_admission_truncate_guard": 1,
+    }:
+        _refuse("0032 readiness admissions function catalog mismatch")
+
+
 def verify_frozen_schema_at_head(connection: Any, revision: str = "0031") -> None:
     """Read-only production startup guard for canonical migration contracts."""
     if getattr(connection.dialect, "name", None) != "postgresql":
@@ -1196,7 +1613,7 @@ def verify_frozen_schema_at_head(connection: Any, revision: str = "0031") -> Non
             _refuse("canonical schema fingerprint verification failed")
         return
 
-    if revision not in {"0030", "0031"}:
+    if revision not in {"0030", "0031", "0032"}:
         _refuse(f"unsupported canonical head revision: {revision}")
 
     present = _present_postgresql_tables(connection, LINEAGE_PRESERVED_TABLES)
@@ -1210,17 +1627,21 @@ def verify_frozen_schema_at_head(connection: Any, revision: str = "0031") -> Non
     if fingerprints != canonical:
         _refuse("0030 preserved schema fingerprint verification failed")
     _require_0030_lineage_schema(connection)
-    if revision == "0031":
+    if revision in {"0031", "0032"}:
         _require_frozen_0030_lineage_catalog(connection)
         _require_0031_scheduled_quota_schema(connection)
+    if revision == "0032":
+        _require_0032_readiness_admissions_schema(connection)
 
 
 def adopt_managed_preapplied_0031(connection: Any) -> bool:
-    """Adopt only a complete, empty managed 0031 schema; never perform DDL.
+    """Adopt a complete, empty pre-applied 0031 schema; verify 0032 as a no-op.
 
     The caller owns a transaction and must commit only after this returns.
     NOWAIT relation locks prevent both competing adopters and concurrent
     changes to the catalog/data examined before the bookkeeping update.
+    This function never runs migrations or advances an already-bookkept 0031
+    database; production startup's separate 0032 guard refuses that state.
     """
     if getattr(connection.dialect, "name", None) != "postgresql":
         _refuse("0031 managed adoption requires PostgreSQL")
@@ -1254,6 +1675,28 @@ def adopt_managed_preapplied_0031(connection: Any) -> bool:
     revisions = connection.execute(sa.text(
         'SELECT version_num FROM "public"."alembic_version" ORDER BY version_num'
     )).scalars().all()
+    if revisions == ["0032"]:
+        admissions_table_exists = connection.scalar(sa.text(
+            "SELECT to_regclass('public.management_readiness_admissions') "
+            "IS NOT NULL"
+        ))
+        if not admissions_table_exists:
+            _refuse(
+                "0032 managed schema verification failed: "
+                "0032 readiness admissions table missing"
+            )
+        try:
+            connection.execute(sa.text(
+                'LOCK TABLE "public"."management_readiness_admissions" '
+                "IN SHARE ROW EXCLUSIVE MODE NOWAIT"
+            ))
+        except sa.exc.DBAPIError as exc:
+            _refuse(
+                "0032 managed schema verification lock or table availability "
+                f"failed: {exc.__class__.__name__}"
+            )
+        verify_frozen_schema_at_head(connection, revision="0032")
+        return False
     if revisions == ["0031"]:
         verify_frozen_schema_at_head(connection, revision="0031")
         return False

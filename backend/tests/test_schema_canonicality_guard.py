@@ -51,8 +51,8 @@ def test_guard_requires_postgresql_before_schema_verification(monkeypatch):
         schema_canonicality_guard.main()
 
 
-def test_guard_checks_exact_0031_before_accepting(monkeypatch):
-    connection = RevisionConnection(["0031"])
+def test_guard_checks_exact_0032_before_accepting(monkeypatch):
+    connection = RevisionConnection(["0032"])
     monkeypatch.setattr(
         schema_canonicality_guard.engine, "connect", lambda: nullcontext(connection)
     )
@@ -64,7 +64,7 @@ def test_guard_checks_exact_0031_before_accepting(monkeypatch):
 
     monkeypatch.setattr(schema_canonicality_guard, "verify_frozen_schema_at_head", verify)
     assert schema_canonicality_guard.main() == 0
-    assert checked == [(connection, "0031")]
+    assert checked == [(connection, "0032")]
 
 
 class ScheduledQuotaInspector:
