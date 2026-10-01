@@ -42,6 +42,22 @@ JUnit and sanitized runtime-certification evidence are uploaded as CI artifacts.
 Configured CI is not a claim that hosted CI passed: final job/run evidence must
 be inspected separately.
 
+Hosted evidence for certification code commit
+`0020a64e07679009e4c0fb7eea780068fff0fdcd`:
+
+- Dedicated workflow push run `36904235694`: SUCCESS.
+- Python **3.12.14**, PostgreSQL **16.15**, SDK **1.0.2**.
+- Actual SDK import: PASS, Requires-Python `>=3.8.0,<3.13`; network denied,
+  no Client construction.
+- Focused suites: **149 passed**, zero failures/skips (69.52 seconds).
+- Broader regressions: **200 passed**, **28 subtests passed**, zero
+  failures/skips (105.39 seconds).
+- Dependency check: “No broken requirements found.” Compilation/whitespace,
+  real PostgreSQL frozen-head migration checks and no-skip assertion passed.
+- PR **191** is open against canonical main; it is not merged and auto-merge
+  is not enabled. PR-event and final-HEAD results must also be checked before
+  declaring all PR checks green.
+
 ## Production-runtime limitation
 
 Canonical `.replit` declares `python-base-3.13`. Production build/run dispatches
