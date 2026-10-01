@@ -75,7 +75,7 @@ def run_schema_canonicality_guard(
     *,
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
 ) -> None:
-    """Refuse startup unless PostgreSQL is already at canonical revision 0031."""
+    """Refuse startup unless PostgreSQL is already at canonical revision 0032."""
     result = runner(
         schema_canonicality_guard_command(),
         cwd=BACKEND_DIR,

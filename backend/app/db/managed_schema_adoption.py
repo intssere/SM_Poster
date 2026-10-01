@@ -1,7 +1,8 @@
-"""Bookkeeping-only adoption of a fully pre-applied managed 0031 schema.
+"""Bookkeeping-only adoption of managed schema pre-applied through 0031.
 
 No DDL, providers, permits, publishing, or application processes are started.
-The separate schema canonicality guard remains read-only.
+An already-recorded 0032 schema is verified without mutation; 0031 is never
+automatically migrated at startup. The separate canonicality guard is read-only.
 """
 from __future__ import annotations
 

@@ -79,6 +79,15 @@ class Settings(BaseSettings):
     admin_password_hash: str | None = Field(default=None, validation_alias=AliasChoices("ADMIN_PASSWORD_HASH", "AUTH_ADMIN_PASSWORD_HASH"))
     auth_session_ttl_seconds: int = 3600
     auth_allowed_origins: str = ""
+    # Deliberately an exact-string opt-in; invalid spellings fail at admission.
+    object_storage_readiness_management_enabled: str = "false"
+    readiness_expected_canonical_commit_sha: str = ""
+    readiness_expected_canonical_tree_sha: str = ""
+    readiness_expected_release_commit_sha: str = ""
+    readiness_expected_release_tree_sha: str = ""
+    readiness_expected_overlay_sha256: str = ""
+    readiness_expected_probe_sha256: str = ""
+    readiness_expected_topology: str = ""
 
     shopify_shop: str | None = Field(
         default=None,

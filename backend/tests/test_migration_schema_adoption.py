@@ -72,7 +72,7 @@ def _current(url: str) -> str:
         check=True,
     )
     lines = [line.strip() for line in (result.stdout + result.stderr).splitlines()]
-    return next(line for line in lines if line == "0031 (head)")
+    return next(line for line in lines if line == "0032 (head)")
 
 
 def _set_bookkeeping(url: str, revision: str) -> None:
@@ -121,7 +121,7 @@ def _assert_frozen_owned_tables(url: str) -> None:
 
 def test_fresh_postgresql_upgrade_reaches_exact_head(isolated_database: str) -> None:
     _alembic(isolated_database, "head")
-    assert _current(isolated_database) == "0031 (head)"
+    assert _current(isolated_database) == "0032 (head)"
     _assert_frozen_owned_tables(isolated_database)
 
 
@@ -130,7 +130,7 @@ def test_simulated_production_0020_is_adopted(isolated_database: str) -> None:
     _alembic(isolated_database, "0020")
     _set_bookkeeping(isolated_database, "0019")
     _alembic(isolated_database, "head")
-    assert _current(isolated_database) == "0031 (head)"
+    assert _current(isolated_database) == "0032 (head)"
     _assert_frozen_owned_tables(isolated_database)
 
 
@@ -149,7 +149,7 @@ def test_full_preapply_adopts_each_revision_sequentially(
         assert "Running upgrade" in output
         assert revision in output
     _alembic(isolated_database, "head")
-    assert _current(isolated_database) == "0031 (head)"
+    assert _current(isolated_database) == "0032 (head)"
 
 
 def test_partial_0020_refuses_before_bookkeeping(isolated_database: str) -> None:

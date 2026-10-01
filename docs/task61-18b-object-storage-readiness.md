@@ -25,6 +25,13 @@ and certify that release before any future live invocation. Do not substitute
 a workspace client, change production startup, or add an endpoint to make this
 utility reachable.
 
+The separately authorized Task 61.22B engineering adds a narrowly scoped,
+default-disabled management seam without changing this utility. That exception
+does not authorize deployment or live invocation. See
+`task61-22b-readiness-management.md` for its durable admission, release approval,
+and future execution prerequisites; arbitrary endpoint/startup workarounds
+remain prohibited.
+
 ## Object and sequence
 
 The only allowed namespace is `task61-readiness/`. Each invocation generates
