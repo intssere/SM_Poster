@@ -1,0 +1,38 @@
+name: Task 61.18B object-storage readiness isolation
+
+on:
+  push:
+    branches:
+      - feature/task61-18b-object-storage-readiness
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-readiness-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Scrub storage, business, and provider credentials
+        shell: bash
+        run: |
+          while IFS='=' read -r name _; do
+            case "$name" in
+              REPLIT_*|REPL_*|PINTEREST_*|BUFFER_*|OPENAI_*|ANTHROPIC_*|AWS_*|GOOGLE_*|OBJECT_STORAGE_*|SUPABASE_*|FIREBASE_*|CLOUDINARY_*|DATABASE_*|POSTGRES_*|AZURE_*|CLOUDFLARE_*|FACEBOOK_*|INSTAGRAM_*|META_*|R2_*|SHOPIFY_*|STRIPE_*|TIKTOK_*|PG*|*_TOKEN|*_SECRET|*_PASSWORD|*_API_KEY|*_ACCESS_KEY|*_CREDENTIAL|*_CREDENTIALS|*_KEY)
+                printf '%s=\n' "$name" >> "$GITHUB_ENV"
+                ;;
+            esac
+          done < <(env)
+      - name: Run isolated standard-library readiness tests
+        run: python -I -S -B -m unittest discover -s backend/scripts/tests -p 'test_object_storage_readiness.py' -v
+      - name: Syntax and patch checks
+        run: |
+          python -I -S -B -c 'import ast, pathlib; ast.parse(pathlib.Path("backend/scripts/tests/test_object_storage_readiness.py").read_text(encoding="utf-8"))'
+          git diff --check
