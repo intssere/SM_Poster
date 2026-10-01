@@ -2,6 +2,7 @@
 
 import builtins
 import ast
+from contextlib import contextmanager, ExitStack
 import hashlib
 from importlib.abc import MetaPathFinder
 import importlib.util
@@ -18,8 +19,9 @@ import urllib.request
 import zlib
 
 
-# Keep ambient credentials out of this process and install the network/import
-# guards before loading the probe module or collecting any test cases.
+# These guards are installed only while exercising the injected fake SDK.
+# Pytest also collects this module during broad backend runs, so importing it
+# must never change process-wide imports, networking, or environment variables.
 _SCRUB_PREFIXES = (
     "REPLIT_",
     "REPL_",
@@ -56,10 +58,6 @@ _SCRUB_SUFFIXES = (
     "_CREDENTIALS",
     "_KEY",
 )
-for _name in tuple(os.environ):
-    if _name.startswith(_SCRUB_PREFIXES) or _name.endswith(_SCRUB_SUFFIXES):
-        os.environ.pop(_name, None)
-
 _NETWORK_ATTEMPTS = []
 
 
@@ -67,16 +65,6 @@ def _deny_network(*args, **kwargs):
     _NETWORK_ATTEMPTS.append((args, kwargs))
     raise AssertionError("network access is forbidden in isolated readiness tests")
 
-
-socket.create_connection = _deny_network
-socket.getaddrinfo = _deny_network
-socket.socket.connect = _deny_network
-socket.socket.connect_ex = _deny_network
-socket.socket.send = _deny_network
-socket.socket.sendall = _deny_network
-socket.socket.sendto = _deny_network
-socket.socket.sendmsg = _deny_network
-urllib.request.urlopen = _deny_network
 
 _BLOCKED_IMPORT_ROOTS = {
     "anthropic",
@@ -126,9 +114,6 @@ def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
     return _original_import(name, globals, locals, fromlist, level)
 
 
-builtins.__import__ = _guarded_import
-
-
 class _BlockedImportFinder(MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         root = fullname.split(".", 1)[0]
@@ -144,7 +129,28 @@ class _BlockedImportFinder(MetaPathFinder):
         return None
 
 
-sys.meta_path.insert(0, _BlockedImportFinder())
+@contextmanager
+def isolated_fake_sdk():
+    """Keep all deny hooks local to a fake-SDK operation and restore them."""
+    safe_env = {
+        name: value for name, value in os.environ.items()
+        if not name.startswith(_SCRUB_PREFIXES) and not name.endswith(_SCRUB_SUFFIXES)
+    }
+    _NETWORK_ATTEMPTS.clear()
+    _BLOCKED_IMPORT_ATTEMPTS.clear()
+    with ExitStack() as stack:
+        stack.enter_context(mock.patch.dict(os.environ, safe_env, clear=True))
+        for target, name in (
+            (socket, "create_connection"), (socket, "getaddrinfo"),
+            (socket.socket, "connect"), (socket.socket, "connect_ex"),
+            (socket.socket, "send"), (socket.socket, "sendall"),
+            (socket.socket, "sendto"), (socket.socket, "sendmsg"),
+            (urllib.request, "urlopen"),
+        ):
+            stack.enter_context(mock.patch.object(target, name, _deny_network))
+        stack.enter_context(mock.patch.object(builtins, "__import__", _guarded_import))
+        stack.enter_context(mock.patch.object(sys, "meta_path", [_BlockedImportFinder(), *sys.meta_path]))
+        yield
 
 _SCRIPT_PATH = Path(__file__).resolve().parents[1] / "object_storage_readiness.py"
 _SPEC = importlib.util.spec_from_file_location(
@@ -301,10 +307,18 @@ def enabled(storage, *, environ=None):
     environment = {GATE: "true"}
     if environ:
         environment.update(environ)
-    return probe.run_probe(environ=environment, sdk_loader=storage.loader)
+    with isolated_fake_sdk():
+        return probe.run_probe(environ=environment, sdk_loader=storage.loader)
 
 
 class ObjectStorageReadinessTests(unittest.TestCase):
+    def test_collection_does_not_install_process_wide_guards(self):
+        self.assertIs(builtins.__import__, _original_import)
+        self.assertNotIn(_guarded_import, (builtins.__import__,))
+        self.assertFalse(any(isinstance(finder, _BlockedImportFinder) for finder in sys.meta_path))
+        self.assertIsNot(socket.create_connection, _deny_network)
+        self.assertIsNot(urllib.request.urlopen, _deny_network)
+
     def test_constants_and_deterministic_png_are_valid(self):
         self.assertEqual(probe.PREFIX, "task61-readiness/")
         self.assertEqual(probe.EXPECTED_SIZE, 70)
@@ -738,10 +752,11 @@ class ObjectStorageReadinessTests(unittest.TestCase):
         storage.emit_sdk_output = True
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with mock.patch.dict(os.environ, {GATE: "true"}, clear=True):
-            with mock.patch.object(probe, "_load_sdk", side_effect=storage.loader):
-                with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
-                    result = probe.main(argv=[])
+        with isolated_fake_sdk():
+            with mock.patch.dict(os.environ, {GATE: "true"}, clear=True):
+                with mock.patch.object(probe, "_load_sdk", side_effect=storage.loader):
+                    with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+                        result = probe.main(argv=[])
         lines = stdout.getvalue().splitlines()
         self.assertEqual(result, 0)
         self.assertEqual(len(lines), 1)
@@ -805,7 +820,7 @@ class ObjectStorageReadinessTests(unittest.TestCase):
         self.assertIn(receipt["final_status"], ("PASS", "FAILED"))
         self.assertEqual(_BLOCKED_IMPORT_ATTEMPTS, [])
         self.assertEqual(_NETWORK_ATTEMPTS, [])
-        self.assertFalse(any(name.startswith("backend.") for name in sys.modules))
+        self.assertIs(builtins.__import__, _original_import)
 
 
 class _AnyKeyReadOverride(dict):
