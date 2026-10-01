@@ -162,8 +162,14 @@ def test_missing_stored_pass_evidence_never_reports_success(operation, code):
         execution.lookup_readiness(operation.binding)
 
 
-def test_sanitized_logging_on_unknown(operation, caplog):
-    with caplog.at_level("INFO"):
+@pytest.mark.parametrize("disabled_before", [False, True])
+def test_sanitized_logging_on_unknown(operation, caplog, monkeypatch, disabled_before):
+    # In-process Alembic fileConfig() in broader suites disables existing
+    # loggers. Own this test's logging state and restore it during teardown.
+    monkeypatch.setattr(execution.logger, "disabled", disabled_before)
+    monkeypatch.setattr(execution.logger, "disabled", False)
+    monkeypatch.setattr(execution.logger, "propagate", True)
+    with caplog.at_level("INFO", logger=execution.logger.name):
         execution.execute_readiness(operation.settings, operation.binding, operation.claims)
     assert "admission-consumed" in caplog.text
     assert "outcome=UNKNOWN" in caplog.text

@@ -70,6 +70,21 @@ A separately authorized supported-runtime selection/change and independently
 verified deployment would be required to close this gap; no runtime-version,
 deployment configuration, or production change is made here.
 
+## Full-suite logging isolation
+
+The first hosted full-suite runs exposed an order-dependent logging assertion:
+in-process Alembic fileConfig disables existing loggers before the readiness
+logging test. Dedicated readiness suites passed; several full-suite matrix jobs
+failed solely because that assertion captured no messages.
+
+The logging test now owns/restores its logger's disabled/propagation state,
+selects that logger's INFO capture level, and covers both initially enabled and
+disabled states. No application, admission, runner, probe, migration or production
+logging configuration changes accompany this test-harness correction. It adds
+one focused case: the final expected focused count is 150 rather than the 149
+from the earlier code-certification runs above. Broader dedicated counts remain
+200 plus 28 subtests. Final hosted results must be verified on the corrected HEAD.
+
 ## Scope
 
 No merge, production migration, Publish/deploy, live Object Storage/business
