@@ -38,6 +38,7 @@ jobs:
             tests/test_object_storage_readiness_management.py \
             tests/test_readiness_execution_runner.py \
             tests/test_readiness_execution_admission_0032.py \
+            tests/test_exact_revision_runner.py \
             tests/test_readiness_execution_orchestration.py \
             --junitxml=readiness-focused-results.xml
           python - <<'PY'
