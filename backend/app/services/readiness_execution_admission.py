@@ -1,9 +1,7 @@
-"""Durable PostgreSQL-only admission for management readiness execution.
+"""PostgreSQL insert-only readiness coordinator, isolated from business rows.
 
-This is deliberately isolated from application ORM metadata and business rows.
-An inserted admission is committed before the caller may spawn any work.
-Its trigger protections cover ordinary DML; database owners/superusers retain
-PostgreSQL's inherent ability to alter DDL or disable triggers and are trusted.
+Consumption commits before work. Relational uniqueness is not protection
+against unrestricted SQL deletion or rewriting; no trigger-equivalence claim.
 """
 from __future__ import annotations
 
@@ -11,12 +9,13 @@ import re
 from typing import Any
 
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.db.migration_adoption import (
     SchemaAdoptionRefused,
     verify_frozen_schema_at_head,
 )
+from app.db.readiness_schema_0033 import tables, validate_terminal
 from app.services.readiness_execution_contract import (
     OPERATION,
     ReadinessBinding,
@@ -27,94 +26,11 @@ from app.services.readiness_execution_contract import (
 metadata = sa.MetaData()
 _HEX_GIT_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _HEX_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
-management_readiness_admissions = sa.Table(
-    "management_readiness_admissions",
-    metadata,
-    sa.Column("operation", sa.String(64), nullable=False),
-    sa.Column("release_commit_sha", sa.String(64), nullable=False),
-    sa.Column("release_tree_sha", sa.String(64), nullable=False),
-    sa.Column("descriptor_sha256", sa.String(64), nullable=False),
-    sa.Column("grant_id", sa.String(255), nullable=False),
-    sa.Column("actor_hash", sa.String(64), nullable=False),
-    sa.Column(
-        "consumed_at",
-        sa.DateTime(timezone=True),
-        nullable=False,
-        server_default=sa.func.now(),
-    ),
-    sa.Column(
-        "outcome",
-        sa.String(16),
-        nullable=False,
-        server_default=sa.text("'ADMITTED'"),
-    ),
-    sa.Column("exit_code", sa.Integer(), nullable=True),
-    # Python None must mean SQL NULL, not JSON literal null: unknown outcomes
-    # without a receipt are legal, non-object JSON evidence is not.
-    sa.Column("receipt", JSONB(none_as_null=True), nullable=True),
-    sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
-    sa.PrimaryKeyConstraint(
-        "operation",
-        "release_commit_sha",
-        "release_tree_sha",
-        name="pk_management_readiness_admissions",
-    ),
-    sa.UniqueConstraint("grant_id", name="uq_management_readiness_admissions_grant"),
-    sa.CheckConstraint(
-        "operation = 'object_storage_readiness_v1'",
-        name="ck_management_readiness_admissions_operation",
-    ),
-    sa.CheckConstraint(
-        "descriptor_sha256 ~ '^[0-9a-f]{64}$'",
-        name="ck_management_readiness_admissions_descriptor_hash",
-    ),
-    sa.CheckConstraint(
-        "actor_hash ~ '^[0-9a-f]{64}$'",
-        name="ck_management_readiness_admissions_actor_hash",
-    ),
-    sa.CheckConstraint(
-        "outcome = 'ADMITTED' OR outcome = 'PASS' OR "
-        "outcome = 'FAILED' OR outcome = 'UNKNOWN'",
-        name="ck_management_readiness_admissions_outcome",
-    ),
-    sa.CheckConstraint(
-        "("
-        "outcome = 'ADMITTED' AND exit_code IS NULL "
-        "AND receipt IS NULL AND finished_at IS NULL"
-        ") OR ("
-        "outcome = 'PASS' AND exit_code = 0 AND receipt IS NOT NULL "
-        "AND jsonb_typeof(receipt) = 'object' "
-        "AND receipt ->> 'final_status' IS NOT DISTINCT FROM 'PASS' "
-        "AND finished_at IS NOT NULL"
-        ") OR ("
-        "outcome = 'FAILED' AND exit_code IS NOT NULL "
-        "AND exit_code IN (1, 2) AND receipt IS NOT NULL "
-        "AND jsonb_typeof(receipt) = 'object' AND ("
-        "(exit_code = 1 AND receipt ->> 'final_status' "
-        "IS NOT DISTINCT FROM 'FAILED') OR "
-        "(exit_code = 2 AND receipt ->> 'final_status' "
-        "IS NOT DISTINCT FROM 'BLOCKED')"
-        ") AND finished_at IS NOT NULL"
-        ") OR ("
-        "outcome = 'UNKNOWN' AND finished_at IS NOT NULL AND ("
-        "receipt IS NULL OR (jsonb_typeof(receipt) = 'object' "
-        "AND exit_code IS NOT NULL AND ("
-        "(exit_code = 0 AND receipt ->> 'final_status' "
-        "IS NOT DISTINCT FROM 'PASS') OR "
-        "(exit_code = 1 AND receipt ->> 'final_status' "
-        "IS NOT DISTINCT FROM 'FAILED') OR "
-        "(exit_code = 2 AND receipt ->> 'final_status' "
-        "IS NOT DISTINCT FROM 'BLOCKED')"
-        ")))"
-        ")",
-        name="ck_management_readiness_admissions_outcome_evidence",
-    ),
-    schema="public",
-)
+management_readiness_admissions, management_readiness_outcomes = tables(metadata)
 
 
 class PostgresReadinessAdmission:
-    """Persist one immutable grant consumption per release scope."""
+    """Persist one grant consumption per release scope through insert-only DML."""
 
     def __init__(self, engine: Any):
         self.engine = engine
@@ -178,9 +94,11 @@ class PostgresReadinessAdmission:
             'LOCK TABLE "public"."management_readiness_admissions" '
             "IN ROW EXCLUSIVE MODE"
         ))
-        # Verify the complete frozen head, including the management-only table,
-        # while DDL cannot alter the coordinator contract.
-        verify_frozen_schema_at_head(connection, revision="0032")
+        connection.execute(sa.text(
+            'LOCK TABLE "public"."management_readiness_outcomes" '
+            "IN ROW EXCLUSIVE MODE"
+        ))
+        verify_frozen_schema_at_head(connection, revision="0033")
 
     def consume(
         self,
@@ -217,7 +135,6 @@ class PostgresReadinessAdmission:
                             descriptor_sha256=binding.digest,
                             grant_id=grant_id,
                             actor_hash=actor_hash,
-                            outcome="ADMITTED",
                         )
                         .on_conflict_do_nothing()
                         .returning(management_readiness_admissions.c.grant_id)
@@ -248,22 +165,7 @@ class PostgresReadinessAdmission:
             ):
                 raise ValueError("invalid readiness outcome")
             self._validate_binding(binding)
-            safe_receipt = None
-            if receipt is not None:
-                from app.services.readiness_execution_runner import validate_receipt
-
-                safe_receipt = validate_receipt(receipt, exit_code)
-            if outcome == "PASS" and (
-                exit_code != 0
-                or safe_receipt is None
-                or safe_receipt["final_status"] != "PASS"
-            ):
-                raise ValueError("PASS requires a validated PASS receipt")
-            if outcome == "FAILED" and (
-                safe_receipt is None
-                or safe_receipt["final_status"] not in {"FAILED", "BLOCKED"}
-            ):
-                raise ValueError("FAILED requires a validated failed receipt")
+            safe_receipt = validate_terminal(outcome, exit_code, receipt)
             with self.engine.connect() as connection:
                 with connection.begin():
                     self._bound_transaction(connection)
@@ -274,25 +176,39 @@ class PostgresReadinessAdmission:
                         & (table.c.release_tree_sha == binding.scope[2])
                         & (table.c.descriptor_sha256 == binding.digest)
                     )
+                    if connection.execute(
+                        sa.select(table.c.grant_id).where(scope)
+                    ).scalar_one_or_none() is None:
+                        raise ValueError("readiness admission missing or mismatched")
+                    terminal = management_readiness_outcomes
                     result = connection.execute(
-                        table.update()
-                        .where(scope, table.c.outcome == "ADMITTED")
+                        pg_insert(terminal)
                         .values(
+                            operation=binding.scope[0],
+                            release_commit_sha=binding.scope[1],
+                            release_tree_sha=binding.scope[2],
                             outcome=outcome,
                             exit_code=exit_code,
                             receipt=safe_receipt,
-                            finished_at=sa.func.now(),
                         )
-                        .returning(table.c.outcome)
+                        .on_conflict_do_nothing(index_elements=[
+                            terminal.c.operation, terminal.c.release_commit_sha,
+                            terminal.c.release_tree_sha,
+                        ])
+                        .returning(terminal.c.outcome)
                     )
                     updated = result.scalar_one_or_none()
                     if updated is None:
                         existing = connection.execute(
                             sa.select(
-                                table.c.outcome,
-                                table.c.exit_code,
-                                table.c.receipt,
-                            ).where(scope)
+                                terminal.c.outcome,
+                                terminal.c.exit_code,
+                                terminal.c.receipt,
+                            ).where(
+                                terminal.c.operation == binding.scope[0],
+                                terminal.c.release_commit_sha == binding.scope[1],
+                                terminal.c.release_tree_sha == binding.scope[2],
+                            )
                         ).mappings().one_or_none()
                         if existing is None:
                             raise ValueError("readiness admission missing")
@@ -315,13 +231,18 @@ class PostgresReadinessAdmission:
                 with connection.begin():
                     self._bound_transaction(connection)
                     table = management_readiness_admissions
+                    terminal = management_readiness_outcomes
                     row = connection.execute(
                         sa.select(
                             table.c.descriptor_sha256,
-                            table.c.outcome,
-                            table.c.exit_code,
-                            table.c.receipt,
-                        ).where(
+                            terminal.c.outcome,
+                            terminal.c.exit_code,
+                            terminal.c.receipt,
+                        ).select_from(table.outerjoin(terminal, sa.and_(
+                            table.c.operation == terminal.c.operation,
+                            table.c.release_commit_sha == terminal.c.release_commit_sha,
+                            table.c.release_tree_sha == terminal.c.release_tree_sha,
+                        ))).where(
                             table.c.operation == binding.scope[0],
                             table.c.release_commit_sha == binding.scope[1],
                             table.c.release_tree_sha == binding.scope[2],
@@ -331,10 +252,12 @@ class PostgresReadinessAdmission:
                         return None
                     if row["descriptor_sha256"] != binding.digest:
                         raise ReadinessError("ADMISSION_BINDING_MISMATCH")
+                    if row["outcome"] is not None:
+                        validate_terminal(row["outcome"], row["exit_code"], row["receipt"])
                     return {
                         "admission_state": "CONSUMED",
                         "outcome": (
-                            "UNKNOWN" if row["outcome"] == "ADMITTED" else row["outcome"]
+                            "UNKNOWN" if row["outcome"] is None else row["outcome"]
                         ),
                         "exit_code": row["exit_code"],
                         "receipt": row["receipt"],

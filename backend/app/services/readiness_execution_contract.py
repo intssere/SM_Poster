@@ -6,6 +6,8 @@ import hashlib
 import json
 
 OPERATION = "object_storage_readiness_v1"
+# Historical descriptor protocol label, not the physical Alembic head.
+# Keep it stable at database head 0033 to preserve persisted binding digests.
 SCHEMA_REVISION = "0032"
 PROBE_VERSION = "1"
 PROBE_PREFIX = "task61-readiness/"

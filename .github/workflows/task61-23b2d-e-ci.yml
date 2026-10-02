@@ -1,0 +1,78 @@
+name: Append-only readiness coordinator 0033
+
+on:
+  push:
+    branches: [engineering/task61-23b2d-e-append-only-0033]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  disposable-postgres:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        postgres: ["16"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install test dependencies
+        run: |
+          python -m pip install -r backend/requirements.txt
+          sudo apt-get update
+          sudo apt-get install -y postgresql-${{ matrix.postgres }}
+          echo "/usr/lib/postgresql/${{ matrix.postgres }}/bin" >> "$GITHUB_PATH"
+      - name: Isolated PostgreSQL and historical regressions
+        run: |
+          python scripts/run_isolated_readiness_tests.py --with-postgres -q \
+            tests/test_readiness_execution_admission_0033.py \
+            tests/test_readiness_execution_admission_0032.py \
+            tests/test_exact_revision_runner.py \
+            tests/test_schema_canonicality_guard.py \
+            tests/test_managed_schema_adoption_0031.py \
+            --junitxml=append-only-postgres.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          assert not ET.parse("backend/append-only-postgres.xml").findall(".//skipped")
+          PY
+      - name: Isolated readiness, startup and Alembic compatibility
+        run: |
+          python scripts/run_isolated_readiness_tests.py --with-postgres -q \
+            tests/test_readiness_execution_runner.py \
+            tests/test_readiness_execution_orchestration.py \
+            tests/test_object_storage_readiness_management.py \
+            tests/test_start_production.py \
+            tests/test_production_startup_readiness.py \
+            tests/test_migration_schema_adoption.py \
+            tests/test_migration_schema_repair_0020.py \
+            tests/test_migration_schema_repair_0028.py \
+            tests/test_migration_autonomous_retry_lineage_0030.py \
+            tests/test_orm_schema_canonicality.py \
+            tests/test_task61_14_test_isolation.py \
+            --junitxml=append-only-compatibility.xml
+      - name: Historical hash, compilation, coordinator AST and patch checks
+        run: |
+          python -m compileall -q backend/app backend/alembic backend/tests scripts
+          python - <<'PY'
+          import ast, hashlib
+          from pathlib import Path
+          migration = Path("backend/alembic/versions/0032_object_storage_readiness_management.py")
+          assert hashlib.sha256(migration.read_bytes()).hexdigest() == (
+              "fac94a530f1ed98e8e862baa84fdacf31505c0f9aa29186898148f25479fbd14"
+          )
+          tree = ast.parse(Path("backend/app/services/readiness_execution_admission.py").read_text())
+          assert not any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                         and n.func.attr in {"update", "delete"} for n in ast.walk(tree))
+          PY
+          git diff --check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: append-only-results-pg-${{ matrix.postgres }}
+          path: backend/append-only-*.xml

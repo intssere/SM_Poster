@@ -76,12 +76,12 @@ def _pytest_main(args: list[str]) -> int:
 
     def local_connect(sock, address):
         if isinstance(address, tuple) and not is_local(address[0]):
-            raise AssertionError("External network forbidden before collection")
+            raise AssertionError("External connections forbidden before collection")
         return connect(sock, address)
 
     def local_connect_ex(sock, address):
         if isinstance(address, tuple) and not is_local(address[0]):
-            raise AssertionError("External network forbidden before collection")
+            raise AssertionError("External connections forbidden before collection")
         return connect_ex(sock, address)
 
     socket.getaddrinfo = local_resolve
@@ -115,6 +115,13 @@ def main(args: list[str]) -> int:
     })
     postgres = "--with-postgres" in args
     args = [arg for arg in args if arg != "--with-postgres"]
+    seed_revision = "head"
+    seed_args = [arg for arg in args if arg.startswith("--seed-revision=")]
+    if seed_args:
+        if len(seed_args) != 1 or seed_args[0].split("=", 1)[1] not in {"0031", "0032", "0033"}:
+            raise SystemExit("Only a fixed disposable seed revision is allowed")
+        seed_revision = seed_args[0].split("=", 1)[1]
+        args.remove(seed_args[0])
 
     def run():
         return subprocess.run(
@@ -136,7 +143,7 @@ def main(args: list[str]) -> int:
         # created disposable cluster; never seed a caller/attached endpoint.
         seed_env = {**env, "DATABASE_URL": url}
         subprocess.run(
-            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            [sys.executable, "-m", "alembic", "upgrade", seed_revision],
             cwd=ROOT / "backend", env=seed_env, check=True,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
