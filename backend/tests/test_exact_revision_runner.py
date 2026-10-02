@@ -21,7 +21,12 @@ from app.db.migration_lock import (
     MIGRATION_ADVISORY_LOCK_KEY, acquire_transaction_lock, clear_lock_proof,
 )
 from test_readiness_execution_admission_0032 import (
-    _isolated_database, _run_alembic, _safe_env, _revision,
+    DISPOSABLE_POSTGRES_URL, _isolated_database, _run_alembic, _safe_env, _revision,
+)
+
+pytestmark = pytest.mark.skipif(
+    not DISPOSABLE_POSTGRES_URL,
+    reason="TASK61_DISPOSABLE_POSTGRES_URL local disposable PostgreSQL required",
 )
 
 BACKEND = Path(__file__).resolve().parents[1]
