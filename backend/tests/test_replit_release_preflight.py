@@ -15,6 +15,7 @@ sys.path.insert(0, str(SCRIPTS))
 import release_source_guard as guard
 import replit_release_build as build
 import write_build_provenance as writer
+import release_source_watch as monitor
 from app.services.deployment_attestation import read_build_provenance, safe_deployment_attestation
 
 
@@ -368,6 +369,42 @@ def test_during_build_change_then_restore_is_also_rejected(repository, drift):
     with pytest.raises(guard.SourceGuardError, match="changed during build"):
         build.run_build(root, mutate_then_restore)
     assert writer.receipt_absent(root)
+
+
+@pytest.mark.parametrize("path", ["ignored.py", "frontend/src/transient.ts",
+                                "empty-untracked/transient.py"])
+def test_transient_untracked_source_is_rejected_even_after_removal(repository, path):
+    root, _ = repository
+    (root / "empty-untracked").mkdir()
+    def transient(*args, **kwargs):
+        compiler(*args, **kwargs)
+        file = root / path
+        file.write_text("temporary untracked build input")
+        file.unlink()
+    with pytest.raises(guard.SourceGuardError, match="filesystem changed"):
+        build.run_build(root, transient)
+    assert writer.receipt_absent(root)
+
+
+def test_source_watch_unavailable_is_fail_closed(repository, monkeypatch):
+    root, _ = repository
+    monkeypatch.setattr(monitor.ctypes, "CDLL", lambda *args, **kwargs: object())
+    refuses_before_compilation(root, "monitoring unavailable")
+
+
+@pytest.mark.parametrize("mask", [monitor.QUEUE_OVERFLOW, monitor.WATCH_LOST])
+def test_source_watch_loss_or_overflow_is_fail_closed(repository, monkeypatch, mask):
+    import struct
+    root, _ = repository
+    with monitor.SourceWatch(root) as watch:
+        original = monitor.os.read
+        def overflow(fd, count):
+            if fd == watch.fd:
+                return struct.pack("iIII", -1, mask, 0, 0)
+            return original(fd, count)
+        monkeypatch.setattr(monitor.os, "read", overflow)
+        with pytest.raises(guard.SourceGuardError, match="overflow/lost"):
+            watch.check()
 
 
 @pytest.mark.parametrize("drift", ["receipt", "artifact", "source"])

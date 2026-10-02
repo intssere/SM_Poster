@@ -13,6 +13,7 @@ from release_source_guard import (SourceGuardError, artifact_inventory, expectat
                                   parent_fd, require, source_witness, verify_source)
 from write_build_provenance import (discard_receipt, receipt_absent, verify_receipt,
                                     write_receipt)
+from release_source_watch import SourceWatch
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -42,19 +43,24 @@ def run_build(root: Path, runner=subprocess.run) -> dict:
         source = verify_source(root, pins)
         require(receipt_absent(root), "unexpected/tampered provenance before compilation")
         clear_compiler_outputs(root)
-        witness = source_witness(root, pins)
-        runner(["npm", "--prefix", "frontend", "run", "build"], cwd=root, check=True)
-        require(receipt_absent(root), "unexpected/tampered provenance during compilation")
-        require(verify_source(root, pins) == source, "source inventory changed during build")
-        require(source_witness(root, pins) == witness, "source/Git changed during build")
-        artifacts = artifact_inventory(root)
-        payload = {**source, "artifacts": artifacts}
-        write_receipt(root, payload)
-        require(verify_source(root, pins) == source, "source changed during receipt publication")
-        require(source_witness(root, pins) == witness, "source/Git changed during receipt publication")
-        require(artifact_inventory(root) == artifacts, "artifacts changed during receipt publication")
-        verify_receipt(root, payload)
-        return payload
+        with SourceWatch(root) as watch:
+            require(verify_source(root, pins) == source, "source changed before compilation")
+            witness = source_witness(root, pins)
+            watch.check()
+            runner(["npm", "--prefix", "frontend", "run", "build"], cwd=root, check=True)
+            require(receipt_absent(root), "unexpected/tampered provenance during compilation")
+            require(verify_source(root, pins) == source, "source inventory changed during build")
+            require(source_witness(root, pins) == witness, "source/Git changed during build")
+            artifacts = artifact_inventory(root)
+            watch.check()
+            payload = {**source, "artifacts": artifacts}
+            write_receipt(root, payload)
+            require(verify_source(root, pins) == source, "source changed during receipt publication")
+            require(source_witness(root, pins) == witness, "source/Git changed during receipt publication")
+            require(artifact_inventory(root) == artifacts, "artifacts changed during receipt publication")
+            verify_receipt(root, payload)
+            watch.check()
+            return payload
     except BaseException:
         discard_receipt(root)
         raise
