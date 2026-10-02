@@ -1,0 +1,60 @@
+name: Exact release-source guard
+
+on:
+  push:
+    branches: [engineering/task61-23b2d-p-exact-release-source]
+  pull_request:
+    branches: [main]
+    paths:
+      - scripts/release_source_guard.py
+      - scripts/replit_release_build.py
+      - scripts/write_build_provenance.py
+      - backend/app/services/deployment_attestation.py
+      - backend/tests/test_replit_release_preflight.py
+      - .github/workflows/task61-23b2d-p-ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  offline-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install test dependencies
+        run: python -m pip install -r backend/requirements.txt PyYAML
+      - name: Isolated source, receipt and closed-startup regressions
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python scripts/run_isolated_readiness_tests.py -q \
+            tests/test_replit_release_preflight.py \
+            tests/test_deployment_attestation.py \
+            tests/test_start_production.py \
+            tests/test_production_startup_readiness.py \
+            tests/test_task61_14_test_isolation.py \
+            --junitxml=release-source-guard.xml
+          PYTHONDONTWRITEBYTECODE=1 python scripts/run_isolated_readiness_tests.py -q \
+            tests/test_readiness_execution_orchestration.py \
+            tests/test_object_storage_readiness_management.py \
+            tests/test_routine_certified_canary_preflight.py \
+            --junitxml=release-source-compatibility.xml
+      - name: Compilation, workflow parse and whitespace checks
+        run: |
+          python -m compileall -q scripts backend/app/services/deployment_attestation.py \
+            backend/tests/test_replit_release_preflight.py
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          for path in Path(".github/workflows").glob("*b2d*-ci.yml"):
+              assert isinstance(yaml.safe_load(path.read_text()), dict)
+          PY
+          git diff --check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-source-guard-results
+          path: backend/release-source-*.xml

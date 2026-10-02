@@ -1,65 +1,71 @@
 #!/usr/bin/env python3
+"""Exact source guard before/after compilation, followed by a fresh receipt."""
 from __future__ import annotations
 
-import hashlib
-import json
+from pathlib import Path
 import os
-import re
+import shutil
 import subprocess
 import sys
-from pathlib import Path
+
+sys.dont_write_bytecode = True
+from release_source_guard import (SourceGuardError, artifact_inventory, expectations,
+                                  parent_fd, require, source_witness, verify_source)
+from write_build_provenance import (discard_receipt, receipt_absent, verify_receipt,
+                                    write_receipt)
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = ROOT / "backend" / ".build-provenance.json"
-OVERLAY = ROOT / ".replit"
-REQUIRED_EXPECTATIONS = {
-    "EXPECTED_CANONICAL_COMMIT": 40,
-    "EXPECTED_CANONICAL_TREE": 40,
-}
 
 
-def _overlay_sha256() -> str:
-    if not OVERLAY.is_file():
-        raise SystemExit("release preflight failed: .replit overlay missing")
-    return hashlib.sha256(OVERLAY.read_bytes()).hexdigest()
+def clear_compiler_outputs(root: Path) -> None:
+    """Require fresh outputs, not artifacts/TS incremental state from an old build."""
+    parent, name = parent_fd(root, "frontend/dist")
+    try:
+        output = root / "frontend/dist"
+        if os.path.lexists(output):
+            require(output.is_dir() and not output.is_symlink(), "unsafe compiled output root")
+            require(shutil.rmtree.avoids_symlink_attacks, "safe output cleanup unavailable")
+            shutil.rmtree(name, dir_fd=parent)
+        info = root / "frontend/tsconfig.tsbuildinfo"
+        if os.path.lexists(info):
+            require(info.is_file() and not info.is_symlink(), "unsafe compiler metadata")
+            os.unlink("tsconfig.tsbuildinfo", dir_fd=parent)
+    finally:
+        os.close(parent)
 
 
-def _validate_manifest(payload: dict, expected: dict[str, str], overlay_sha256: str) -> None:
-    if (
-        payload.get("schema_version") != 3
-        or payload.get("topology") != "canonical_parent_with_checkpoint_overlay"
-        or payload.get("canonical_commit_sha") != expected["EXPECTED_CANONICAL_COMMIT"]
-        or payload.get("canonical_tree_sha") != expected["EXPECTED_CANONICAL_TREE"]
-        or not isinstance(payload.get("release_overlay"), dict)
-        or payload["release_overlay"].get("path") != ".replit"
-        or payload["release_overlay"].get("sha256") != overlay_sha256
-    ):
-        raise SystemExit("release preflight failed: certified schema-v3 checkpoint provenance missing")
+def run_build(root: Path, runner=subprocess.run) -> dict:
+    # A failed attempt must never leave an old receipt looking like its result.
+    discard_receipt(root)
+    try:
+        pins = expectations()
+        source = verify_source(root, pins)
+        require(receipt_absent(root), "unexpected/tampered provenance before compilation")
+        clear_compiler_outputs(root)
+        witness = source_witness(root, pins)
+        runner(["npm", "--prefix", "frontend", "run", "build"], cwd=root, check=True)
+        require(receipt_absent(root), "unexpected/tampered provenance during compilation")
+        require(verify_source(root, pins) == source, "source inventory changed during build")
+        require(source_witness(root, pins) == witness, "source/Git changed during build")
+        artifacts = artifact_inventory(root)
+        payload = {**source, "artifacts": artifacts}
+        write_receipt(root, payload)
+        require(verify_source(root, pins) == source, "source changed during receipt publication")
+        require(source_witness(root, pins) == witness, "source/Git changed during receipt publication")
+        require(artifact_inventory(root) == artifacts, "artifacts changed during receipt publication")
+        verify_receipt(root, payload)
+        return payload
+    except BaseException:
+        discard_receipt(root)
+        raise
 
 
 def main() -> None:
-    expected: dict[str, str] = {}
-    for name, length in REQUIRED_EXPECTATIONS.items():
-        value = os.environ.get(name, "")
-        if not re.fullmatch(rf"[0-9a-f]{{{length}}}", value):
-            raise SystemExit(f"release preflight failed: independently pinned {name} required")
-        expected[name] = value
-
-    overlay_sha256 = _overlay_sha256()
-    subprocess.run([sys.executable, str(ROOT / "scripts" / "write_build_provenance.py")], cwd=ROOT, check=True)
-    payload = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    _validate_manifest(payload, expected, overlay_sha256)
-
-    subprocess.run(["npm", "--prefix", "frontend", "run", "build"], cwd=ROOT, check=True)
-
-    if not MANIFEST.is_file():
-        raise SystemExit("release preflight failed: provenance missing after build")
-    if _overlay_sha256() != overlay_sha256:
-        raise SystemExit("release preflight failed: .replit overlay changed during build")
-    if json.loads(MANIFEST.read_text(encoding="utf-8")) != payload:
-        raise SystemExit("release preflight failed: provenance changed during build")
-    _validate_manifest(payload, expected, overlay_sha256)
-    print("release preflight and build complete")
+    try:
+        run_build(ROOT)
+    except (SourceGuardError, OSError, ValueError, subprocess.CalledProcessError) as error:
+        raise SystemExit(f"release source guard failed: {error}") from error
+    print("exact release source verified; compiled artifacts and fresh schema-v4 receipt verified")
 
 
 if __name__ == "__main__":
