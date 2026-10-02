@@ -4,3 +4,4 @@
 - [Credentialed test isolation](credentialed-test-isolation.md) — synthetic fixture data is not a sandbox; isolate tests before collection to prevent attached-service access.
 - [SQLAlchemy fault injection](sqlalchemy-fault-injection.md) — proxy inspection can fail before the intended commit boundary; prove the fault with independent durable-state assertions.
 - [JSONB absence semantics](jsonb-absence-semantics.md) — Python None can become JSON null; absent evidence guards require explicit SQL-null semantics and PostgreSQL tests.
+- [Replit runtime-only updates](replit-runtime-only-updates.md) — verify managed interpreter/packages and remove installer scaffolding without widening an approved release overlay.
