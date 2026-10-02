@@ -287,7 +287,7 @@ def test_shadow_search_path_cannot_redirect_bookkeeping_or_guard(database, monke
     )
     # Historical adoption still reaches 0031, but cannot bypass the new 0032
     # production guard, including through a shadow bookkeeping table.
-    with pytest.raises(SchemaAdoptionRefused, match="Alembic revision 0032"):
+    with pytest.raises(SchemaAdoptionRefused, match="Alembic revision 0033"):
         schema_canonicality_guard.main()
 
 
@@ -334,10 +334,10 @@ def test_startup_adopts_0031_but_new_guard_blocks_app_until_reviewed_0032(databa
     monkeypatch.setattr(startup, "start_frontend", lambda: events.append("frontend") or object())
     monkeypatch.setattr(startup, "supervise", lambda *_a: 0)
     monkeypatch.setattr(startup, "terminate_process", lambda _process: None)
-    with pytest.raises(SchemaAdoptionRefused, match="Alembic revision 0032"):
+    with pytest.raises(SchemaAdoptionRefused, match="0033 adoption lock or table availability failed"):
         startup.run()
-    assert events == ["adoption", "guard"]
-    assert revision(database) == ["0031"]
+    assert events == ["adoption"]
+    assert revision(database) == ["0030"]
 
 
 def test_refused_adoption_starts_no_guard_or_app(database, monkeypatch):

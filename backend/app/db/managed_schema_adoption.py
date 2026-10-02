@@ -1,18 +1,18 @@
-"""Bookkeeping-only adoption of managed schema pre-applied through 0031.
+"""Bookkeeping-only adoption of exact empty managed schema pre-applied at 0033.
 
 No DDL, providers, permits, publishing, or application processes are started.
-An already-recorded 0032 schema is verified without mutation; 0031 is never
-automatically migrated at startup. The separate canonicality guard is read-only.
+An already-recorded 0033 is verified without mutation. No executable migration
+is run; absent, partial, drifted, populated or historical 0032 states refuse.
 """
 from __future__ import annotations
 
-from app.db.migration_adoption import adopt_managed_preapplied_0031
+from app.db.migration_adoption import adopt_managed_preapplied_0033
 from app.db.session import engine
 
 
 def main() -> int:
     with engine.begin() as connection:
-        adopt_managed_preapplied_0031(connection)
+        adopt_managed_preapplied_0033(connection)
     return 0
 
 

@@ -1613,7 +1613,7 @@ def verify_frozen_schema_at_head(connection: Any, revision: str = "0031") -> Non
             _refuse("canonical schema fingerprint verification failed")
         return
 
-    if revision not in {"0030", "0031", "0032"}:
+    if revision not in {"0030", "0031", "0032", "0033"}:
         _refuse(f"unsupported canonical head revision: {revision}")
 
     present = _present_postgresql_tables(connection, LINEAGE_PRESERVED_TABLES)
@@ -1627,11 +1627,79 @@ def verify_frozen_schema_at_head(connection: Any, revision: str = "0031") -> Non
     if fingerprints != canonical:
         _refuse("0030 preserved schema fingerprint verification failed")
     _require_0030_lineage_schema(connection)
-    if revision in {"0031", "0032"}:
+    if revision in {"0031", "0032", "0033"}:
         _require_frozen_0030_lineage_catalog(connection)
         _require_0031_scheduled_quota_schema(connection)
     if revision == "0032":
         _require_0032_readiness_admissions_schema(connection)
+    if revision == "0033":
+        from app.db.readiness_schema_0033 import verify
+        verify(connection)
+
+
+def adopt_managed_preapplied_0033(connection: Any) -> bool:
+    """Bookkeeping only: exact empty managed schema, never DDL or repair.
+
+    Caller owns the transaction and commit. Recorded 0033 is verify-only.
+    The historical 0031 adopter remains unchanged for historical callers.
+    """
+    from app.db.readiness_schema_0033 import TABLES, verify
+    from app.db.migration_lock import MIGRATION_ADVISORY_LOCK_KEY
+
+    if getattr(connection.dialect, "name", None) != "postgresql":
+        _refuse("0033 adoption requires PostgreSQL")
+    if not connection.in_transaction() or connection.get_isolation_level() != "READ COMMITTED":
+        _refuse("0033 adoption requires a READ COMMITTED transaction")
+    connection.execute(sa.text("SET LOCAL search_path TO public, pg_catalog"))
+    connection.execute(sa.text("SET LOCAL lock_timeout = '2s'"))
+    connection.execute(sa.text("SET LOCAL statement_timeout = '8s'"))
+    if not connection.scalar(sa.text("SELECT pg_try_advisory_xact_lock(:key)"),
+                             {"key": MIGRATION_ADVISORY_LOCK_KEY}):
+        _refuse("0033 adoption migration lock unavailable")
+    tables = (
+        "alembic_version", *TABLES, *LINEAGE_PRESERVED_TABLES,
+        *LINEAGE_RUN_TABLES, LINEAGE_RECONCILIATION_TABLE,
+        SCHEDULED_QUOTA_RESERVATIONS_TABLE, "routine_publishing_control",
+        "pin_publications", "routine_publishing_runs", "routine_dispatch_permits",
+    )
+    try:
+        # Version first, matching the coordinator's lock order.
+        for table in ("alembic_version", *sorted(set(tables) - {"alembic_version"})):
+            connection.execute(sa.text(
+                f'LOCK TABLE "public"."{table}" IN SHARE ROW EXCLUSIVE MODE NOWAIT'
+            ))
+    except sa.exc.DBAPIError:
+        _refuse("0033 adoption lock or table availability failed")
+    revisions = connection.execute(sa.text(
+        'SELECT version_num FROM public.alembic_version ORDER BY version_num'
+    )).scalars().all()
+    if revisions == ["0033"]:
+        verify_frozen_schema_at_head(connection, revision="0033")
+        return False
+    if revisions != ["0031"]:
+        _refuse("0033 managed adoption requires exactly one Alembic revision 0031")
+    verify_frozen_schema_at_head(connection, revision="0031")
+    verify(connection)
+    _require_empty_tables(connection, TABLES)
+    if connection.execute(sa.text(
+        "SELECT id, state FROM public.routine_publishing_control ORDER BY id"
+    )).all() != [("default", "PAUSED")]:
+        _refuse("0033 adoption requires exactly one PAUSED default routine control")
+    for table, predicate in (
+        ("pin_publications", "status IN ('PUBLISHING', 'PUBLISH_UNKNOWN')"),
+        ("routine_publishing_runs", "status = 'RUNNING'"),
+        ("routine_dispatch_permits", "status = 'ACTIVE'"),
+    ):
+        if connection.scalar(sa.text(f'SELECT count(*) FROM public."{table}" WHERE {predicate}')):
+            _refuse("0033 adoption refuses live state")
+    updated = connection.execute(sa.text(
+        "UPDATE public.alembic_version SET version_num='0033' "
+        "WHERE version_num='0031' RETURNING version_num"
+    )).scalars().all()
+    if updated != ["0033"]:
+        _refuse("0033 bookkeeping update was not exactly once")
+    verify_frozen_schema_at_head(connection, revision="0033")
+    return True
 
 
 def adopt_managed_preapplied_0031(connection: Any) -> bool:

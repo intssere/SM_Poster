@@ -28,6 +28,7 @@ from app.db import schema_canonicality_guard
 from app.services.readiness_execution_admission import (
     PostgresReadinessAdmission,
     management_readiness_admissions,
+    management_readiness_outcomes,
 )
 from app.services import readiness_execution_admission as admission_module
 from app.services.readiness_execution_contract import (
@@ -308,15 +309,15 @@ def _management_clients(monkeypatch, tmp_path, database_url, engines, *, barrier
 
 @pytest.fixture
 def database():
-    with _isolated_database("0032") as result:
+    with _isolated_database("0033") as result:
         yield result
 
 
-def test_clean_full_upgrade_reaches_frozen_0032_and_verifies():
+def test_clean_full_upgrade_reaches_frozen_head_and_verifies():
     with _isolated_database("head") as (engine, _url):
-        assert _revision(engine) == ["0032"]
+        assert _revision(engine) == ["0033"]
         with engine.connect() as connection:
-            verify_frozen_schema_at_head(connection, revision="0032")
+            verify_frozen_schema_at_head(connection, revision="0033")
         original_engine = schema_canonicality_guard.engine
         try:
             schema_canonicality_guard.engine = engine
@@ -350,10 +351,10 @@ def test_unknown_without_receipt_persists_sql_null(database, exit_code):
     }
     with engine.connect() as connection:
         assert connection.scalar(sa.text(
-            "SELECT receipt IS NULL FROM public.management_readiness_admissions"
+            "SELECT receipt IS NULL FROM public.management_readiness_outcomes"
         )) is True
         assert connection.scalar(sa.text(
-            "SELECT outcome FROM public.management_readiness_admissions"
+            "SELECT outcome FROM public.management_readiness_outcomes"
         )) == "UNKNOWN"
 
 
@@ -395,16 +396,15 @@ def test_managed_adoption_does_not_advance_0031_and_verifies_0032():
         assert _revision(engine) == ["0031"]
 
     with _isolated_database("0032") as (engine, _url):
-        admission = PostgresReadinessAdmission(engine)
-        binding = _binding()
-        assert admission.consume(binding, "grant-existing", "1" * 64)
+        from test_readiness_execution_admission_0033 import legacy_insert
+        legacy_insert(engine)
         with engine.begin() as connection:
             assert adopt_managed_preapplied_0031(connection) is False
         assert _revision(engine) == ["0032"]
 
 
 def test_consume_commits_once_and_restart_returns_only_persisted_status():
-    with _isolated_database("0032") as (engine, _url):
+    with _isolated_database("0033") as (engine, _url):
         binding = _binding()
         first = PostgresReadinessAdmission(engine)
         def interrupted_execution():
@@ -425,7 +425,7 @@ def test_consume_commits_once_and_restart_returns_only_persisted_status():
 
 
 def test_expired_grant_checked_against_postgres_clock_after_schema_gate(monkeypatch):
-    with _isolated_database("0032") as (engine, _url):
+    with _isolated_database("0033") as (engine, _url):
         admission = PostgresReadinessAdmission(engine)
         verified = []
         verify_schema = admission_module.verify_frozen_schema_at_head
@@ -446,7 +446,7 @@ def test_expired_grant_checked_against_postgres_clock_after_schema_gate(monkeypa
                 "1" * 64,
                 expires_at=1,
             )
-        assert verified == ["0032"]
+        assert verified == ["0033"]
         assert failure.value.code == "EXECUTION_AUTHORIZATION_EXPIRED"
         assert failure.value.status_code == 403
         assert admission.lookup(_binding()) is None
@@ -457,7 +457,7 @@ def test_expired_grant_checked_against_postgres_clock_after_schema_gate(monkeypa
 
 
 def test_ambiguous_commit_refuses_execution_and_never_retries(monkeypatch):
-    with _isolated_database("0032") as (engine, _url):
+    with _isolated_database("0033") as (engine, _url):
         binding = _binding()
 
         class CommitThenDisconnect:
@@ -517,7 +517,7 @@ def test_ambiguous_commit_refuses_execution_and_never_retries(monkeypatch):
 
 
 def test_scope_and_grant_uniqueness_refuse_alternate_consumption():
-    with _isolated_database("0032") as (engine, _url):
+    with _isolated_database("0033") as (engine, _url):
         admission = PostgresReadinessAdmission(engine)
         binding = _binding()
         assert admission.consume(binding, "grant-original", "1" * 64)
@@ -528,7 +528,7 @@ def test_scope_and_grant_uniqueness_refuse_alternate_consumption():
 
 
 def test_racing_engines_and_processes_have_one_winner():
-    with _isolated_database("0032") as (engine, database_url):
+    with _isolated_database("0033") as (engine, database_url):
         binding = _binding()
 
         def consume_from_engine(_):
@@ -695,7 +695,7 @@ def test_lost_http_response_then_restart_replay_is_409_without_second_launch(
 
 
 def test_finish_is_terminal_idempotent_and_lookup_maps_admitted_to_unknown():
-    with _isolated_database("0032") as (engine, _url):
+    with _isolated_database("0033") as (engine, _url):
         admission = PostgresReadinessAdmission(engine)
         binding = _binding()
         assert admission.consume(binding, "grant-finish", "5" * 64)
@@ -714,7 +714,7 @@ def test_finish_is_terminal_idempotent_and_lookup_maps_admitted_to_unknown():
 
 
 def test_finish_rejects_invalid_outcome_evidence_and_accepts_unknown_pass_receipt():
-    with _isolated_database("0032") as (engine, _url):
+    with _isolated_database("0033") as (engine, _url):
         admission = PostgresReadinessAdmission(engine)
         binding = _binding()
         assert admission.consume(binding, "grant-finish-invalid", "5" * 64)
@@ -756,7 +756,7 @@ def test_finish_rejects_invalid_outcome_evidence_and_accepts_unknown_pass_receip
 def test_finish_persists_only_matching_failed_or_blocked_receipt(
     status, exit_code, error_code
 ):
-    with _isolated_database("0032") as (engine, _url):
+    with _isolated_database("0033") as (engine, _url):
         admission = PostgresReadinessAdmission(engine)
         binding = _binding()
         assert admission.consume(binding, "grant-real-failure", "7" * 64)
@@ -782,15 +782,18 @@ def test_database_guard_rejects_terminal_outcome_receipt_mismatch(
     outcome, exit_code, receipt
 ):
     with _isolated_database("0032") as (engine, _url):
-        admission = PostgresReadinessAdmission(engine)
+        from test_readiness_execution_admission_0033 import legacy_insert
         binding = _binding()
-        assert admission.consume(binding, "grant-invalid-db-evidence", "6" * 64)
+        legacy_insert(engine)
+        with engine.connect() as connection:
+            legacy = sa.Table("management_readiness_admissions", sa.MetaData(),
+                              schema="public", autoload_with=connection)
         with pytest.raises(sa.exc.DBAPIError):
             with engine.begin() as connection:
                 connection.execute(
-                    management_readiness_admissions.update()
+                    legacy.update()
                     .where(
-                        management_readiness_admissions.c.release_commit_sha
+                        legacy.c.release_commit_sha
                         == binding.release_commit_sha
                     )
                     .values(
@@ -800,15 +803,18 @@ def test_database_guard_rejects_terminal_outcome_receipt_mismatch(
                         finished_at=sa.func.now(),
                     )
                 )
-        assert admission.lookup(binding)["outcome"] == "UNKNOWN"
+        with engine.connect() as connection:
+            assert connection.scalar(sa.select(legacy.c.outcome)) == "ADMITTED"
 
 
 def test_trigger_blocks_binding_rewrite_terminal_rearm_delete_and_truncate():
     with _isolated_database("0032") as (engine, _url):
-        admission = PostgresReadinessAdmission(engine)
+        from test_readiness_execution_admission_0033 import legacy_insert
         binding = _binding()
-        assert admission.consume(binding, "grant-immutable", "6" * 64)
-        table = management_readiness_admissions
+        legacy_insert(engine)
+        with engine.connect() as connection:
+            table = sa.Table("management_readiness_admissions", sa.MetaData(),
+                             schema="public", autoload_with=connection)
         scope = sa.and_(
             table.c.operation == binding.scope[0],
             table.c.release_commit_sha == binding.scope[1],
@@ -820,7 +826,10 @@ def test_trigger_blocks_binding_rewrite_terminal_rearm_delete_and_truncate():
                     table.update().where(scope).values(actor_hash="7" * 64)
                 )
 
-        admission.finish(binding, "PASS", 0, _runner_receipt())
+        with engine.begin() as connection:
+            connection.execute(table.update().where(scope).values(
+                outcome="PASS", exit_code=0, receipt=_runner_receipt(), finished_at=sa.func.now(),
+            ))
         for statement in (
             sa.delete(table).where(scope),
             table.update().where(scope).values(outcome="ADMITTED"),
@@ -834,14 +843,14 @@ def test_trigger_blocks_binding_rewrite_terminal_rearm_delete_and_truncate():
                 connection.execute(sa.text(
                     "TRUNCATE TABLE public.management_readiness_admissions"
                 ))
-        assert admission.lookup(binding)["outcome"] == "PASS"
+        with engine.connect() as connection:
+            assert connection.scalar(sa.select(table.c.outcome)) == "PASS"
 
 
 def test_downgrade_refuses_any_admission_evidence():
     with _isolated_database("0032") as (engine, database_url):
-        assert PostgresReadinessAdmission(engine).consume(
-            _binding(), "grant-no-downgrade", "8" * 64
-        )
+        from test_readiness_execution_admission_0033 import legacy_insert
+        legacy_insert(engine)
         result = _run_alembic(database_url, "0031", direction="downgrade")
         assert result.returncode != 0
         assert _revision(engine) == ["0032"]

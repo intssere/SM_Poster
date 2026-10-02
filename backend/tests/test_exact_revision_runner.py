@@ -346,8 +346,8 @@ def test_later_migration_in_graph_is_never_executed(database, tmp_path, monkeypa
     engine, _ = database
     location = tmp_path / "alembic"
     shutil.copytree(BACKEND / "alembic", location)
-    (location / "versions" / "0033_fixture_never_run.py").write_text(
-        "revision='0033'\ndown_revision='0032'\n"
+    (location / "versions" / "0034_fixture_never_run.py").write_text(
+        "revision='0034'\ndown_revision='0033'\n"
         "def upgrade(): raise AssertionError('later migration executed')\n"
         "def downgrade(): raise AssertionError('downgrade executed')\n"
     )
