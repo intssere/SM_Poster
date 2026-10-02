@@ -26,6 +26,7 @@ import sqlalchemy as sa
 from sqlalchemy.engine import make_url
 
 from app.core.config import get_settings
+from app.db.database_identity import database_identity_sha256 as _identity_sha256
 
 SOURCE = "replit_pending_schema_diff"
 CURRENT_REVISION = "0017"
@@ -93,16 +94,10 @@ def _load_migration_0018() -> Any:
 
 def database_identity_sha256(database_url: str) -> str:
     """Return a credential-free stable identity hash for the target database."""
-
-    url = make_url(_sqlalchemy_database_url(database_url))
-    backend = url.get_backend_name()
-    host = (url.host or "").lower()
-    port = url.port or 5432
-    database = (url.database or "").strip()
-    if backend != "postgresql" or not host or not database:
+    try:
+        return _identity_sha256(database_url)
+    except ValueError:
         _refuse("target database identity is not a concrete PostgreSQL database")
-    canonical = f"postgresql://{host}:{port}/{database}"
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _parse_checked_at(value: Any) -> datetime:
