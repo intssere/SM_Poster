@@ -346,7 +346,9 @@ def test_fresh_guard_and_startup_adoption_are_schema_only(monkeypatch):
         monkeypatch.setattr(schema_canonicality_guard, "engine", engine)
         before = business_evidence(engine)
         assert managed_schema_adoption.main() == 0
-        assert schema_canonicality_guard.main() == 0
+        # Historical adoption stops at 0033 and cannot bypass the new head.
+        with pytest.raises(SchemaAdoptionRefused, match="Alembic revision 0034"):
+            schema_canonicality_guard.main()
         assert business_evidence(engine) == before
         assert PostgresReadinessAdmission(engine).lookup(_binding()) is None
 

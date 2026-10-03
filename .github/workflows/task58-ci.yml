@@ -86,7 +86,7 @@ jobs:
           export DATABASE_URL="${TASK58_CATALOG_URL}"
           alembic upgrade head
           alembic current 2>&1 | tee /tmp/task58-current
-          grep -Fx '0033 (head)' /tmp/task58-current
+          grep -Fx '0034 (head)' /tmp/task58-current
 
       - name: Task 58 focused and dependent regressions
         run: >-
@@ -128,4 +128,6 @@ jobs:
 
       - name: Full backend tests
         if: matrix.postgres == '16'
-        run: pytest -q
+        # New bounded cases require the sanitized disposable-Postgres runner;
+        # task61-24-ci.yml runs every case and rejects skips.
+        run: pytest -q --ignore=tests/test_routine_bounded_batch_postgres.py

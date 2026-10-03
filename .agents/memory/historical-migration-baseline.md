@@ -8,3 +8,9 @@ The initial migration currently excludes the catalog-sync additions and has a ve
 **Why:** A migration that imports evolving ORM metadata can create future columns or tables too early, causing later revisions to fail on a clean database even when upgrades of existing databases work.
 
 **How to apply:** Before adding another schema revision that modifies a pre-catalog model, first replace the remaining dynamic metadata copies in the initial revision with a complete immutable snapshot, then test both a clean PostgreSQL upgrade and an upgrade from the prior revision.
+
+Synthetic future-migration fixtures must use a revision beyond the real current head; do not reuse a revision now occupied by a real migration.
+
+**Why:** Alembic can warn about duplicate revisions while an exact-revision regression still passes, so a passing test may no longer prove that its intended future-migration sentinel was excluded.
+
+**How to apply:** When adding a real revision, advance any colliding synthetic future sentinel and its parent. Update current-head expectations, but leave tests intentionally pinned to historical revisions pinned.

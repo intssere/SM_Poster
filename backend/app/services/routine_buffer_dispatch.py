@@ -35,6 +35,7 @@ from app.services.routine_publishing_control import get_control, pause_on_unknow
 from app.services.routine_autonomous_authorization import AUTONOMOUS_ACTOR
 from app.services.routine_scheduled_admission import admit_scheduled_publication
 from app.services.routine_scheduled_quotas import ScheduledQuotaError
+from app.services import routine_bounded_batch as bounded
 
 
 logger = logging.getLogger(__name__)
@@ -107,12 +108,22 @@ def _scheduled_plan_item_id(db, publication_id, *, permit=None):
     return item_id or reservation_item_id
 
 
-def claim_for_routine(db, publication, permit, *, settings: Settings | None = None, now=None):
+def claim_for_routine(db, publication, permit, *, settings: Settings | None = None, now=None,
+                      bounded_batch_id=None, bounded_owner=None):
     now = normalize_persisted_utc(now or _now())
     validation = validate_permit(db, publication, permit, now=now, require_due=True)
     if not validation["valid"]:
+        if bounded_batch_id is not None:
+            bounded.close_batch(db, bounded_batch_id, reason="BOUNDED_BATCH_PERMIT_INVALID")
         raise RoutineDispatchError(validation["status"])
     try:
+        member = bounded.member_batch(db, publication.id)
+        if member or (settings and settings.routine_bounded_batch_enabled):
+            if not settings or not settings.routine_bounded_batch_enabled or not bounded_batch_id:
+                raise RoutineDispatchError("BOUNDED_BATCH_MANIFEST_CONTEXT_REQUIRED")
+            bounded.reserve_entry(
+                db, bounded_batch_id, bounded_owner, publication.id, permit.id, settings=settings,
+            )
         plan_item_id = _scheduled_plan_item_id(db, publication.id, permit=permit)
         if plan_item_id is not None:
             if (
@@ -182,6 +193,8 @@ def claim_for_routine(db, publication, permit, *, settings: Settings | None = No
             safe_metadata={},
         )
         db.add(boundary)
+        if bounded_batch_id is not None:
+            bounded.bind_attempt(db, bounded_batch_id, publication.id, attempt.id)
         db.commit()
         db.refresh(attempt)
         return attempt
@@ -205,9 +218,13 @@ def _persist_pre_provider_failure(db, publication_id, attempt_id, code):
         db.rollback()
         raise PublicationReconciliationError("ROUTINE_PRE_PROVIDER_PERSISTENCE_CONFLICT")
     db.commit()
+    member = bounded.member_batch(db, publication_id)
+    if member:
+        bounded.observe_batch(db, member)
 
 
-def mark_provider_mutation_boundary(db, attempt_id: str, *, now=None):
+def mark_provider_mutation_boundary(db, attempt_id: str, *, now=None,
+                                    bounded_batch_id=None, bounded_owner=None):
     now = normalize_persisted_utc(now or _now())
     control = db.scalar(select(RoutinePublishingControl).where(
         RoutinePublishingControl.id == "default",
@@ -220,6 +237,11 @@ def mark_provider_mutation_boundary(db, attempt_id: str, *, now=None):
             or not publication or publication.status != PublicationStatus.PUBLISHING):
         db.rollback()
         raise RoutineDispatchError("ROUTINE_PROVIDER_BOUNDARY_STATE_CHANGED")
+    member = bounded.member_batch(db, publication.id)
+    if member:
+        if member != bounded_batch_id:
+            raise RoutineDispatchError("BOUNDED_BATCH_PROVIDER_CONTEXT_REQUIRED")
+        bounded.check_provider_boundary(db, member, bounded_owner, publication.id, attempt_id)
     changed = db.execute(update(RoutineAttemptBoundary).where(
         RoutineAttemptBoundary.attempt_id == attempt_id,
         RoutineAttemptBoundary.provider_mutation_started_at.is_(None),
@@ -231,7 +253,7 @@ def mark_provider_mutation_boundary(db, attempt_id: str, *, now=None):
     return now
 
 
-def _lock_provider_call(db, publication_id, attempt_id):
+def _lock_provider_call(db, publication_id, attempt_id, *, bounded_batch_id=None, bounded_owner=None):
     """Hold the singleton control lock through provider I/O and outcome persistence.
 
     A stale-run recovery or operator pause cannot interleave with this sole network
@@ -255,6 +277,12 @@ def _lock_provider_call(db, publication_id, attempt_id):
             or not boundary or boundary.provider_mutation_started_at is None):
         db.rollback()
         return False
+    member = bounded.member_batch(db, publication_id)
+    if member:
+        if member != bounded_batch_id:
+            db.rollback()
+            return False
+        bounded.check_provider_boundary(db, member, bounded_owner, publication_id, attempt_id)
     return True
 
 
@@ -309,6 +337,9 @@ def _persist_provider_outcome(db, publication_id, attempt_id, *, status, code, s
         if changed.rowcount != 1 or changed_attempt.rowcount != 1:
             raise PublicationReconciliationError("ROUTINE_BUFFER_RESULT_STATE_CONFLICT")
         db.commit()
+        member = bounded.member_batch(db, publication_id)
+        if member and (terminal_failed or result is None or result.status != "sent"):
+            bounded.observe_batch(db, member)
     except Exception:
         db.rollback()
         raise PublicationReconciliationError("ROUTINE_BUFFER_RESULT_PERSISTENCE_FAILED") from None
@@ -354,6 +385,8 @@ async def dispatch_routine_buffer(
     settings: Settings | None = None,
     gateway: BufferGateway | None = None,
     now=None,
+    bounded_batch_id=None,
+    bounded_owner=None,
 ):
     settings = settings or get_settings()
     now = normalize_persisted_utc(now or _now())
@@ -367,7 +400,8 @@ async def dispatch_routine_buffer(
     if normalize_persisted_utc(evidence.observed_at) > now or now - normalize_persisted_utc(evidence.observed_at) > timedelta(minutes=15):
         raise RoutineDispatchError("ROUTINE_EXECUTION_EVIDENCE_STALE")
     gateway = gateway or BufferGateway(settings)
-    attempt = claim_for_routine(db, publication, permit, settings=settings, now=now)
+    attempt = claim_for_routine(db, publication, permit, settings=settings, now=now,
+                                bounded_batch_id=bounded_batch_id, bounded_owner=bounded_owner)
     if attempt is None:
         raise RoutineDispatchError("ROUTINE_AUTHORIZED_CLAIM_FAILED")
     publication_id, attempt_id = publication.id, attempt.id
@@ -403,8 +437,10 @@ async def dispatch_routine_buffer(
         _persist_pre_provider_failure(db, publication_id, attempt_id, "ROUTINE_PRE_PROVIDER_VALIDATION_FAILED")
         raise RoutineDispatchError("ROUTINE_PRE_PROVIDER_VALIDATION_FAILED") from None
 
-    mark_provider_mutation_boundary(db, attempt_id, now=now)
-    if not _lock_provider_call(db, publication_id, attempt_id):
+    mark_provider_mutation_boundary(db, attempt_id, now=now,
+                                    bounded_batch_id=bounded_batch_id, bounded_owner=bounded_owner)
+    if not _lock_provider_call(db, publication_id, attempt_id,
+                               bounded_batch_id=bounded_batch_id, bounded_owner=bounded_owner):
         # The mutation boundary has been committed. Even though we did not call
         # Buffer, treat any competing recovery/control transition conservatively.
         publication = db.get(PinPublication, publication_id)
@@ -469,4 +505,6 @@ async def dispatch_routine_buffer(
     if publication.status == PublicationStatus.PUBLISH_UNKNOWN:
         pause_on_unknown(db, publication_id)
         db.refresh(publication)
+    if bounded_batch_id is not None:
+        bounded.observe_batch(db, bounded_batch_id)
     return publication
