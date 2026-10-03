@@ -27,6 +27,7 @@ from app.db.migration_adoption import (
     reconcile_preapplied_bundle,
 )
 from app.models import domain  # noqa: F401
+from app.models import routine_publishing  # noqa: F401 — register referenced permit table
 
 
 POSTGRES_URL = os.getenv("TASK58_CATALOG_URL") or os.getenv("TASK58_POSTGRES_URL")
