@@ -33,3 +33,24 @@ can therefore reject the real source or miss transfer dependencies.
 **How to apply:** Pin source and target contracts separately, preserve the
 source's reference integrity during transfer, and do not silently broaden
 adoption or rewrite historical migrations to conceal the difference.
+
+Managed SELECT-only export must keep all source guards and rows in one statement;
+separate managed callbacks do not establish a shared transaction.
+
+**Why:** The managed production surface permits SELECT on a replica, not a
+persistent Python source connection. Chaining calls would silently lose the
+cross-table snapshot even if each individual read succeeds.
+
+**How to apply:** Keep the real single-statement snapshot evidence distinct from
+the DSN export's repeatable-read transaction. Require independent primary writer
+freeze/replica freshness checks before a real cutover.
+
+Do not treat suppressed application printing as confidential capsule transport.
+
+**Why:** A managed callback runtime may journal its raw result independently of
+console output. Migration capsules contain opaque ciphertext and other sensitive
+records even when the query is read-only.
+
+**How to apply:** Establish an approved private, complete result path into the
+offline wrapper before retrieving real source rows; never send a real capsule
+through a journaled or rendered tool result merely to avoid needing a DSN.
