@@ -18,6 +18,7 @@ from app.services.routine_dispatch_authorization import active_permit, validate_
 from app.services.routine_scheduled_admission import admit_scheduled_publication
 from app.services.routine_scheduled_quotas import ScheduledQuotaError
 from app.services.scheduled_autonomous_readiness import scheduled_autonomous_readiness
+from app.services import routine_bounded_batch as bounded
 from app.services.routine_scheduler_canary_context import (
     CanarySafetyError,
     RoutineSchedulerCanaryContext,
@@ -46,9 +47,17 @@ async def run_once(
     allow_targeted_live: bool = False,
     certified_run=None,
     canary_context: RoutineSchedulerCanaryContext | None = None,
+    bounded_batch_id: str | None = None,
+    bounded_owner: str | None = None,
 ):
     settings = settings or get_settings()
     now = now or datetime.now(timezone.utc)
+    if settings.routine_bounded_batch_enabled or bounded_batch_id is not None:
+        if (not settings.routine_bounded_batch_enabled or not bounded_batch_id or not bounded_owner
+                or canary_context is not None or target_publication_id is not None
+                or allow_targeted_live or certified_run is not None):
+            return {"status": "BOUNDED_BATCH_CONTEXT_REQUIRED", "dispatched": 0}
+        bounded.require_gate(db, settings)
     if canary_context is not None:
         validate_canary_context(canary_context, settings)
         if (
@@ -184,6 +193,10 @@ async def run_once(
             except RoutineControlError as exc:
                 return {"status": "NOT_EXERCISED", "reason": str(exc), "dispatched": 0}
             candidates = [publication]
+        elif bounded_batch_id is not None:
+            candidates = bounded.manifest_candidates(
+                db, bounded_batch_id, bounded_owner, settings=settings,
+            )
         elif target_publication_id is None:
             # Scheduled-autonomy DRY_RUN must only observe existing publications.
             # Recovery changes publication/attempt state and belongs to the
@@ -217,6 +230,9 @@ async def run_once(
             if not validated["valid"]:
                 run.skipped += 1
                 run.error_code = validated["status"]
+                if bounded_batch_id is not None:
+                    bounded.close_batch(db, bounded_batch_id, reason="BOUNDED_BATCH_PERMIT_INVALID")
+                    break
                 continue
             run.eligible += 1
             if mode == "DRY_RUN":
@@ -327,13 +343,20 @@ async def run_once(
             except BufferPreflightError as exc:
                 run.skipped += 1
                 run.error_code = str(exc)
+                if bounded_batch_id is not None:
+                    bounded.close_batch(db, bounded_batch_id, reason="BOUNDED_BATCH_PREFLIGHT_FAILED")
+                    break
                 continue
             if daily_provider_write_count(db, day_start=day_start) >= settings.routine_pinterest_daily_write_limit:
                 run.error_code = "ROUTINE_DAILY_WRITE_LIMIT_REACHED"
                 break
             try:
+                dispatch_options = {}
+                if bounded_batch_id is not None:
+                    dispatch_options = {"bounded_batch_id": bounded_batch_id, "bounded_owner": bounded_owner}
                 result = await dispatch_routine_buffer(
                     db, publication, evidence=evidence, settings=settings, gateway=gateway, now=now,
+                    **dispatch_options,
                 )
                 run.claimed += 1
                 run.dispatched += 1
@@ -341,6 +364,8 @@ async def run_once(
                     run.published += 1
                 elif result.status == PublicationStatus.PUBLISH_FAILED:
                     run.failed += 1
+                    if bounded_batch_id is not None:
+                        break
                 elif result.status == PublicationStatus.PUBLISH_UNKNOWN:
                     run.unknown += 1
                     run.error_code = "PUBLISH_UNKNOWN_CIRCUIT_BREAKER"
@@ -348,7 +373,16 @@ async def run_once(
             except RoutineDispatchError as exc:
                 run.skipped += 1
                 run.error_code = str(exc)
+                if bounded_batch_id is not None:
+                    bounded.close_batch(db, bounded_batch_id, reason="BOUNDED_BATCH_DISPATCH_FAILED")
+                    break
                 continue
+            except bounded.BoundedBatchError as exc:
+                run.error_code = str(exc)
+                bounded.close_batch(db, bounded_batch_id, reason=str(exc))
+                break
+        if bounded_batch_id is not None:
+            bounded.observe_batch(db, bounded_batch_id)
         if canary_context is not None:
             validate_canary_context(canary_context, settings)
         finish_run(db, run, status="SUCCEEDED", error_code=run.error_code)
@@ -379,6 +413,8 @@ async def run_once(
         return result
     except Exception:
         db.rollback()
+        if bounded_batch_id is not None:
+            bounded.close_batch(db, bounded_batch_id, reason="BOUNDED_BATCH_WORKER_EXCEPTION")
         try:
             if canary_context is not None:
                 validate_canary_context(canary_context, settings)

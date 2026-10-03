@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @contextmanager
-def _disposable_postgres(env):
+def _disposable_postgres(env, *, loopback=False):
     """Create an isolated Unix-socket-only cluster, never use an attached URL."""
     initdb = shutil.which("initdb", path=env["PATH"])
     pg_ctl = shutil.which("pg_ctl", path=env["PATH"])
@@ -34,17 +34,20 @@ def _disposable_postgres(env):
         socket_dir.mkdir(mode=0o700)
         subprocess.run([
             initdb, "-D", str(data), "-U", getpass.getuser(),
-            "--auth-local=trust", "--auth-host=reject", "--no-instructions",
+            "--auth-local=trust", "--auth-host=trust" if loopback else "--auth-host=reject", "--no-instructions",
         ], env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         started = False
         try:
+            listen_address = "127.0.0.1" if loopback else "''"
             subprocess.run([
                 pg_ctl, "-D", str(data), "-l", str(root / "postgres.log"),
-                "-o", f"-c listen_addresses='' -c unix_socket_directories={socket_dir} "
+                "-o", f"-c listen_addresses={listen_address} -c unix_socket_directories={socket_dir} "
                 "-c port=55492 -c unix_socket_permissions=0700", "-w", "start",
             ], env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             started = True
-            url = (f"postgresql+psycopg://{quote(getpass.getuser())}@/postgres"
+            url = (f"postgresql+psycopg://{quote(getpass.getuser())}@127.0.0.1:55492/postgres"
+                   if loopback else
+                   f"postgresql+psycopg://{quote(getpass.getuser())}@/postgres"
                    f"?host={quote(str(socket_dir), safe='')}&port=55492")
             yield url
         finally:
@@ -114,7 +117,10 @@ def main(args: list[str]) -> int:
         "OBJECT_STORAGE_READINESS_PROBE_ENABLED": "false",
     })
     postgres = "--with-postgres" in args
-    args = [arg for arg in args if arg != "--with-postgres"]
+    loopback = "--postgres-loopback" in args
+    if loopback and not postgres:
+        raise SystemExit("--postgres-loopback requires --with-postgres")
+    args = [arg for arg in args if arg not in {"--with-postgres", "--postgres-loopback"}]
     seed_revision = "head"
     seed_args = [arg for arg in args if arg.startswith("--seed-revision=")]
     if seed_args:
@@ -132,12 +138,21 @@ def main(args: list[str]) -> int:
 
     if not postgres:
         return run()
-    with _disposable_postgres(env) as url:
+    with _disposable_postgres(env, loopback=loopback) as url:
         for key in (
             "TASK61_DISPOSABLE_POSTGRES_URL", "TASK58_POSTGRES_URL", "TASK58_CATALOG_URL",
             "TASK60_POSTGRES_URL", "TASK595_POSTGRES_URL", "TASK46_POSTGRES_URL",
         ):
             env[key] = url
+        if loopback:
+            # Historical certified-live tests insist on a fixed safe database
+            # prefix and TCP loopback. Keep them unchanged, and create that
+            # empty database only in the cluster created above.
+            subprocess.run([
+                "createdb", "-h", "127.0.0.1", "-p", "55492", "-U", getpass.getuser(),
+                "sm_poster_task595_disposable",
+            ], env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            env["TASK595_POSTGRES_URL"] = url.rsplit("/", 1)[0] + "/sm_poster_task595_disposable"
         # Existing adoption regressions use this dedicated source catalog as
         # well as creating fresh per-test databases. Certify only this newly
         # created disposable cluster; never seed a caller/attached endpoint.

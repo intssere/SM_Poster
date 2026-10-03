@@ -1,0 +1,90 @@
+name: Five-pin bounded autonomous batch
+
+on:
+  push:
+    branches: [engineering/task61-24-five-pin-bounded-batch]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies and disposable PostgreSQL
+        run: |
+          python -m pip install -r backend/requirements.txt PyYAML
+          sudo apt-get update
+          sudo apt-get install -y postgresql
+          echo "/usr/lib/postgresql/$(ls /usr/lib/postgresql | sort -V | tail -1)/bin" >> "$GITHUB_PATH"
+      - name: Bounded batch PostgreSQL and unchanged live-path regressions
+        run: |
+          python scripts/run_isolated_readiness_tests.py --with-postgres --postgres-loopback -q \
+            tests/test_routine_bounded_batch_postgres.py \
+            tests/test_routine_one_shot_live.py \
+            tests/test_routine_certified_live.py \
+            tests/test_routine_pinterest_scheduler.py \
+            tests/test_routine_publishing_safety_edges.py \
+            tests/test_routine_scheduled_admission_postgres.py \
+            tests/test_routine_scheduled_live_admission_dispatch.py \
+            tests/test_routine_autonomous_authorization.py \
+            tests/test_schema_canonicality_guard.py \
+            tests/test_pinterest_autonomous_execution.py \
+            tests/test_pinterest_autonomous_generation.py \
+            tests/test_pinterest_board_strategy.py \
+            tests/test_routine_pinterest_publishing_foundation.py \
+            tests/test_routine_scheduled_quota_postgres.py \
+            tests/test_routine_scheduled_commitments_postgres.py \
+            tests/test_routine_scheduled_commitments.py \
+            tests/test_routine_scheduled_quotas.py \
+            --junitxml=bounded-batch-results.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          assert not ET.parse("backend/bounded-batch-results.xml").findall(".//skipped")
+          PY
+      - name: Unix-socket schema, adoption and startup regressions
+        run: |
+          python scripts/run_isolated_readiness_tests.py --with-postgres -q \
+            tests/test_readiness_execution_admission_0033.py \
+            tests/test_readiness_execution_admission_0032.py \
+            tests/test_schema_canonicality_guard.py \
+            tests/test_managed_schema_adoption_0031.py \
+            tests/test_exact_revision_runner.py \
+            tests/test_start_production.py \
+            tests/test_production_startup_readiness.py \
+            tests/test_migration_schema_adoption.py \
+            tests/test_migration_schema_repair_0020.py \
+            tests/test_migration_schema_repair_0028.py \
+            tests/test_migration_autonomous_retry_lineage_0030.py \
+            tests/test_orm_schema_canonicality.py \
+            tests/test_task61_14_test_isolation.py \
+            --junitxml=bounded-schema-results.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          assert not ET.parse("backend/bounded-schema-results.xml").findall(".//skipped")
+          PY
+      - name: Source checks
+        run: |
+          git diff --check
+          python -m compileall -q backend/app backend/alembic backend/tests scripts
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          import yaml
+          assert isinstance(yaml.safe_load(Path(".github/workflows/task61-24-ci.yml").read_text()), dict)
+          for name in ("routine_bounded_batch.py", "routine_bounded_preparation.py"):
+              ast.parse((Path("backend/app/services") / name).read_text())
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bounded-batch-results
+          path: backend/bounded-*-results.xml
