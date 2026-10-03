@@ -1,0 +1,1 @@
+"""Offline, operator-invoked state transfer; never imported by application startup."""
