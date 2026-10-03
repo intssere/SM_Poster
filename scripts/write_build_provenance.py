@@ -1,101 +1,80 @@
 #!/usr/bin/env python3
+"""Fresh, atomic schema-v4 receipts; never certify a stale manifest."""
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import subprocess
 from pathlib import Path
+import sys
+
+sys.dont_write_bytecode = True
+from release_source_guard import (RECEIPT, SourceGuardError, expectations,
+                                  parent_fd, physical_entry, require, verify_source)
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "backend" / ".build-provenance.json"
-OVERLAY = ROOT / ".replit"
-ALLOWED_OVERLAY_PATH = ".replit"
-DIRTY_OVERLAY_TOPOLOGY = "canonical_with_worktree_overlay"
-CHECKPOINT_TOPOLOGY = "canonical_parent_with_checkpoint_overlay"
 
-def git(*args: str) -> str:
-    return subprocess.check_output(["git", *args], cwd=ROOT, text=True, stderr=subprocess.STDOUT).strip()
 
-def _changed_paths() -> list[str]:
-    paths: list[str] = []
-    for line in git("status", "--porcelain", "--untracked-files=no").splitlines():
-        if not line:
-            continue
-        path = line[3:]
-        if " -> " in path:
-            path = path.split(" -> ", 1)[1]
-        paths.append(path)
-    return paths
+def build_provenance(*, expected_commit=None, expected_tree=None,
+                     expected_release_commit=None, expected_release_tree=None,
+                     expected_overlay_sha256=None, root=ROOT) -> dict:
+    pins = expectations({
+        "EXPECTED_CANONICAL_COMMIT": expected_commit,
+        "EXPECTED_CANONICAL_TREE": expected_tree,
+        "EXPECTED_RELEASE_COMMIT": expected_release_commit,
+        "EXPECTED_RELEASE_TREE": expected_release_tree,
+        "EXPECTED_REPLIT_OVERLAY_SHA256": expected_overlay_sha256,
+    })
+    return verify_source(root, pins)
 
-def _checkpoint_parents() -> list[str]:
-    fields = git("rev-list", "--parents", "-n", "1", "HEAD").split()
-    return fields[1:]
 
-def _checkpoint_changed_paths(parent: str) -> list[str]:
-    return [line for line in git("diff", "--name-only", parent, "HEAD").splitlines() if line]
+def discard_receipt(root: Path) -> None:
+    parent, name = parent_fd(root, RECEIPT)
+    try:
+        for leaf in (name, name + ".tmp"):
+            try:
+                os.unlink(leaf, dir_fd=parent)
+            except FileNotFoundError:
+                pass
+    finally:
+        os.close(parent)
 
-def build_provenance(*, expected_commit: str | None = None, expected_tree: str | None = None,
-                     expected_overlay_sha256: str | None = None) -> dict:
-    if not OVERLAY.is_file():
-        raise SystemExit("refusing to attest: .replit overlay missing")
 
-    release_commit_sha = git("rev-parse", "HEAD")
-    release_tree_sha = git("rev-parse", "HEAD^{tree}")
-    overlay_sha256 = hashlib.sha256(OVERLAY.read_bytes()).hexdigest()
-    changed_paths = _changed_paths()
+def receipt_absent(root: Path) -> bool:
+    return not os.path.lexists(root / RECEIPT) and not os.path.lexists(root / (RECEIPT + ".tmp"))
 
-    if expected_overlay_sha256 and overlay_sha256 != expected_overlay_sha256:
-        raise SystemExit("refusing to attest: reviewed .replit overlay hash mismatch")
 
-    if changed_paths == [ALLOWED_OVERLAY_PATH]:
-        canonical_commit_sha = release_commit_sha
-        canonical_tree_sha = release_tree_sha
-        topology = DIRTY_OVERLAY_TOPOLOGY
-    elif changed_paths == []:
-        if not expected_commit or not expected_tree:
-            raise SystemExit("refusing to attest: checkpoint topology requires exact expected canonical identity")
-        parents = _checkpoint_parents()
-        if len(parents) != 1:
-            raise SystemExit("refusing to attest: checkpoint release must have exactly one parent")
-        canonical_commit_sha = parents[0]
-        if canonical_commit_sha != expected_commit:
-            raise SystemExit("refusing to attest: checkpoint parent is not canonical commit")
-        canonical_tree_sha = git("rev-parse", f"{canonical_commit_sha}^{{tree}}")
-        if canonical_tree_sha != expected_tree:
-            raise SystemExit("refusing to attest: canonical tree mismatch")
-        if _checkpoint_changed_paths(canonical_commit_sha) != [ALLOWED_OVERLAY_PATH]:
-            raise SystemExit("refusing to attest: checkpoint delta must be exactly the reviewed .replit overlay")
-        topology = CHECKPOINT_TOPOLOGY
-    else:
-        raise SystemExit("refusing to attest: tracked differences must be exactly the reviewed .replit overlay or clean checkpoint")
+def receipt_bytes(payload: dict) -> bytes:
+    return (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
-    if expected_commit and canonical_commit_sha != expected_commit:
-        raise SystemExit("refusing to attest: canonical commit mismatch")
-    if expected_tree and canonical_tree_sha != expected_tree:
-        raise SystemExit("refusing to attest: canonical tree mismatch")
 
-    return {
-        "schema_version": 3,
-        "topology": topology,
-        "canonical_commit_sha": canonical_commit_sha,
-        "canonical_tree_sha": canonical_tree_sha,
-        "release_commit_sha": release_commit_sha,
-        "release_tree_sha": release_tree_sha,
-        "release_overlay": {"path": ALLOWED_OVERLAY_PATH, "sha256": overlay_sha256},
-    }
+def write_receipt(root: Path, payload: dict) -> None:
+    require(receipt_absent(root), "unexpected/tampered provenance before receipt publication")
+    parent, name = parent_fd(root, RECEIPT)
+    try:
+        fd = os.open(name + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=parent)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(receipt_bytes(payload))
+            stream.flush()
+            os.fsync(stream.fileno())
+        require(not os.path.lexists(root / RECEIPT), "provenance appeared during publication")
+        os.replace(name + ".tmp", name, src_dir_fd=parent, dst_dir_fd=parent)
+        os.fsync(parent)
+    finally:
+        os.close(parent)
+    verify_receipt(root, payload)
+
+
+def verify_receipt(root: Path, payload: dict) -> None:
+    mode, data = physical_entry(root, RECEIPT)
+    require(mode == "100644" and data == receipt_bytes(payload),
+            "fresh provenance receipt mismatch")
+
 
 def main() -> None:
-    payload = build_provenance(
-        expected_commit=os.getenv("EXPECTED_CANONICAL_COMMIT"),
-        expected_tree=os.getenv("EXPECTED_CANONICAL_TREE"),
-        expected_overlay_sha256=os.getenv("EXPECTED_REPLIT_OVERLAY_SHA256"),
-    )
-    OUTPUT.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
-    verified = json.loads(OUTPUT.read_text(encoding="utf-8"))
-    if verified != payload:
-        raise SystemExit("refusing to attest: provenance verification failed")
-    print("release provenance generated and verified")
+    # Source-only attestation is intentionally insufficient for a build receipt.
+    raise SystemExit("Use scripts/replit_release_build.py; receipts require verified compilation")
+
 
 if __name__ == "__main__":
     main()

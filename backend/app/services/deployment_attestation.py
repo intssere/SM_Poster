@@ -7,7 +7,7 @@ from pathlib import Path
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _HEX_RE = re.compile(r"^[0-9a-f]{64}$")
-_TOPOLOGIES = {"canonical_with_worktree_overlay", "canonical_parent_with_checkpoint_overlay"}
+_TOPOLOGIES = ("canonical_with_worktree_overlay", "canonical_parent_with_checkpoint_overlay")
 DEFAULT_MANIFEST_PATH = Path(__file__).resolve().parents[2] / ".build-provenance.json"
 
 @dataclass(frozen=True)
@@ -22,6 +22,8 @@ class BuildProvenance:
     overlay_path: str | None = None
     overlay_sha256: str | None = None
     error: str | None = None
+    source_inventory_sha256: str | None = None
+    artifacts: dict | None = None
 
 def read_build_provenance(path: Path = DEFAULT_MANIFEST_PATH) -> BuildProvenance:
     """Read canonical source plus approved release-overlay identity offline."""
@@ -32,7 +34,8 @@ def read_build_provenance(path: Path = DEFAULT_MANIFEST_PATH) -> BuildProvenance
     except (OSError, json.JSONDecodeError):
         return BuildProvenance(present=True, valid=False, error="BUILD_PROVENANCE_INVALID")
 
-    if not isinstance(payload, dict) or payload.get("schema_version") != 3:
+    if (not isinstance(payload, dict) or type(payload.get("schema_version")) is not int
+            or payload.get("schema_version") not in (3, 4)):
         return BuildProvenance(present=True, valid=False, error="BUILD_PROVENANCE_INVALID")
     commit_sha = payload.get("canonical_commit_sha")
     tree_sha = payload.get("canonical_tree_sha")
@@ -56,10 +59,36 @@ def read_build_provenance(path: Path = DEFAULT_MANIFEST_PATH) -> BuildProvenance
         release_commit_sha != commit_sha or release_tree_sha != tree_sha
     ):
         return BuildProvenance(present=True, valid=False, error="BUILD_PROVENANCE_INVALID")
+    source_digest = None
+    artifacts = None
+    if payload["schema_version"] == 4:
+        source_digest = payload.get("source_inventory_sha256")
+        artifacts = payload.get("artifacts")
+        compiled = artifacts.get("frontend/dist") if isinstance(artifacts, dict) else None
+        count = payload.get("source_file_count")
+        if not (
+            topology == "canonical_parent_with_checkpoint_overlay"
+            and isinstance(source_digest, str) and _HEX_RE.fullmatch(source_digest)
+            and type(count) is int and count > 0
+            and isinstance(compiled, dict)
+            and isinstance(compiled.get("inventory_sha256"), str)
+            and _HEX_RE.fullmatch(compiled["inventory_sha256"])
+            and type(compiled.get("file_count")) is int and compiled["file_count"] > 0
+            and set(artifacts) <= {"frontend/dist", "frontend/tsconfig.tsbuildinfo"}
+        ):
+            return BuildProvenance(present=True, valid=False, error="BUILD_PROVENANCE_INVALID")
+        metadata = artifacts.get("frontend/tsconfig.tsbuildinfo")
+        if "frontend/tsconfig.tsbuildinfo" in artifacts and not (
+            isinstance(metadata, dict) and isinstance(metadata.get("sha256"), str)
+            and _HEX_RE.fullmatch(metadata["sha256"])
+            and metadata.get("mode") in ("100644", "100755")
+        ):
+            return BuildProvenance(present=True, valid=False, error="BUILD_PROVENANCE_INVALID")
     return BuildProvenance(
         present=True, valid=True, commit_sha=commit_sha, tree_sha=tree_sha,
         release_commit_sha=release_commit_sha, release_tree_sha=release_tree_sha,
         topology=topology, overlay_path=".replit", overlay_sha256=overlay["sha256"],
+        source_inventory_sha256=source_digest, artifacts=artifacts,
     )
 
 def safe_deployment_attestation(settings, *, path: Path = DEFAULT_MANIFEST_PATH) -> dict:
@@ -78,6 +107,9 @@ def safe_deployment_attestation(settings, *, path: Path = DEFAULT_MANIFEST_PATH)
                 if provenance.valid else None
             ),
             "error": provenance.error,
+            **({"source_inventory_sha256": provenance.source_inventory_sha256,
+                "artifacts": provenance.artifacts}
+               if provenance.valid and provenance.source_inventory_sha256 else {}),
         },
         "pilot_disabled": settings.pinterest_single_pin_pilot_enabled is False,
     }
