@@ -1,0 +1,79 @@
+name: PostgreSQL clean-chain catalog compatibility
+
+on:
+  push:
+    branches: [engineering/railway-clean-chain-0034]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  migration-schema-startup:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["16", "17", "18"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies and PostgreSQL binaries
+        run: |
+          python -m pip install -r backend/requirements.txt
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-${{ matrix.postgres }}
+          echo "/usr/lib/postgresql/${{ matrix.postgres }}/bin" >> "$GITHUB_PATH"
+      - name: Isolated full migration, schema, adoption and startup regressions
+        run: |
+          python scripts/run_isolated_readiness_tests.py --with-postgres -q \
+            $(printf '%s\n' backend/tests/test_migration*.py | sed 's|^backend/||') \
+            tests/test_managed_schema_adoption_0031.py \
+            tests/test_readiness_execution_admission_0032.py \
+            tests/test_readiness_execution_admission_0033.py \
+            tests/test_schema_canonicality_guard.py \
+            tests/test_exact_revision_runner.py \
+            tests/test_start_production.py \
+            tests/test_production_startup_readiness.py \
+            tests/test_orm_schema_canonicality.py \
+            tests/test_task61_14_test_isolation.py \
+            --junitxml=migration-catalog-results.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse("backend/migration-catalog-results.xml").getroot()
+          assert not root.findall(".//failure") and not root.findall(".//error")
+          for case in root.findall(".//testcase"):
+              skipped = case.find("skipped")
+              if skipped is not None:
+                  assert "${{ matrix.postgres }}" != "18"
+                  assert case.get("classname") == "tests.test_migration_postgresql_catalog_compatibility"
+                  assert "PostgreSQL 18-only constraint syntax" in skipped.get("message", "")
+          PY
+      - name: Isolated bounded-controller catalog regressions
+        run: |
+          python scripts/run_isolated_readiness_tests.py --with-postgres --postgres-loopback -q \
+            tests/test_routine_bounded_batch_postgres.py \
+            tests/test_routine_scheduler_canary_postgres.py \
+            --junitxml=bounded-catalog-results.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          assert not ET.parse("backend/bounded-catalog-results.xml").findall(".//skipped")
+          PY
+      - name: Compilation and patch checks
+        run: |
+          python -m compileall -q backend/app backend/alembic backend/tests scripts
+          git diff --check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: migration-catalog-pg-${{ matrix.postgres }}
+          path: |
+            backend/migration-catalog-results.xml
+            backend/bounded-catalog-results.xml

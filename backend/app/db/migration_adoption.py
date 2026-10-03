@@ -186,6 +186,44 @@ def _normalize_default(value: Any) -> str | None:
     return text
 
 
+def _canonical_constraint_rows(connection: Any, table: str) -> list[Any]:
+    """Normalize PG18's redundant NOT NULL rows, never weaker enforcement.
+
+    Before PG18 nullability lived only in pg_attribute/information_schema.
+    Frozen contracts already include every column's nullability. PG18 also
+    records it as contype='n'; names of these new rows are not historical
+    constraint identities. Validate their enforcement before omitting them.
+    """
+    rows = connection.execute(sa.text(
+        """SELECT c.conname, c.contype, pg_get_constraintdef(c.oid, true) AS definition,
+        c.condeferrable, c.condeferred, c.convalidated, c.conkey, c.connoinherit,
+        COALESCE((to_jsonb(c)->>'conenforced')::boolean, true) AS enforced,
+        ARRAY(SELECT a.attname FROM pg_attribute a
+              WHERE a.attrelid=c.conrelid AND a.attnum=ANY(c.conkey)
+                AND a.attnotnull AND NOT a.attisdropped) AS not_null_columns
+        FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
+        JOIN pg_namespace n ON n.oid=t.relnamespace
+        WHERE n.nspname='public' AND t.relname=:table ORDER BY c.conname"""
+    ), {"table": table}).mappings().all()
+    canonical = []
+    for row in rows:
+        if not row["enforced"]:
+            _refuse(f"{table} has an unenforced constraint: {row['conname']}")
+        if row["contype"] == "n":
+            if (
+                not row["convalidated"]
+                or row["condeferrable"]
+                or row["condeferred"]
+                or row["connoinherit"]
+                or len(row["conkey"] or ()) != 1
+                or len(row["not_null_columns"]) != 1
+            ):
+                _refuse(f"{table} has a noncanonical NOT NULL constraint: {row['conname']}")
+        else:
+            canonical.append(row)
+    return canonical
+
+
 def _catalog_contract(connection: Any, table: str) -> dict[str, Any]:
     columns = connection.execute(sa.text(
         """SELECT column_name, data_type, udt_name, character_maximum_length,
@@ -212,13 +250,7 @@ def _catalog_contract(connection: Any, table: str) -> dict[str, Any]:
         "generated": row["is_generated"],
         "generation_expression": _normalize_sql(row["generation_expression"]),
     } for row in columns]
-    constraints = connection.execute(sa.text(
-        """SELECT c.conname, c.contype, pg_get_constraintdef(c.oid, true) AS definition,
-        c.condeferrable, c.condeferred, c.convalidated
-        FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
-        JOIN pg_namespace n ON n.oid=t.relnamespace
-        WHERE n.nspname='public' AND t.relname=:table ORDER BY c.conname"""
-    ), {"table": table}).mappings().all()
+    constraints = _canonical_constraint_rows(connection, table)
     indexes = connection.execute(sa.text(
         """SELECT idx.relname AS index_name, i.indisunique AS is_unique,
         i.indisvalid, i.indisready, i.indnullsnotdistinct,
@@ -1295,13 +1327,7 @@ def _require_0032_readiness_admissions_schema(connection: Any) -> None:
     }
     if checks != expected_checks:
         _refuse("0032 readiness admissions check contract mismatch")
-    constraint_rows = connection.execute(sa.text(
-        """SELECT conname, contype, condeferrable, condeferred, convalidated
-           FROM pg_constraint c
-           JOIN pg_class t ON t.oid = c.conrelid
-           JOIN pg_namespace n ON n.oid = t.relnamespace
-           WHERE n.nspname = 'public' AND t.relname = :table"""
-    ), {"table": table}).mappings().all()
+    constraint_rows = _canonical_constraint_rows(connection, table)
     actual_constraints = {
         str(row["conname"]): (
             str(row["contype"]),
