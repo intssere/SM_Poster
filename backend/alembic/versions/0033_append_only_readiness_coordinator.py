@@ -3,8 +3,9 @@
 Revision ID: 0033
 Revises: 0032
 
-Development/test migration only. Managed production receives structural
-changes through Publish, not this executable data transformation.
+Canonical empty PostgreSQL schemas may progress through executable Alembic.
+Nonempty evidence transformation remains development/test only. Managed
+pre-applied schemas retain their separate exact bookkeeping adoption path.
 """
 from __future__ import annotations
 
@@ -26,13 +27,14 @@ branch_labels = None
 depends_on = None
 
 
-def _bind(expected):
+def _bind(expected, *, canonical_empty_upgrade=False):
     from app.core.config import get_settings
 
     connection = op.get_bind()
     if connection.dialect.name != "postgresql":
         raise RuntimeError("0033 requires PostgreSQL")
-    if get_settings().app_env not in {"development", "test"}:
+    development = get_settings().app_env in {"development", "test"}
+    if not development and not canonical_empty_upgrade:
         raise RuntimeError("0033 executable migration is development/test only")
     connection.execute(sa.text("SET LOCAL search_path TO public, pg_catalog"))
     connection.execute(sa.text("SET LOCAL lock_timeout = '2s'"))
@@ -40,13 +42,18 @@ def _bind(expected):
     connection.execute(sa.text(
         'LOCK TABLE public.alembic_version IN ACCESS EXCLUSIVE MODE'
     ))
-    verify_frozen_schema_at_head(connection, revision=expected)
     for table in frozen.TABLES:
         if connection.scalar(sa.text("SELECT to_regclass(:name)"),
                              {"name": f"public.{table}"}) is not None:
             connection.execute(sa.text(
                 f'LOCK TABLE "public"."{table}" IN ACCESS EXCLUSIVE MODE'
             ))
+    # Verify under the table locks, before any executable DDL or evidence copy.
+    verify_frozen_schema_at_head(connection, revision=expected)
+    if not development and connection.scalar(sa.text(
+        "SELECT count(*) FROM public.management_readiness_admissions"
+    )):
+        raise RuntimeError("0033 executable upgrade requires empty canonical readiness admissions")
     return connection
 
 
@@ -68,7 +75,7 @@ def _business(connection):
 
 def upgrade():
     _historical()
-    connection = _bind("0032")
+    connection = _bind("0032", canonical_empty_upgrade=True)
     if connection.scalar(sa.text(
         "SELECT to_regclass('public.management_readiness_outcomes')"
     )) is not None:
