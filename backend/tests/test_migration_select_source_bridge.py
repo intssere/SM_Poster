@@ -166,6 +166,17 @@ def test_readwrite_or_nonutc_session_refuses(source):
             c.exec_driver_sql(bridge.source_sql(), execution_options={"no_parameters": True})
 
 
+@pytest.mark.parametrize("zone", ["Etc/UTC", "GMT"])
+def test_fixed_zero_offset_utc_alias_is_equivalent(source, capsule, zone):
+    with source.connect() as c, c.begin():
+        c.exec_driver_sql("SET TRANSACTION READ ONLY")
+        c.exec_driver_sql("SET LOCAL timezone TO '" + zone + "'")
+        result = c.exec_driver_sql(bridge.source_sql(),
+                                  execution_options={"no_parameters": True}).scalar_one()
+        assert result["payload"]["tables"] == capsule["payload"]["tables"]
+        bridge.wrap_source_result(result)
+
+
 def test_untrusted_public_helper_overload_cannot_run(source, capsule):
     with source.connect() as c:
         tx = c.begin()

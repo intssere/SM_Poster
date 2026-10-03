@@ -145,7 +145,8 @@ The statement refuses unless:
 - Publication history is exactly four PUBLISHED and five CANCELLED; permissions
   are closed/consistent; the five runtime-work tables have no
   RUNNING/STARTED/QUEUED/PENDING records; exactly one PAUSED control exists.
-- The executing transaction is read-only, timezone is UTC,
+- The executing transaction is read-only, timezone is UTC or a fixed zero-offset
+  UTC/GMT alias (never a regional or DST-observing timezone),
   standard-conforming strings are on, and the catalog is first in the effective
   search path. Incompatible sessions refuse; the SQL changes no setting.
 

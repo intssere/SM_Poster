@@ -162,7 +162,9 @@ catalog_guard AS MATERIALIZED (SELECT
   AND current_setting('transaction_read_only')='on'
   AND current_setting('standard_conforming_strings')='on'
   AND (current_schemas(true))[1]='pg_catalog'
-  AND current_setting('TimeZone')='UTC' AS passed),
+  AND current_setting('TimeZone') IN (
+    'UTC','Etc/UTC','GMT','Etc/GMT','UCT','Etc/UCT','Universal','Etc/Universal','Zulu','Etc/Zulu'
+  ) AS passed),
 catalog_gate AS MATERIALIZED (SELECT 1 / CASE WHEN passed IS TRUE THEN 1 ELSE 0 END AS ok FROM catalog_guard),
 captures AS MATERIALIZED ({' UNION ALL '.join(captures)}),
 publications AS MATERIALIZED (
