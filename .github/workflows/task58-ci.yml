@@ -128,4 +128,6 @@ jobs:
 
       - name: Full backend tests
         if: matrix.postgres == '16'
-        run: pytest -q
+        # New bounded cases require the sanitized disposable-Postgres runner;
+        # task61-24-ci.yml runs every case and rejects skips.
+        run: pytest -q --ignore=tests/test_routine_bounded_batch_postgres.py
