@@ -6,3 +6,4 @@
 - [JSONB absence semantics](jsonb-absence-semantics.md) — Python None can become JSON null; absent evidence guards require explicit SQL-null semantics and PostgreSQL tests.
 - [Replit runtime-only updates](replit-runtime-only-updates.md) — verify managed interpreter/packages and remove installer scaffolding without widening an approved release overlay.
 - [PostgreSQL catalog versions](postgresql-catalog-versions.md) — reproduce fingerprint failures on the server major version; normalize redundant representation without relaxing enforcement.
+- [Executable versus managed migrations](migration-execution-boundaries.md) — canonical empty executable upgrades and historical managed pre-apply adoption are separate supported paths.
