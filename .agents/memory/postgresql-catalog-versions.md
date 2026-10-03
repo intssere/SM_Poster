@@ -8,3 +8,13 @@ Reproduce a frozen-fingerprint failure on the relevant PostgreSQL major version 
 **Why:** PostgreSQL 18 adds named NOT NULL entries to pg_constraint, while earlier servers represented nullability through column metadata. Hashing both representations can reject a genuinely canonical migration chain. The difference affects historical predecessor checks and later management-schema verification, not just the initially failing revision.
 
 **How to apply:** Keep frozen hashes and exact historical drift allowlists unchanged. Normalize only redundant, validated, enforced NOT NULL catalog representation whose column nullability is already verified; refuse weaker enforcement, missing nullability, and unrelated catalog differences. Test fresh upgrades and historical repair/adoption paths across server major versions.
+
+Timezone spelling is not timezone semantics: PostgreSQL distributions can use
+UTC or an Etc/UTC/GMT alias as their default even though all serialize zero-offset
+timestamps identically.
+
+**Why:** An exact UTC-label gate can create platform-dependent source-export
+refusals despite equivalent timestamp encoding.
+
+**How to apply:** Permit only reviewed, permanently zero-offset UTC/GMT aliases;
+do not substitute a current-offset check that could admit regional/DST zones.
