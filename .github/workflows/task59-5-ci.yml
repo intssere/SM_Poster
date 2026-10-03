@@ -78,7 +78,7 @@ jobs:
           createdb -h 127.0.0.1 -U postgres sm_poster_task46_${{ matrix.postgres }}
           export DATABASE_URL="${TASK58_CATALOG_URL}"
           alembic upgrade head
-          alembic current | grep -Fx '0033 (head)'
+          alembic current | grep -Fx '0034 (head)'
 
       - name: Certified offline canary and dependent regressions
         run: >-
