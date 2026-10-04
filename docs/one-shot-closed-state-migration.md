@@ -10,6 +10,27 @@ be supplied by an environment reference already resolved by the hosting
 platform. The runner does not resolve references or fall back to `DATABASE_URL`.
 Do not pass a DSN on the command line.
 
+For a service built with `rootDirectory=backend` and `backend/Dockerfile`, the
+backend-only entrypoint runs directly from the image's `/app` WORKDIR:
+
+```sh
+python -m app.state_transfer.migrate_closed_state_once \
+  --source-env MIGRATION_SOURCE_DSN \
+  --target-env MIGRATION_TARGET_DSN \
+  --execute \
+  --statement-timeout-ms 480000 \
+  --lock-timeout-ms 10000
+```
+
+No shell built-ins, repository-root scripts, or application server are needed.
+This documents a manually authorized command, not a Docker/Railway startup
+configuration change. Backend-only deployments protect `/app` as the export
+boundary; repository checkouts still protect the whole checkout. Temporary
+exports must remain outside that boundary and any Git checkout.
+
+The repository-level command remains available and shares the exact same
+parser, execution path, JSON formatting, and exit codes:
+
 ```sh
 python scripts/migrate_closed_state_once.py \
   --source-env MIGRATION_SOURCE_DSN \
