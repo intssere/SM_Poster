@@ -19,7 +19,17 @@ from .transfer import certify_target, import_target, verify_bundle
 
 
 EXECUTION_ACK = "IMPORT_CLOSED_STATE_ONCE"
-ROOT = Path(__file__).resolve().parents[3]
+
+
+def _export_boundary(module_file):
+    """Protect the checkout, or the backend WORKDIR when deployed standalone."""
+    backend = Path(module_file).resolve().parents[2]
+    if backend.name == "backend" and backend.parent != Path(backend.anchor):
+        return backend.parent
+    return backend
+
+
+ROOT = _export_boundary(__file__)
 ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,127}")
 
 
