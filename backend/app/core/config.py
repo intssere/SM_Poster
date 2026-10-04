@@ -108,8 +108,10 @@ class Settings(BaseSettings):
 
     object_storage_endpoint: str | None = None
     object_storage_bucket: str = "diamond-shelf-pinterest"
-    object_storage_access_key: str | None = None
-    object_storage_secret_key: str | None = None
+    object_storage_access_key: str | None = Field(default=None, repr=False, exclude=True)
+    object_storage_secret_key: str | None = Field(default=None, repr=False, exclude=True)
+    object_storage_region: str | None = None
+    object_storage_path_style: bool | None = None
 
     ai_provider: str = "none"
     openai_api_key: str | None = None

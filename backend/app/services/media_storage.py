@@ -142,6 +142,9 @@ def default_storage(*, kind: str, root: Path | None = None, settings=None) -> St
     if settings is None:
         from app.core.config import get_settings
         settings = get_settings()
+    from .s3_media_storage import S3CompatibleStorage, S3Config, explicitly_configured
+    if explicitly_configured(settings):
+        return S3CompatibleStorage(S3Config.from_settings(settings))
     if settings.is_exposed:
         return ReplitObjectStorage()
     return LocalStorage(root or Path(__file__).resolve().parents[2] / f"generated-{kind}s")

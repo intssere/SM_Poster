@@ -1,0 +1,32 @@
+name: S3 media continuity offline regressions
+on:
+  pull_request:
+  push:
+    branches: [main, engineering/s3-media-continuity]
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r backend/requirements.txt
+      - run: sudo apt-get update && sudo apt-get install -y postgresql
+      - name: Credential-fenced unit and disposable PostgreSQL
+        run: |
+          export PATH="$(find /usr/lib/postgresql -mindepth 2 -maxdepth 2 -type d -name bin | sort -V | tail -1):$PATH"
+          python scripts/run_isolated_readiness_tests.py --with-postgres -q \
+            tests/test_s3_media_storage.py tests/test_media_continuity.py \
+            tests/test_media_continuity_postgres.py tests/test_media_storage.py \
+            tests/test_pinterest_local_canary_durable_media.py \
+            tests/test_task61_14_media_consumers.py \
+            tests/test_local_canary_admission.py \
+            tests/test_pinterest_local_canary_fixture_durable_postgres.py \
+            tests/test_migration_closed_state_transfer.py
+      - name: Compile and diff checks
+        run: |
+          python -m compileall -q backend/app backend/tests scripts
+          git diff --check
