@@ -9,7 +9,8 @@ import json
 from pathlib import Path
 import re
 
-from .bridge_catalog_sql import constraints_guard, descriptor
+from .bridge_catalog_sql import constraints_guard
+from .bridge_catalog_semantics import semantic_descriptor
 from .bridge_json import ascii_quote, literal, pg_json, strict_json
 from .catalog import Refused, canonical, digest
 from .policy import AUTHORIZATION_TABLES, FORMAT, PRESERVED, SOURCE, TARGET_ONLY
@@ -40,7 +41,8 @@ def qualify_builtins(sql):
         "encode|convert_to|regexp_replace|btrim|left|right|jsonb_build_object|jsonb_build_array|"
         "jsonb_agg|jsonb_object_agg|count|array_to_json|array_remove|cardinality|to_regclass|"
         "pg_get_constraintdef|pg_get_indexdef|pg_get_expr|pg_get_triggerdef|pg_get_functiondef|"
-        "current_setting|current_schemas|pg_current_snapshot|transaction_timestamp|statement_timestamp"
+        "current_setting|current_schemas|pg_current_snapshot|transaction_timestamp|statement_timestamp|"
+        "jsonb_array_elements|jsonb_set|quote_ident"
     )
     relations = ("pg_class|pg_namespace|pg_constraint|pg_attribute|pg_enum|pg_index|pg_am|"
                  "pg_trigger|pg_rewrite|pg_type|pg_cast|pg_proc")
@@ -146,7 +148,8 @@ type_guard AS MATERIALIZED (SELECT
   AS passed),
 type_gate AS MATERIALIZED (SELECT 1 / CASE WHEN passed IS TRUE THEN 1 ELSE 0 END AS ok FROM type_guard),
 catalogs AS MATERIALIZED (
-  SELECT e.name,{descriptor()} AS actual FROM expected e CROSS JOIN type_gate tg WHERE tg.ok=1
+  SELECT e.name,{semantic_descriptor(data["catalog"])} AS actual
+  FROM expected e CROSS JOIN type_gate tg WHERE tg.ok=1
 ),
 catalog_guard AS MATERIALIZED (SELECT
   (SELECT jsonb_agg(version_num::text ORDER BY version_num::text)
