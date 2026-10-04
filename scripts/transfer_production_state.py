@@ -18,11 +18,13 @@ from app.state_transfer.transfer import (
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("export", "plan", "import", "certify"))
+    parser.add_argument("command", choices=("export", "plan", "import", "certify",
+                                          "source-sql", "wrap-source-result"))
     parser.add_argument("--dsn-file", type=Path,
                         help="Explicit operator-supplied DB URL file; no environment fallback")
-    parser.add_argument("--bundle", type=Path, required=True)
+    parser.add_argument("--bundle", type=Path)
     parser.add_argument("--expected-manifest-sha256")
+    parser.add_argument("--expected-capsule-sha256")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     engine = None
@@ -30,6 +32,27 @@ def main(argv=None):
     try:
         # Suppress driver/SQL logging. Never echo DB URLs, parameters or exceptions.
         logging.disable(logging.CRITICAL)
+        if args.command == "source-sql":
+            if (args.dsn_file or args.bundle or args.dry_run or args.expected_manifest_sha256
+                    or args.expected_capsule_sha256):
+                raise Refused("source-sql accepts no database, bundle or dry-run option")
+            from app.state_transfer.select_bridge import source_sql
+            print(source_sql())
+            return 0
+        if args.bundle is None:
+            raise Refused("Explicit --bundle required")
+        if args.command == "wrap-source-result":
+            if args.dsn_file or args.dry_run or args.expected_manifest_sha256:
+                raise Refused("Offline wrapper accepts no database or dry-run option")
+            from app.state_transfer.bridge_json import strict_json
+            from app.state_transfer.select_bridge import wrap_source_result
+            bundle = wrap_source_result(strict_json(sys.stdin.read()), args.expected_capsule_sha256)
+            write_bundle(bundle, args.bundle)
+            print(canonical({**safe_plan(bundle),
+                             "source_capsule_sha256": bundle["manifest"]["source_capsule_sha256"]}))
+            return 0
+        if args.expected_capsule_sha256:
+            raise Refused("Capsule fingerprint option requires offline wrapper")
         if args.command != "export":
             bundle = json.loads(args.bundle.read_text(encoding="utf-8"))
             verify_bundle(bundle, args.expected_manifest_sha256)

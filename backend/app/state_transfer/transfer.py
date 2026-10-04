@@ -179,7 +179,12 @@ def verify_bundle(bundle, expected_sha256):
             raise Refused("Bundle schema/policy differs")
         if m["publication_status_counts"] != {"PUBLISHED": 4, "CANCELLED": 5}:
             raise Refused("Publication history differs")
-        if m["snapshot"]["read_only"] != "on" or m["snapshot"]["isolation"] != "repeatable read":
+        snapshot = m["snapshot"]
+        if "capture_mode" in snapshot:
+            from .select_bridge import snapshot_valid
+            if not snapshot_valid(snapshot):
+                raise Refused("Source statement snapshot evidence differs")
+        elif snapshot["read_only"] != "on" or snapshot["isolation"] != "repeatable read":
             raise Refused("Source transaction evidence differs")
         if len(m["dependency_order"]) != len(SOURCE) or set(m["dependency_order"]) != set(SOURCE):
             raise Refused("Dependency inventory differs")
@@ -207,6 +212,9 @@ def verify_bundle(bundle, expected_sha256):
         if m["media"] != media_manifest(rows):
             raise Refused("Media reference manifest differs")
         closed_bundle(rows)
+        if "capture_mode" in snapshot:
+            from .select_bridge import verify_bundle_capture
+            verify_bundle_capture(bundle)
     except Refused:
         raise
     except Exception:
