@@ -13,7 +13,10 @@ from app.state_transfer import capture_runner as runner
 from app.state_transfer.bridge_json import pg_json
 from app.state_transfer.select_bridge import source_sql
 from tests.test_source_capture_diagnostics import POISON, PoisonError
-from tests.test_migration_closed_state_transfer import source
+from tests.test_migration_closed_state_transfer import (
+    pytestmark as disposable_postgres_required,
+    source,
+)
 
 
 class FakeCursor:
@@ -271,6 +274,7 @@ def test_cli_missing_explicit_secret_name_never_connects(tmp_path, monkeypatch, 
         "stage": "CONNECT", "exception_class": "KeyError"}}
 
 
+@disposable_postgres_required
 def test_real_disposable_direct_client_capture(source, tmp_path):
     """Only the credential-fenced test runner's local disposable database."""
     from app.state_transfer.transfer import verify_bundle
