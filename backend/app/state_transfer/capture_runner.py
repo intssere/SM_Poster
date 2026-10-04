@@ -22,6 +22,17 @@ CONNECTION_OPTIONS = (
 )
 
 
+def connection_options(statement_timeout_ms=180000, lock_timeout_ms=10000):
+    """Bounded source-only overrides; preserve all other session safeguards."""
+    if (type(statement_timeout_ms) is not int or not 1000 <= statement_timeout_ms <= 900000
+            or type(lock_timeout_ms) is not int or not 100 <= lock_timeout_ms <= 60000
+            or lock_timeout_ms > statement_timeout_ms):
+        raise ValueError()
+    return CONNECTION_OPTIONS.replace(
+        "statement_timeout=180000", f"statement_timeout={statement_timeout_ms}"
+    ).replace("lock_timeout=10000", f"lock_timeout={lock_timeout_ms}")
+
+
 def _write_capsule(path: Path, data: bytes):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
@@ -53,7 +64,8 @@ def _cleanup(connection, cursor):
 
 
 def capture_source_result(*, load_dsn, capsule_file: Path, bundle_file: Path,
-                          connect=None) -> dict:
+                          connect=None, statement_timeout_ms=180000,
+                          lock_timeout_ms=10000) -> dict:
     """Execute the unchanged SELECT once, then privately hash and wrap offline.
 
     load_dsn is explicit operator input, invoked only inside CONNECT. The runner
@@ -66,6 +78,7 @@ def capture_source_result(*, load_dsn, capsule_file: Path, bundle_file: Path,
     logging.disable(logging.CRITICAL)
     result = {}
     try:
+        options = connection_options(statement_timeout_ms, lock_timeout_ms)
         if capsule_file.resolve() == bundle_file.resolve():
             raise ValueError()
         dsn = load_dsn()
@@ -75,7 +88,7 @@ def capture_source_result(*, load_dsn, capsule_file: Path, bundle_file: Path,
             import psycopg
             connect = psycopg.connect
         connection = connect(dsn, autocommit=True, connect_timeout=10,
-                             options=CONNECTION_OPTIONS)
+                             options=options)
         stage = CaptureStage.SESSION_SETUP
         cursor = connection.cursor()
         cursor.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
