@@ -96,6 +96,17 @@ def _pytest_main(args: list[str]) -> int:
         raise AssertionError("Live Object Storage forbidden before collection")
 
     sdk.Client = forbidden_client
+    # The optional S3 dependency must not introduce a second live-client path.
+    # Installing/importing its SDK is harmless; creating a client is forbidden.
+    try:
+        import boto3
+    except ModuleNotFoundError:
+        boto3 = None
+    if boto3 is not None:
+        boto3.client = forbidden_client
+        boto3.Session.client = forbidden_client
+        boto3.resource = forbidden_client
+        boto3.Session.resource = forbidden_client
     import pytest
     return pytest.main(args)
 
