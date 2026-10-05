@@ -1,0 +1,54 @@
+name: Closed-state media migration (isolated)
+
+on:
+  push:
+    branches: [engineering/closed-state-media-transfer]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Canonical ancestry
+        run: git merge-base --is-ancestor c001cde0d211edfa9be936c8e863f44da96962fd HEAD
+      - name: Install test dependencies and disposable PostgreSQL
+        run: |
+          python -m pip install -r backend/requirements.txt
+          sudo apt-get update
+          sudo apt-get install -y postgresql
+          echo "/usr/lib/postgresql/$(ls /usr/lib/postgresql | sort -V | tail -1)/bin" >> "$GITHUB_PATH"
+      - name: Isolated unit, PostgreSQL and compatibility regressions
+        run: |
+          python scripts/run_isolated_readiness_tests.py --with-postgres -q \
+            tests/test_media_migration.py tests/test_migration_storage.py \
+            tests/test_media_migration_postgres.py tests/test_media_continuity.py \
+            tests/test_media_continuity_postgres.py tests/test_s3_media_storage.py \
+            tests/test_migration_closed_state_transfer.py \
+            tests/test_task61_14_media_consumers.py tests/test_local_canary_admission.py \
+            tests/test_pinterest_local_canary_media.py \
+            --junitxml=media-migration-results.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          assert not ET.parse("backend/media-migration-results.xml").findall(".//skipped")
+          PY
+      - name: Patch and syntax checks
+        run: |
+          git diff --check
+          python -m compileall -q backend/app/state_transfer backend/tests/test_media_migration*.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: media-migration-isolated-results
+          path: backend/media-migration-results.xml
