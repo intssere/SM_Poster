@@ -76,7 +76,7 @@ def production_target(prepared, monkeypatch):
 
 
 def invoke(production_target, monkeypatch, *, fault=None, observe_engine=False):
-    engine, rows, values = production_target
+    engine, _, values = production_target
     target = ReadOnlyTarget(values, fault=fault)
     if observe_engine:
         monkeypatch.setattr(cert.sa, "create_engine", lambda *a, **k: engine)
@@ -88,12 +88,13 @@ def test_certification_is_one_readonly_repeatable_transaction_and_exact_17_gets(
     production_target, monkeypatch
 ):
     engine, rows, values = production_target
-    before = [
-        dict(row)
-        for row in engine.connect().exec_driver_sql(
-            "SELECT id,sha256,size_bytes,render_status FROM public.pin_creatives ORDER BY id"
-        ).mappings()
-    ]
+    with engine.connect() as connection:
+        before = [
+            dict(row)
+            for row in connection.exec_driver_sql(
+                "SELECT id,sha256,size_bytes,render_status FROM public.pin_creatives ORDER BY id"
+            ).mappings()
+        ]
 
     statements, begins = [], []
 
@@ -243,13 +244,6 @@ def test_cli_has_no_target_arguments_and_never_echoes_argument_secrets(monkeypat
 def test_cli_success_output_is_sanitized(production_target, monkeypatch, capsys):
     _, _, values = production_target
     target = ReadOnlyTarget(values)
-    monkeypatch.setattr(
-        cert, "run", lambda: cert.run.__wrapped__()
-        if hasattr(cert.run, "__wrapped__")
-        else None
-    )
-    # Patch the CLI's imported function by replacing the module attribute with a
-    # bounded fixture invocation; the production CLI itself accepts no targets.
     original = cert.run
     monkeypatch.setattr(
         cert,
