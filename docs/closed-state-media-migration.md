@@ -147,3 +147,16 @@ is never included in logs, exceptions, or structured output.
 multiple or unrecognized codes, redirects, and routing/configuration failures
 are storage-unavailable failures rather than missing objects. This distinction
 prevents an invalid bucket or route from being mistaken for an empty target.
+
+
+### Exact missing-object envelope
+
+For the curl migration transport, a 404 proves an absent object only when the
+bounded XML body has the literal unnamespaced root tag `Error`, contains
+exactly one direct literal unnamespaced `Code` child, and that child's text is
+exactly `NoSuchKey`. Root or Code attributes, namespace-qualified/default-
+namespaced Error or Code tags, wrapped/nested or duplicate Code elements,
+whitespace-altered code text, DTD/entity declarations, malformed/empty/HTML or
+oversized bodies all fail closed as storage unavailable. Any additional nested
+or namespace-qualified Code element anywhere in the envelope also refuses the
+missing classification. Provider response bodies are never emitted.
