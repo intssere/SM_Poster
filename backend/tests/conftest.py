@@ -1,5 +1,8 @@
 import ipaddress
 import socket
+import os
+from pathlib import Path
+import subprocess
 
 import pytest
 import replit.object_storage as sdk
@@ -12,6 +15,23 @@ def _forbid_live_storage_client(*args, **kwargs):
 # Install before test collection, not just before each test: a test module
 # importing application code must never attach a real bucket as a side effect.
 sdk.Client = _forbid_live_storage_client
+
+# Native curl bypasses Python socket guards. Install before collection even
+# when pytest is not launched through the stricter isolated child runner.
+_original_popen = subprocess.Popen
+
+
+def fenced_popen(args, *positional, **kwargs):
+    command = [args] if isinstance(args, (str, bytes)) else list(args)
+    executable = os.fsdecode(command[0]) if command else ""
+    if Path(executable).name == "curl" and command[1:] not in [
+        ["-q", "--version"], ["-q", "--help", "all"],
+    ]:
+        raise AssertionError("Native curl network operations forbidden before collection")
+    return _original_popen(args, *positional, **kwargs)
+
+
+subprocess.Popen = fenced_popen
 
 from app.models.domain import PinApproval
 
