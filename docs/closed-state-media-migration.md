@@ -132,3 +132,18 @@ rather than overwriting or adopting a concurrent object.
 Transport choice does not change source validation, target byte verification,
 dry-run zero-write semantics, fingerprints, publishing admission, or the rule
 that every execute/re-execute requires separate authorization.
+
+
+### Curl target 404 classification
+
+Curl target reads fail closed on HTTP errors. An HTTP 404 is treated as an
+absent exact object only when a separately bounded error body (maximum 4096
+bytes) is safe XML whose root is `Error` and whose single direct `Code` child
+is exactly `NoSuchKey`. DTD/entity declarations are refused before XML
+parsing, so no entity expansion or external resolution is permitted. The body
+is never included in logs, exceptions, or structured output.
+
+`NoSuchBucket`, `AccessDenied`, empty/malformed/HTML/oversized 404 bodies,
+multiple or unrecognized codes, redirects, and routing/configuration failures
+are storage-unavailable failures rather than missing objects. This distinction
+prevents an invalid bucket or route from being mistaken for an empty target.
