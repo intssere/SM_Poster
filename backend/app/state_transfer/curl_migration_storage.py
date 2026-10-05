@@ -145,6 +145,11 @@ def _s3_error_code(raw):
     code = codes[0]
     if code.attrib or list(code) or code.text != "NoSuchKey":
         return None
+    for element in root.iter():
+        if element is root or element is code or type(element.tag) is not str:
+            continue
+        if element.tag.rsplit("}", 1)[-1] == "Code":
+            return None
     return "NoSuchKey"
 
 
