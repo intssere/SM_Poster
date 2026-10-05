@@ -2,7 +2,9 @@ name: Closed-state media migration (isolated)
 
 on:
   push:
-    branches: [engineering/closed-state-media-transfer]
+    branches:
+      - engineering/closed-state-media-transfer
+      - engineering/task61-37-curl-sigv4
   pull_request:
     branches: [main]
 
@@ -33,6 +35,7 @@ jobs:
         run: |
           python scripts/run_isolated_readiness_tests.py --with-postgres -q \
             tests/test_media_migration.py tests/test_migration_storage.py \
+            tests/test_curl_migration_storage.py \
             tests/test_media_migration_postgres.py tests/test_media_continuity.py \
             tests/test_media_continuity_postgres.py tests/test_s3_media_storage.py \
             tests/test_migration_closed_state_transfer.py \
@@ -46,7 +49,10 @@ jobs:
       - name: Patch and syntax checks
         run: |
           git diff --check
-          python -m compileall -q backend/app/state_transfer backend/tests/test_media_migration*.py
+          python -m compileall -q backend/app/state_transfer \
+            backend/tests/test_media_migration*.py \
+            backend/tests/test_migration_storage.py \
+            backend/tests/test_curl_migration_storage.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
