@@ -90,6 +90,15 @@ def _pytest_main(args: list[str]) -> int:
     socket.getaddrinfo = local_resolve
     socket.socket.connect = local_connect
     socket.socket.connect_ex = local_connect_ex
+    # Curl is a native process and bypasses Python's socket fence.
+    original_popen = subprocess.Popen
+    def fenced_popen(args, *positional, **kwargs):
+        command = [args] if isinstance(args, (str, bytes)) else list(args)
+        if command and Path(os.fsdecode(command[0])).name == "curl":
+            if command[1:] not in [["--version"], ["--help", "all"]]:
+                raise AssertionError("Native curl requests forbidden before collection")
+        return original_popen(args, *positional, **kwargs)
+    subprocess.Popen = fenced_popen
     import replit.object_storage as sdk
 
     def forbidden_client(*args, **kwargs):

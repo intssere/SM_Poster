@@ -6,6 +6,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import re
+from xml.parsers import expat
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from app.services.media_storage import StorageMissing, StorageUnavailable
@@ -14,6 +16,90 @@ from .one_shot_migration import _require
 
 CONNECT_TIMEOUT = 10
 TOTAL_TIMEOUT = 30
+MAX_ERROR_BYTES = 4096
+MAX_HEADER_BYTES = 65536
+
+
+def _no_such_key(body, key):
+    """Parse only a small S3 Error envelope; never retain or report diagnostics."""
+    if not body or len(body) > MAX_ERROR_BYTES:
+        return False
+    parser = expat.ParserCreate(namespace_separator="}")
+    parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
+    stack, seen, code, returned_key = [], set(), [], []
+
+    def forbidden(*args):
+        raise ValueError("Refused")
+
+    def start(name, attributes):
+        namespace, _, local = name.rpartition("}")
+        if namespace not in {"", "http://s3.amazonaws.com/doc/2006-03-01/"}:
+            forbidden()
+        local = local if namespace else name
+        if attributes or len(stack) >= 2:
+            forbidden()
+        if not stack:
+            if local != "Error" or "Error" in seen:
+                forbidden()
+        elif local not in {"Code", "Message", "Key", "Resource", "RequestId", "HostId"}:
+            forbidden()
+        if local in seen:
+            forbidden()
+        seen.add(local)
+        stack.append(local)
+
+    def text(value):
+        if stack == ["Error", "Code"]:
+            code.append(value)
+        elif stack == ["Error", "Key"]:
+            returned_key.append(value)
+        elif len(stack) <= 1 and value.strip():
+            forbidden()
+
+    parser.StartElementHandler = start
+    parser.EndElementHandler = lambda name: stack.pop()
+    parser.CharacterDataHandler = text
+    parser.StartDoctypeDeclHandler = forbidden
+    parser.EntityDeclHandler = forbidden
+    parser.ExternalEntityRefHandler = forbidden
+    parser.ProcessingInstructionHandler = forbidden
+    try:
+        parser.Parse(body, True)
+        return (not stack and "".join(code) == "NoSuchKey"
+                and ("Key" not in seen or "".join(returned_key) == key))
+    except Exception:
+        return False
+
+
+def _header_status(path):
+    """Headers are private and bounded; they are never returned to callers."""
+    with open(path, "rb") as stream:
+        raw = stream.read(MAX_HEADER_BYTES + 1)
+    if not raw or len(raw) > MAX_HEADER_BYTES or not raw.endswith(b"\r\n\r\n"):
+        raise StorageUnavailable("Exact target read refused.")
+    blocks = raw.rstrip(b"\r\n").split(b"\r\n\r\n")
+    statuses = []
+    for block in blocks:
+        line = block.split(b"\r\n", 1)[0]
+        match = re.fullmatch(rb"HTTP/1\.[01] ([0-9]{3})(?: [^\r\n]*)?", line)
+        if match is None:
+            raise StorageUnavailable("Exact target read refused.")
+        statuses.append(int(match[1]))
+    if any(status >= 200 for status in statuses[:-1]):
+        raise StorageUnavailable("Exact target read refused.")
+    return statuses[-1]
+
+
+def _stop(proc):
+    if proc is not None:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
 
 
 def _curl_env():
@@ -160,9 +246,12 @@ class CurlS3ExactTarget:
         )
         argv = [
             self.curl,
+            "-q",
             "--config",
             config_path,
             "--silent",
+            "--no-location",
+            "--http1.1",
             "--max-redirs",
             "0",
             "--retry",
@@ -190,6 +279,8 @@ class CurlS3ExactTarget:
                 "Content-Type: image/png",
                 "--header",
                 "If-None-Match: *",
+                "--header",
+                "Expect:",
                 "--data-binary",
                 "@-",
             ]
@@ -204,46 +295,71 @@ class CurlS3ExactTarget:
     def get(self, key, size):
         _require(key in self.keys and type(size) is int and size >= 0 and not self.closed)
         path = _credential_config(self.config)
-        proc = None
+        proc, headers = None, None
         try:
+            fd, headers = tempfile.mkstemp(
+                prefix="sm-poster-s3-", suffix=".headers", dir=str(Path(path).parent))
+            try:
+                os.fchmod(fd, 0o600)
+            finally:
+                os.close(fd)
+            argv = self._argv(path, "GET", key, size)
+            argv[2:2] = ["--dump-header", headers]
             proc = self.popen_factory(
-                self._argv(path, "GET", key, size),
+                argv,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=_curl_env(),
             )
             _require(proc.stdout is not None and proc.stderr is not None)
-            payload = proc.stdout.read(size + 1)
+            # The first bounded read ensures curl has emitted headers, without
+            # allocating an expected-image-size buffer for an error response.
+            payload = proc.stdout.read(min(size + 1, MAX_ERROR_BYTES + 1))
+            status = _header_status(headers)
+            if status == 404:
+                if len(payload) <= MAX_ERROR_BYTES:
+                    payload += proc.stdout.read(MAX_ERROR_BYTES + 1 - len(payload))
+                if len(payload) > MAX_ERROR_BYTES:
+                    raise StorageUnavailable("Exact target read refused.")
+                returncode = proc.wait(timeout=TOTAL_TIMEOUT + 5)
+                if (returncode == 0 and _status(proc.stderr.read(16)) == status
+                        and _no_such_key(payload, key)):
+                    raise StorageMissing("Exact object absent.")
+                raise StorageUnavailable("Exact target read refused.")
+            if status not in {200, 206}:
+                raise StorageUnavailable("Exact target read refused.")
+            if len(payload) < size + 1:
+                payload += proc.stdout.read(size + 1 - len(payload))
 
             # If the response already exceeds the expected object size, stop reading
             # immediately. The existing migration verifier will classify it CONFLICT.
             if len(payload) == size + 1:
-                proc.kill()
-                proc.wait(timeout=5)
+                _stop(proc)
                 return payload
 
             returncode = proc.wait(timeout=TOTAL_TIMEOUT + 5)
-            status = _status(proc.stderr.read(16))
-            if status == 404:
-                raise StorageMissing("Exact object absent.")
-            if returncode != 0 or status not in {200, 206}:
+            if returncode != 0 or _status(proc.stderr.read(16)) != status:
                 raise StorageUnavailable("Exact target read refused.")
             return payload
         except StorageMissing:
             raise
         except Exception:
-            if proc is not None:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+            _stop(proc)
             raise StorageUnavailable("Exact target read refused.") from None
         finally:
-            try:
-                os.unlink(path)
-            except FileNotFoundError:
-                pass
+            for pipe in (getattr(proc, "stdout", None), getattr(proc, "stderr", None)):
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                    except Exception:
+                        pass
+            for temporary in (path, headers):
+                if temporary is not None:
+                    try:
+                        os.unlink(temporary)
+                    except FileNotFoundError:
+                        pass
 
     def put_missing(self, key, data):
         _require(key in self.keys and type(data) is bytes and not self.closed)
