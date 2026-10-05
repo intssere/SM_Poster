@@ -347,3 +347,44 @@ def test_close_prevents_further_operations():
     target.close()
     with pytest.raises(Exception):
         target.get(KEY, len(PNG))
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'<s3:Error xmlns:s3="urn:s3"><s3:Code>NoSuchKey</s3:Code></s3:Error>',
+        b'<Error xmlns="urn:s3"><Code>NoSuchKey</Code></Error>',
+        b'<Error xmlns:s3="urn:s3"><s3:Code>NoSuchKey</s3:Code></Error>',
+        b'<Error><Detail><Code>NoSuchKey</Code></Detail></Error>',
+        b'<Error><Code>NoSuchKey</Code><Code>NoSuchKey</Code></Error>',
+        b'<Error source="fixture"><Code>NoSuchKey</Code></Error>',
+        b'<Error><Code source="fixture">NoSuchKey</Code></Error>',
+        b'<Error><Code> NoSuchKey </Code></Error>',
+        b'<Error xmlns:s3="urn:s3"><Code>NoSuchKey</Code><s3:Code>NoSuchKey</s3:Code></Error>',
+        b'<Error><Code>NoSuchKey</Code><Detail><Code>NoSuchKey</Code></Detail></Error>',
+    ],
+)
+def test_404_ambiguous_error_envelopes_never_prove_missing(body):
+    factory = CaptureFactory(body=body, status=404)
+    target = make_target(factory)
+    with pytest.raises(StorageUnavailable) as exc:
+        target.get(KEY, len(PNG))
+    assert str(exc.value) == "Exact target read refused."
+    assert ACCESS not in str(exc.value) and SECRET not in str(exc.value)
+    assert all(not os.path.exists(path) for path in factory.config_paths)
+
+
+def test_exact_parser_accepts_only_literal_unnamespaced_direct_nosuchkey():
+    canonical = b'<Error><Code>NoSuchKey</Code><Message>fixture</Message></Error>'
+    assert curl_target._s3_error_code(canonical) == "NoSuchKey"
+
+    refused = [
+        b'<s3:Error xmlns:s3="urn:s3"><s3:Code>NoSuchKey</s3:Code></s3:Error>',
+        b'<Error xmlns="urn:s3"><Code>NoSuchKey</Code></Error>',
+        b'<Error><Detail><Code>NoSuchKey</Code></Detail></Error>',
+        b'<Error><Code>NoSuchKey</Code><Code>NoSuchKey</Code></Error>',
+        b'<Error a="1"><Code>NoSuchKey</Code></Error>',
+        b'<Error><Code a="1">NoSuchKey</Code></Error>',
+        b'<Error><Code> NoSuchKey </Code></Error>',
+    ]
+    assert all(curl_target._s3_error_code(body) is None for body in refused)

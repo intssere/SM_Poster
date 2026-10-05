@@ -122,7 +122,7 @@ def _read_http_status(stream):
 
 
 def _s3_error_code(raw):
-    """Safely extract a direct S3 Error/Code from a small non-expanding XML body."""
+    """Accept only the exact unnamespaced S3 NoSuchKey error envelope."""
     if type(raw) is not bytes or not raw or len(raw) > ERROR_BODY_LIMIT:
         return None
     upper = raw.upper()
@@ -135,16 +135,22 @@ def _s3_error_code(raw):
     except (ET.ParseError, ValueError):
         return None
 
-    def local_name(tag):
-        return tag.rsplit("}", 1)[-1] if type(tag) is str else None
-
-    if local_name(root.tag) != "Error":
+    # No namespace normalization: namespace-qualified/default-namespace tags are
+    # deliberately ambiguous and therefore cannot prove exact object absence.
+    if root.tag != "Error" or root.attrib:
         return None
-    codes = [child for child in list(root) if local_name(child.tag) == "Code"]
-    if len(codes) != 1 or list(codes[0]) or codes[0].attrib:
+    codes = [child for child in list(root) if child.tag == "Code"]
+    if len(codes) != 1:
         return None
-    code = (codes[0].text or "").strip()
-    return code if re.fullmatch(r"[A-Za-z0-9]+", code) else None
+    code = codes[0]
+    if code.attrib or list(code) or code.text != "NoSuchKey":
+        return None
+    for element in root.iter():
+        if element is root or element is code or type(element.tag) is not str:
+            continue
+        if element.tag.rsplit("}", 1)[-1] == "Code":
+            return None
+    return "NoSuchKey"
 
 
 class CurlS3ExactTarget:
