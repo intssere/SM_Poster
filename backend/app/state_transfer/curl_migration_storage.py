@@ -1,12 +1,15 @@
 """Manual migration-only exact S3 target using curl with AWS SigV4."""
 from __future__ import annotations
 
+import io
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
+import xml.etree.ElementTree as ET
 
 from app.services.media_storage import StorageMissing, StorageUnavailable
 from .one_shot_migration import _require
@@ -14,6 +17,9 @@ from .one_shot_migration import _require
 
 CONNECT_TIMEOUT = 10
 TOTAL_TIMEOUT = 30
+ERROR_BODY_LIMIT = 4096
+HEADER_LIMIT = 16384
+HEADER_LINE_LIMIT = 4096
 
 
 def _curl_env():
@@ -87,12 +93,58 @@ def _credential_config(config):
     return path
 
 
-def _status(raw):
-    try:
-        value = raw.decode("ascii").strip()
-    except Exception:
+_STATUS = re.compile(rb"^HTTP/(?:1\.[01]|2|3) ([0-9]{3})(?: [^\r\n]*)?\r?\n$")
+
+
+def _read_http_status(stream):
+    """Read exactly one bounded response-header block and return its status."""
+    total = 0
+    first = True
+    status = None
+    while True:
+        remaining = HEADER_LIMIT - total
+        if remaining <= 0:
+            return None
+        line = stream.readline(min(HEADER_LINE_LIMIT + 1, remaining + 1))
+        if not line:
+            return None
+        total += len(line)
+        if len(line) > HEADER_LINE_LIMIT or total > HEADER_LIMIT:
+            return None
+        if first:
+            match = _STATUS.fullmatch(line)
+            if match is None:
+                return None
+            status = int(match.group(1))
+            first = False
+        if line in {b"\r\n", b"\n"}:
+            return status
+
+
+def _s3_error_code(raw):
+    """Safely extract a direct S3 Error/Code from a small non-expanding XML body."""
+    if type(raw) is not bytes or not raw or len(raw) > ERROR_BODY_LIMIT:
         return None
-    return int(value) if len(value) == 3 and value.isdigit() else None
+    upper = raw.upper()
+    # ElementTree has no external resolver here; reject declarations that could
+    # introduce entity expansion before parsing the already-small body.
+    if b"<!DOCTYPE" in upper or b"<!ENTITY" in upper:
+        return None
+    try:
+        root = ET.fromstring(raw)
+    except (ET.ParseError, ValueError):
+        return None
+
+    def local_name(tag):
+        return tag.rsplit("}", 1)[-1] if type(tag) is str else None
+
+    if local_name(root.tag) != "Error":
+        return None
+    codes = [child for child in list(root) if local_name(child.tag) == "Code"]
+    if len(codes) != 1 or list(codes[0]) or codes[0].attrib:
+        return None
+    code = (codes[0].text or "").strip()
+    return code if re.fullmatch(r"[A-Za-z0-9]+", code) else None
 
 
 class CurlS3ExactTarget:
@@ -179,8 +231,8 @@ class CurlS3ExactTarget:
             "*",
             "--request",
             method,
-            "--write-out",
-            "%{stderr}%{http_code}",
+            "--dump-header",
+            "/dev/stderr",
         ]
         if method == "GET":
             argv += ["--range", f"0-{size}"]
@@ -201,6 +253,17 @@ class CurlS3ExactTarget:
         )
         return argv
 
+    @staticmethod
+    def _stop(proc):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+
     def get(self, key, size):
         _require(key in self.keys and type(size) is int and size >= 0 and not self.closed)
         path = _credential_config(self.config)
@@ -214,30 +277,34 @@ class CurlS3ExactTarget:
                 env=_curl_env(),
             )
             _require(proc.stdout is not None and proc.stderr is not None)
-            payload = proc.stdout.read(size + 1)
-
-            # If the response already exceeds the expected object size, stop reading
-            # immediately. The existing migration verifier will classify it CONFLICT.
-            if len(payload) == size + 1:
-                proc.kill()
-                proc.wait(timeout=5)
+            status = _read_http_status(proc.stderr)
+            if status in {200, 206}:
+                payload = proc.stdout.read(size + 1)
+                if len(payload) == size + 1:
+                    self._stop(proc)
+                    return payload
+                _require(proc.wait(timeout=TOTAL_TIMEOUT + 5) == 0)
                 return payload
 
-            returncode = proc.wait(timeout=TOTAL_TIMEOUT + 5)
-            status = _status(proc.stderr.read(16))
             if status == 404:
-                raise StorageMissing("Exact object absent.")
-            if returncode != 0 or status not in {200, 206}:
+                body = proc.stdout.read(ERROR_BODY_LIMIT + 1)
+                if len(body) > ERROR_BODY_LIMIT:
+                    self._stop(proc)
+                    raise StorageUnavailable("Exact target read refused.")
+                _require(proc.wait(timeout=TOTAL_TIMEOUT + 5) == 0)
+                if _s3_error_code(body) == "NoSuchKey":
+                    raise StorageMissing("Exact object absent.")
                 raise StorageUnavailable("Exact target read refused.")
-            return payload
+
+            self._stop(proc)
+            raise StorageUnavailable("Exact target read refused.")
         except StorageMissing:
+            raise
+        except StorageUnavailable:
             raise
         except Exception:
             if proc is not None:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+                self._stop(proc)
             raise StorageUnavailable("Exact target read refused.") from None
         finally:
             try:
@@ -258,16 +325,13 @@ class CurlS3ExactTarget:
                 env=_curl_env(),
             )
             _require(proc.stderr is not None)
-            _, raw_status = proc.communicate(input=data, timeout=TOTAL_TIMEOUT + 5)
-            status = _status(raw_status[:16])
+            _, raw_headers = proc.communicate(input=data, timeout=TOTAL_TIMEOUT + 5)
+            status = _read_http_status(io.BytesIO(raw_headers))
             if proc.returncode != 0 or status not in {200, 201, 204}:
                 raise StorageUnavailable("Conditional target create refused.")
         except Exception:
             if proc is not None:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+                self._stop(proc)
             raise StorageUnavailable("Conditional target create refused.") from None
         finally:
             try:
