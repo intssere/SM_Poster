@@ -10,7 +10,7 @@ from app.services.media_storage import StorageMissing, StorageUnavailable, media
 from app.state_transfer import certify_production_media as cli
 from app.state_transfer import production_media_certification as cert
 from app.state_transfer import transfer
-from tests.test_media_continuity_postgres import prepared
+from tests.test_media_continuity_postgres import prepared, source
 from tests.test_migration_closed_state_transfer import source
 from tests.test_readiness_execution_admission_0032 import _isolated_database, pytestmark
 
