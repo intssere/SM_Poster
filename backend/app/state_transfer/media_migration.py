@@ -19,6 +19,7 @@ from .transfer import closed_state, transaction
 ACK = "MIGRATE_CLOSED_STATE_MEDIA_ONCE"
 REQUIRED_COUNT = 17
 MAX_TOTAL_BYTES = 256 * 1024 * 1024
+TARGET_TRANSPORTS = {"boto3", "curl"}
 
 
 def verified(data, binding):
@@ -108,7 +109,6 @@ def target_config(names, database_env, execution_env=None):
     _require(style in {"true", "false"})
     config = S3Config(**{k: _env(v) for k, v in names.items() if k != "path_style"},
                       path_style=style == "true")
-    # The manual production transfer does not allow plaintext target credentials.
     _require(config.endpoint.startswith("https://"))
     return config
 
@@ -135,7 +135,6 @@ def transfer_bytes(source, roots, config, *, dry_run, report, source_factory, ta
             else:
                 item["source_class"] = "LOCAL_VERIFIED"
             data[item["key"]] = payload
-        # No target network/client construction until every authoritative source passes.
         report["terminal_stage"] = "TARGET_PREFLIGHT"
         target = target_factory(config, source)
         conflicts = False
@@ -158,7 +157,6 @@ def transfer_bytes(source, roots, config, *, dry_run, report, source_factory, ta
                 if item["target_status"] != "MISSING":
                     continue
                 report["terminal_stage"] = "TARGET_WRITE"
-                # Conditional create: a race may refuse, never overwrite or retry.
                 report["target_put_attempts"] += 1
                 item["target_status"] = "PUT_ATTEMPTED_UNCONFIRMED"
                 target.put_missing(item["key"], data[item["key"]])
@@ -187,20 +185,29 @@ def transfer_bytes(source, roots, config, *, dry_run, report, source_factory, ta
 
 
 def run(*, database_env, roots, target_envs, execute=False, dry_run=False,
-        execution_env=None, source_factory=None, target_factory=None):
+        execution_env=None, source_factory=None, target_factory=None,
+        target_transport="boto3"):
     report = {"success": False, "terminal_stage": "EXECUTION_GATE", "objects": [],
               "database_writes": 0, "publishing_admission": "NOT_GRANTED",
               "media_certification": "NOT_GRANTED", "source_reads": 0, "target_reads": 0,
               "target_put_attempts": 0, "database_transactions": 0,
               "automatic_retries": 0, "source_fingerprint": None,
               "target_fingerprint": None, "transfer_fingerprint": None}
-    previous, engine = logging.root.manager.disable, None
+    previous, engine, curl_path = logging.root.manager.disable, None, None
     logging.disable(logging.CRITICAL)
     try:
         _require(type(execute) is bool and type(dry_run) is bool)
         _require(not (dry_run and (execute or execution_env is not None)))
         _require(dry_run or execute or (execution_env is not None and _env(execution_env) == ACK))
+        _require(type(target_transport) is str and target_transport in TARGET_TRANSPORTS)
         report["mode"] = "DRY_RUN" if dry_run else "EXECUTE"
+        report["target_transport"] = target_transport
+
+        if target_transport == "curl":
+            report["terminal_stage"] = "TARGET_TRANSPORT"
+            from .curl_migration_storage import verify_curl_sigv4_capability
+            curl_path = verify_curl_sigv4_capability()
+
         report["terminal_stage"] = "CONFIGURATION"
         config = target_config(target_envs, database_env, execution_env)
         source_roots = local_roots(roots)
@@ -211,10 +218,22 @@ def run(*, database_env, roots, target_envs, execute=False, dry_run=False,
         source = metadata(engine)
         engine.dispose()
         engine = None
-        from .migration_storage import ReplitExactReader, S3ExactTarget
+
+        from .migration_storage import ReplitExactReader
+        selected_target_factory = target_factory
+        if selected_target_factory is None:
+            if target_transport == "curl":
+                from .curl_migration_storage import CurlS3ExactTarget
+                selected_target_factory = (
+                    lambda cfg, items: CurlS3ExactTarget(cfg, items, curl_path=curl_path)
+                )
+            else:
+                from .migration_storage import S3ExactTarget
+                selected_target_factory = S3ExactTarget
+
         transfer_bytes(source, source_roots, config, dry_run=dry_run, report=report,
                        source_factory=source_factory or ReplitExactReader,
-                       target_factory=target_factory or S3ExactTarget)
+                       target_factory=selected_target_factory)
     except Exception:
         report["success"] = False
         report["media_certification"] = "NOT_GRANTED"
