@@ -29,10 +29,14 @@ CONFIG = S3Config(
 BINDINGS = [{"key": KEY}]
 
 
+def response_headers(status):
+    return f"HTTP/1.1 {status} Fixture\r\nx-fixture: value\r\n\r\n".encode("ascii")
+
+
 class FakeProcess:
     def __init__(self, body=b"", status=200, returncode=0):
         self.stdout = io.BytesIO(body)
-        self.stderr = io.BytesIO(str(status).encode("ascii"))
+        self.stderr = io.BytesIO(response_headers(status))
         self.returncode = returncode
         self.killed = False
         self.input = None
@@ -79,6 +83,10 @@ def make_target(factory, config=CONFIG):
     )
 
 
+def s3_error(code, message=b"fixture"):
+    return b"<?xml version=\"1.0\"?><Error><Code>" + code + b"</Code><Message>" + message + b"</Message></Error>"
+
+
 def test_capability_check_is_local_and_requires_https_and_sigv4(monkeypatch):
     calls = []
 
@@ -86,7 +94,11 @@ def test_capability_check_is_local_and_requires_https_and_sigv4(monkeypatch):
         calls.append((argv, kwargs))
         if argv[-1] == "--version":
             return SimpleNamespace(returncode=0, stdout="curl 8.0 Protocols: http https", stderr="")
-        return SimpleNamespace(returncode=0, stdout="  --aws-sigv4 <provider1[:provider2[:region[:service]]]>", stderr="")
+        return SimpleNamespace(
+            returncode=0,
+            stdout="  --aws-sigv4 <provider1[:provider2[:region[:service]]]>",
+            stderr="",
+        )
 
     monkeypatch.setattr(curl_target.shutil, "which", lambda name: "/usr/bin/curl")
     assert curl_target.verify_curl_sigv4_capability(runner=runner) == "/usr/bin/curl"
@@ -186,21 +198,79 @@ def test_get_uses_private_config_without_secret_argv_and_cleans_it():
     assert "--max-redirs" in argv and argv[argv.index("--max-redirs") + 1] == "0"
     assert "--retry" in argv and argv[argv.index("--retry") + 1] == "0"
     assert "--proto" in argv and argv[argv.index("--proto") + 1] == "=https"
+    assert "--dump-header" in argv and argv[argv.index("--dump-header") + 1] == "/dev/stderr"
     assert kwargs["env"].get("AWS_ACCESS_KEY_ID") is None
     assert kwargs["env"].get("HTTPS_PROXY") is None
     assert all(not os.path.exists(path) for path in factory.config_paths)
 
 
-def test_get_404_is_missing_and_failure_text_never_leaks_secrets():
-    factory = CaptureFactory(body=b"", status=404)
+def test_get_404_no_such_key_is_the_only_missing_classification():
+    body = s3_error(b"NoSuchKey", SECRET.encode())
+    factory = CaptureFactory(body=body, status=404)
     target = make_target(factory)
     with pytest.raises(StorageMissing) as exc:
         target.get(KEY, len(PNG))
+    rendered = str(exc.value)
+    assert rendered == "Exact object absent."
+    assert ACCESS not in rendered and SECRET not in rendered
+    assert all(not os.path.exists(path) for path in factory.config_paths)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        s3_error(b"NoSuchBucket"),
+        s3_error(b"AccessDenied"),
+        b"",
+        b"<Error><Code>NoSuchKey",
+        b"<html><Code>NoSuchKey</Code></html>",
+        b"not xml",
+        b"<!DOCTYPE Error [<!ENTITY x 'NoSuchKey'>]><Error><Code>&x;</Code></Error>",
+        b"<Error><Code>NoSuchKey</Code><Code>NoSuchKey</Code></Error>",
+    ],
+)
+def test_404_ambiguous_or_non_object_missing_is_unavailable(body):
+    factory = CaptureFactory(body=body, status=404)
+    target = make_target(factory)
+    with pytest.raises(StorageUnavailable) as exc:
+        target.get(KEY, len(PNG))
+    assert str(exc.value) == "Exact target read refused."
     assert ACCESS not in str(exc.value) and SECRET not in str(exc.value)
     assert all(not os.path.exists(path) for path in factory.config_paths)
 
 
-def test_bounded_get_reads_expected_plus_one_and_stops_oversize():
+def test_oversized_404_body_is_unavailable_and_bounded_before_parsing():
+    body = s3_error(b"NoSuchKey") + b"x" * curl_target.ERROR_BODY_LIMIT
+    factory = CaptureFactory(body=body, status=404)
+    target = make_target(factory)
+    with pytest.raises(StorageUnavailable):
+        target.get(KEY, len(PNG))
+    assert factory.processes[0].stdout.tell() == curl_target.ERROR_BODY_LIMIT + 1
+    assert factory.processes[0].killed
+    assert all(not os.path.exists(path) for path in factory.config_paths)
+
+
+def test_secret_bearing_404_body_never_escapes_failure():
+    body = s3_error(b"NoSuchBucket", (ACCESS + SECRET).encode())
+    factory = CaptureFactory(body=body, status=404)
+    target = make_target(factory)
+    with pytest.raises(StorageUnavailable) as exc:
+        target.get(KEY, len(PNG))
+    output = str(exc.value)
+    assert ACCESS not in output and SECRET not in output
+    assert b"ACCESS_PRIVATE_SENTINEL" in body and b"SECRET_PRIVATE_SENTINEL" in body
+
+
+def test_error_parser_is_small_non_expanding_and_requires_error_root():
+    assert curl_target._s3_error_code(s3_error(b"NoSuchKey")) == "NoSuchKey"
+    assert curl_target._s3_error_code(b"<html><Code>NoSuchKey</Code></html>") is None
+    assert curl_target._s3_error_code(
+        b"<!DOCTYPE Error [<!ENTITY x 'NoSuchKey'>]><Error><Code>&x;</Code></Error>"
+    ) is None
+    assert curl_target._s3_error_code(b"x" * (curl_target.ERROR_BODY_LIMIT + 1)) is None
+
+
+def test_bounded_success_get_reads_expected_plus_one_and_stops_oversize():
     body = PNG + b"oversize"
     factory = CaptureFactory(body=body, status=206)
     target = make_target(factory)
@@ -208,6 +278,17 @@ def test_bounded_get_reads_expected_plus_one_and_stops_oversize():
     assert len(result) == len(PNG) + 1
     assert factory.processes[0].killed
     assert all(not os.path.exists(path) for path in factory.config_paths)
+
+
+@pytest.mark.parametrize("status", [301, 302, 307, 308, 401, 403, 409, 500])
+def test_get_non_success_non_404_fails_closed_without_body_diagnostics(status):
+    body = (ACCESS + SECRET).encode()
+    factory = CaptureFactory(body=body, status=status)
+    target = make_target(factory)
+    with pytest.raises(StorageUnavailable) as exc:
+        target.get(KEY, len(PNG))
+    assert str(exc.value) == "Exact target read refused."
+    assert factory.processes[0].killed
 
 
 def test_put_is_conditional_exact_key_and_passes_bytes_only_on_stdin():
@@ -245,6 +326,20 @@ def test_subprocess_failure_cleans_private_config_and_redacts_exception():
     assert ACCESS not in str(exc.value) and SECRET not in str(exc.value)
     assert factory.config_modes == [0o600]
     assert all(not os.path.exists(path) for path in factory.config_paths)
+
+
+def test_malformed_or_oversized_header_block_fails_closed():
+    process = FakeProcess(body=PNG, status=200)
+    process.stderr = io.BytesIO(b"x" * (curl_target.HEADER_LINE_LIMIT + 1) + b"\n")
+    factory = CaptureFactory()
+    factory.__call__ = None
+
+    class One:
+        def __call__(self, argv, **kwargs):
+            return process
+
+    with pytest.raises(StorageUnavailable):
+        make_target(One()).get(KEY, len(PNG))
 
 
 def test_close_prevents_further_operations():
