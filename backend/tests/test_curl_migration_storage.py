@@ -59,12 +59,19 @@ class CaptureFactory:
         self.config_contents = []
         self.config_modes = []
         self.processes = []
+        self.header_paths = []
 
     def __call__(self, argv, **kwargs):
         config_path = argv[argv.index("--config") + 1]
         self.config_paths.append(config_path)
         self.config_contents.append(open(config_path, "rb").read())
         self.config_modes.append(stat.S_IMODE(os.stat(config_path).st_mode))
+        if "--dump-header" in argv:
+            header_path = argv[argv.index("--dump-header") + 1]
+            assert stat.S_IMODE(os.stat(header_path).st_mode) == 0o600
+            with open(header_path, "wb") as stream:
+                stream.write(f"HTTP/1.1 {self.status} fixture\r\n\r\n".encode())
+            self.header_paths.append(header_path)
         self.calls.append((list(argv), dict(kwargs)))
         if self.fail:
             raise RuntimeError("PRIVATE_SUBPROCESS_FAILURE")
@@ -192,7 +199,7 @@ def test_get_uses_private_config_without_secret_argv_and_cleans_it():
 
 
 def test_get_404_is_missing_and_failure_text_never_leaks_secrets():
-    factory = CaptureFactory(body=b"", status=404)
+    factory = CaptureFactory(body=b"<Error><Code>NoSuchKey</Code></Error>", status=404)
     target = make_target(factory)
     with pytest.raises(StorageMissing) as exc:
         target.get(KEY, len(PNG))
