@@ -90,6 +90,20 @@ def _pytest_main(args: list[str]) -> int:
     socket.getaddrinfo = local_resolve
     socket.socket.connect = local_connect
     socket.socket.connect_ex = local_connect_ex
+    # A native curl process escapes Python socket fences. Permit only its exact
+    # local capability probes; adapter tests inject memory process doubles.
+    original_popen = subprocess.Popen
+
+    def fenced_popen(args, *positional, **kwargs):
+        command = [args] if isinstance(args, (str, bytes)) else list(args)
+        executable = os.fsdecode(command[0]) if command else ""
+        if Path(executable).name == "curl" and command[1:] not in [
+            ["-q", "--version"], ["-q", "--help", "all"],
+        ]:
+            raise AssertionError("Native curl network operations forbidden before collection")
+        return original_popen(args, *positional, **kwargs)
+
+    subprocess.Popen = fenced_popen
     import replit.object_storage as sdk
 
     def forbidden_client(*args, **kwargs):

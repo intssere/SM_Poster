@@ -18,12 +18,14 @@ def main(argv=None):
         parser.add_argument("--execute", action="store_true")
         parser.add_argument("--execution-env")
         parser.add_argument("--dry-run", action="store_true")
+        parser.add_argument("--target-transport", choices=("boto3", "curl"), default="boto3")
         args = parser.parse_args(argv)
         result = run(database_env=args.database_env, roots=args.source_root,
                      target_envs={name: getattr(args, "target_" + name + "_env")
                                   for name in ("endpoint", "bucket", "access_key",
                                                "secret_key", "region", "path_style")},
-                     execute=args.execute, dry_run=args.dry_run, execution_env=args.execution_env)
+                     execute=args.execute, dry_run=args.dry_run, execution_env=args.execution_env,
+                     target_transport=args.target_transport)
     except Exception:
         result = {"success": False, "terminal_stage": "ARGUMENTS",
                   "database_writes": 0, "target_put_attempts": 0}

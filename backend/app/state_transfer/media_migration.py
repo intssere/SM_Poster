@@ -9,7 +9,7 @@ import stat
 
 import sqlalchemy as sa
 
-from app.services.media_storage import PNG_SIGNATURE, StorageMissing, media_key
+from app.services.media_storage import PNG_SIGNATURE, StorageCorrupt, StorageMissing, media_key
 from app.services.s3_media_storage import S3Config
 from .catalog import digest
 from .media_continuity import IDENTITY, SHA256, MAX_FILE_BYTES, _open_source
@@ -146,6 +146,10 @@ def transfer_bytes(source, roots, config, *, dry_run, report, source_factory, ta
             except StorageMissing:
                 item["target_status"] = "MISSING"
                 continue
+            except StorageCorrupt:
+                item["target_status"] = "CONFLICT"
+                conflicts = True
+                continue
             try:
                 verified(payload, item)
                 item["target_status"] = "VERIFIED_EXISTING"
@@ -187,7 +191,7 @@ def transfer_bytes(source, roots, config, *, dry_run, report, source_factory, ta
 
 
 def run(*, database_env, roots, target_envs, execute=False, dry_run=False,
-        execution_env=None, source_factory=None, target_factory=None):
+        execution_env=None, source_factory=None, target_factory=None, target_transport="boto3"):
     report = {"success": False, "terminal_stage": "EXECUTION_GATE", "objects": [],
               "database_writes": 0, "publishing_admission": "NOT_GRANTED",
               "media_certification": "NOT_GRANTED", "source_reads": 0, "target_reads": 0,
@@ -201,6 +205,12 @@ def run(*, database_env, roots, target_envs, execute=False, dry_run=False,
         _require(not (dry_run and (execute or execution_env is not None)))
         _require(dry_run or execute or (execution_env is not None and _env(execution_env) == ACK))
         report["mode"] = "DRY_RUN" if dry_run else "EXECUTE"
+        report["terminal_stage"] = "TARGET_TRANSPORT_CAPABILITY"
+        _require(target_transport in {"boto3", "curl"})
+        curl_binary = None
+        if target_transport == "curl":
+            from .curl_migration_storage import check_curl_capability
+            curl_binary = check_curl_capability()
         report["terminal_stage"] = "CONFIGURATION"
         config = target_config(target_envs, database_env, execution_env)
         source_roots = local_roots(roots)
@@ -212,9 +222,14 @@ def run(*, database_env, roots, target_envs, execute=False, dry_run=False,
         engine.dispose()
         engine = None
         from .migration_storage import ReplitExactReader, S3ExactTarget
+        selected_factory = S3ExactTarget
+        if target_transport == "curl":
+            from functools import partial
+            from .curl_migration_storage import CurlExactTarget
+            selected_factory = partial(CurlExactTarget, binary=curl_binary)
         transfer_bytes(source, source_roots, config, dry_run=dry_run, report=report,
                        source_factory=source_factory or ReplitExactReader,
-                       target_factory=target_factory or S3ExactTarget)
+                       target_factory=target_factory or selected_factory)
     except Exception:
         report["success"] = False
         report["media_certification"] = "NOT_GRANTED"

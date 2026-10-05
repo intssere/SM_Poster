@@ -71,6 +71,54 @@ object is capped at 100 MiB, and remote reads at expected size plus one byte.
 The existing general-purpose storage adapters and backend-selection rules are
 unchanged.
 
+## Opt-in curl target transport
+
+The target transport defaults to **boto3**, unchanged. Add
+`--target-transport curl` to explicitly select the manual-migration-only
+`CurlExactTarget`; there is no automatic fallback in either direction and no
+production dependency addition. Both transports use the same six named target
+environment variables, bindings, database/source guards and verification layer.
+Transport choice does not change fingerprint semantics.
+
+Curl selection checks the local binary's HTTPS support, SigV4/help options and
+version **8.4.0 or later** before configuration values, roots, DB or storage are
+accessed. That minimum is required for transfer-time `--max-filesize` enforcement
+when Content-Length is absent. The resolved binary identity is checked again
+before each request. An absent, incompatible or changed binary fails closed.
+
+Each exact GET/conditional PUT uses one curl invocation, with redirects and
+retries disabled, HTTPS-only protocols, explicit connect/total deadlines, URL
+globbing disabled and no proxy, `.curlrc`, netrc option or inherited sealed
+environment. Addressing is exactly virtual-host or path-style as configured;
+there is no addressing fallback. No list/delete/ACL operation is implemented.
+HTTP/1.1 is explicit (no HTTP/2 refused-stream reissue), and PUT suppresses
+`Expect: 100-continue` (no automatic 417/Expect reissue).
+
+Credentials and the exact URL are escaped into a per-request **0600** curl config
+inside a **0700** temporary directory under `/tmp`, outside the workspace. Only
+its filename appears in argv. Upload bytes travel through stdin, never argv or
+image files. Headers are also private. All temporary files are immediately
+removed after that single request, including spawn errors, timeouts and
+verification failures. Exceptions never include curl stderr, response bodies,
+credential contents or endpoint URLs.
+
+GET range and maximum response size are expected size + 1; independent Python
+pipe readers also enforce that cap and kill/reap oversized or timed-out children.
+Every existing object still requires exact PNG signature, SHA-256 and size
+verification in the migration layer. Incorrect total Content-Range or oversized
+existing objects classify **CONFLICT**. HTTP 404 is missing only for an empty
+response or a bounded, recognized NoSuchKey/NotFound/404 S3 error; NoSuchBucket,
+unknown/error responses, redirects and authentication failures refuse rather
+than becoming missing. Error XML that cannot fit the same bound is refused.
+Conditional PUT always includes `If-None-Match: *`; a 412/race refuses with no
+retry or overwrite. Readback remains mandatory before the next PUT.
+
+Dry-run remains zero-write regardless of transport. The capability check is not
+authorization to execute, and neither transport grants publishing admission.
+Tests substitute memory subprocesses; the isolated runner and pytest collection
+both block native curl requests so a native binary cannot bypass socket fences.
+Hosted CI additionally runs real **local version/help only** capability checks.
+
 ## Output and partial operations
 
 Output is structured JSON: validated creative IDs/keys/digests/sizes, source
@@ -95,6 +143,8 @@ that verify, and refuses conflicts before additional writes.
 python scripts/run_isolated_readiness_tests.py --with-postgres -q \
   tests/test_media_migration.py tests/test_migration_storage.py \
   tests/test_media_migration_postgres.py tests/test_media_continuity.py \
+  tests/test_curl_migration_storage.py tests/test_curl_media_migration.py \
+  tests/test_curl_media_migration_postgres.py \
   tests/test_media_continuity_postgres.py tests/test_s3_media_storage.py \
   tests/test_migration_closed_state_transfer.py
 ```
