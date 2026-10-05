@@ -103,3 +103,32 @@ The runner strips attached service credentials before collection, installs live
 storage/client and external-network fences, and creates its own disposable
 PostgreSQL cluster. All migration storage operations in tests use memory doubles.
 No production probe or transfer is included in tests or CI.
+
+
+## Target transport selection
+
+The command defaults to the existing boto3 transport. Operators may explicitly
+select the migration-only curl/SigV4 transport with:
+
+`--target-transport curl`
+
+Curl mode exists for constrained operator environments where the canonical
+Python boto3 dependency is not installed but a compatible curl binary is
+already present. Before reading target credentials, opening PostgreSQL, reading
+source media, or constructing a storage client, curl mode performs a local-only
+capability check requiring HTTPS support and `--aws-sigv4`. Capability failure
+refuses the command with no database or storage access.
+
+The curl transport preserves the same exact target keys and S3 configuration.
+It permits only bounded GET and conditional PUT operations, never list, prefix
+search, delete, ACL, copy, multipart, or redirect/retry behavior. Credentials
+are never placed in process arguments: each operation receives signing material
+through a private 0600 temporary curl config outside the checkout, and that file
+is removed in `finally` on success or failure. The subprocess receives a
+minimal environment without ambient cloud credentials or proxy variables.
+Writes retain `If-None-Match: *`; a precondition failure refuses the operation
+rather than overwriting or adopting a concurrent object.
+
+Transport choice does not change source validation, target byte verification,
+dry-run zero-write semantics, fingerprints, publishing admission, or the rule
+that every execute/re-execute requires separate authorization.
