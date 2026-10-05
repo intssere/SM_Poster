@@ -15,6 +15,7 @@ def main(argv=None):
         parser.add_argument("--source-root", action="append", required=True)
         for name in ("endpoint", "bucket", "access-key", "secret-key", "region", "path-style"):
             parser.add_argument("--target-" + name + "-env", required=True)
+        parser.add_argument("--target-transport", choices=("boto3", "curl"), default="boto3")
         parser.add_argument("--execute", action="store_true")
         parser.add_argument("--execution-env")
         parser.add_argument("--dry-run", action="store_true")
@@ -23,6 +24,7 @@ def main(argv=None):
                      target_envs={name: getattr(args, "target_" + name + "_env")
                                   for name in ("endpoint", "bucket", "access_key",
                                                "secret_key", "region", "path_style")},
+                     target_transport=args.target_transport,
                      execute=args.execute, dry_run=args.dry_run, execution_env=args.execution_env)
     except Exception:
         result = {"success": False, "terminal_stage": "ARGUMENTS",
