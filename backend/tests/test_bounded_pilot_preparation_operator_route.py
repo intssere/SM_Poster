@@ -199,15 +199,20 @@ def test_preparation_sanitizes_unexpected_exception(client, monkeypatch):
 
 
 def test_route_has_no_provider_or_arbitrary_batch_control_dependency():
+    from app.services import bounded_pilot_preparation_operator as operator
+
     source = inspect.getsource(route)
+    service_source = inspect.getsource(operator)
     for forbidden in (
         "BufferGateway",
         "PinterestClient",
         "create_pinterest_post",
         "run_bounded_batch_once",
         "set_control",
-        "batch_id:",
     ):
         assert forbidden not in source
+        assert forbidden not in service_source
+    assert "batch_id:" not in source
     assert "@router.post" in source
     assert "require_real_admin" in source
+    assert "prepare_certified_batch" in source
