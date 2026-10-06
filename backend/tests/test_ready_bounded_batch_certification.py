@@ -221,8 +221,9 @@ def test_ready_certification_source_is_read_only_and_provider_free():
         "INSERT ",
         "UPDATE ",
         "DELETE ",
-        "object_storage",
         "S3ExactTarget",
+        "PNGMediaStorage",
+        "CreativeStorage",
     )
     for token in forbidden:
         assert token not in source
