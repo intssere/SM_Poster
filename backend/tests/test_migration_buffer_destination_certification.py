@@ -63,9 +63,9 @@ def production_buffer(monkeypatch):
             )
             connection.exec_driver_sql(
                 "INSERT INTO public.pinterest_connections "
-                "(id,provider,external_user_id,access_token_ciphertext,"
+                "(id,provider,external_user_id,granted_scopes,access_token_ciphertext,"
                 "refresh_token_ciphertext,status) "
-                "VALUES ('connection-1','pinterest','external-user',"
+                "VALUES ('connection-1','pinterest','external-user','[]'::json,"
                 "'cipher-access','cipher-refresh','CONNECTED')"
             )
             connection.exec_driver_sql(
