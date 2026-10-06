@@ -81,20 +81,8 @@ def _verify_expected_preflight(plan, items, routes, now, expected):
         raise batch.BoundedBatchError("BOUNDED_BATCH_PREFLIGHT_RECEIPT_MISMATCH")
 
 
-def prepare_batch(db, batch_id, plan_id, *, settings, renderer=None, expected_preflight=None):
-    """Use an applied portfolio's ordering; never accept replacement IDs.
-
-    Existing execution services retain SEO/content policy and machine permit
-    creation. Internal gates are copied only for this explicitly gated scope.
-    """
-    batch.require_gate(db, settings)
-    control, current = batch._lock(db, batch_id)
-    if current["state"] == "READY":
-        if expected_preflight is not None:
-            raise batch.BoundedBatchError("BOUNDED_BATCH_ALREADY_READY")
-        return batch_id
-    if current["state"] != "OPEN":
-        raise batch.BoundedBatchError("BOUNDED_BATCH_PREPARATION_NOT_OPEN")
+def validate_preflight_receipt(db, plan_id, *, settings, expected_preflight):
+    """Recompute the exact five candidates without writing any preparation state."""
     plan = db.get(PinterestPortfolioPlan, plan_id)
     if not plan or plan.status != "ACTIVE":
         raise batch.BoundedBatchError("BOUNDED_BATCH_ACTIVE_PLAN_REQUIRED")
@@ -112,13 +100,60 @@ def prepare_batch(db, batch_id, plan_id, *, settings, renderer=None, expected_pr
     ).limit(5).with_for_update()).all()
     if len(items) != 5:
         raise batch.BoundedBatchError("BOUNDED_BATCH_EXACTLY_FIVE_REQUIRED")
-    frozen = []
     routes = []
-    for slot, item in enumerate(items):
+    for item in items:
         route = board_strategy(db, canonical_key=item.board_key_snapshot, settings=settings)
         if route.get("status") != "ROUTE_EXISTING":
             raise batch.BoundedBatchError("BOUNDED_BATCH_EXISTING_BOARD_REQUIRED")
         routes.append(route)
+    _verify_expected_preflight(plan, items, routes, now, expected_preflight)
+    return plan, now, items, routes
+
+
+def prepare_batch(db, batch_id, plan_id, *, settings, renderer=None, expected_preflight=None):
+    """Use an applied portfolio's ordering; never accept replacement IDs.
+
+    Existing execution services retain SEO/content policy and machine permit
+    creation. Internal gates are copied only for this explicitly gated scope.
+    """
+    batch.require_gate(db, settings)
+    control, current = batch._lock(db, batch_id)
+    if current["state"] == "READY":
+        if expected_preflight is not None:
+            raise batch.BoundedBatchError("BOUNDED_BATCH_ALREADY_READY")
+        return batch_id
+    if current["state"] != "OPEN":
+        raise batch.BoundedBatchError("BOUNDED_BATCH_PREPARATION_NOT_OPEN")
+    if expected_preflight is not None:
+        plan, now, items, routes = validate_preflight_receipt(
+            db, plan_id, settings=settings, expected_preflight=expected_preflight,
+        )
+    else:
+        plan = db.get(PinterestPortfolioPlan, plan_id)
+        if not plan or plan.status != "ACTIVE":
+            raise batch.BoundedBatchError("BOUNDED_BATCH_ACTIVE_PLAN_REQUIRED")
+        now = batch._now(db)
+        items = db.scalars(sa.select(PinterestPortfolioPlanItem).where(
+            PinterestPortfolioPlanItem.plan_id == plan_id,
+            PinterestPortfolioPlanItem.is_reserve.is_(False),
+            PinterestPortfolioPlanItem.status == "PLANNED",
+            PinterestPortfolioPlanItem.publication_id.is_(None),
+            PinterestPortfolioPlanItem.planned_date >= now.date(),
+        ).order_by(
+            PinterestPortfolioPlanItem.planned_date,
+            PinterestPortfolioPlanItem.slot_index,
+            PinterestPortfolioPlanItem.id,
+        ).limit(5).with_for_update()).all()
+        if len(items) != 5:
+            raise batch.BoundedBatchError("BOUNDED_BATCH_EXACTLY_FIVE_REQUIRED")
+        routes = []
+        for item in items:
+            route = board_strategy(db, canonical_key=item.board_key_snapshot, settings=settings)
+            if route.get("status") != "ROUTE_EXISTING":
+                raise batch.BoundedBatchError("BOUNDED_BATCH_EXISTING_BOARD_REQUIRED")
+            routes.append(route)
+    frozen = []
+    for slot, (item, route) in enumerate(zip(items, routes)):
         frozen.append(dict(
             batch_id=batch_id, slot=slot, item_id=item.id, product_id=item.product_id,
             board_id=route["selected_board_id"],
