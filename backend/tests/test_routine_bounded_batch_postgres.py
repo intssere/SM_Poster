@@ -615,3 +615,156 @@ def test_migration_downgrade_reupgrade_and_evidence_refusal(postgres, monkeypatc
         batch.create_batch(db, settings=settings())
     with pytest.raises(RuntimeError, match="evidence"):
         command.downgrade(config, "0033")
+
+def _closed_preparation_settings():
+    return settings(
+        publishing_enabled=False,
+        buffer_publishing_enabled=False,
+        routine_pinterest_worker_enabled=False,
+        routine_buffer_dispatch_enabled=False,
+        routine_scheduled_live_admission_enabled=False,
+        routine_pinterest_dry_run=True,
+    )
+
+
+def _preflight_receipt(db, rows, monkeypatch):
+    from app.services import routine_bounded_preparation as preparation
+    plan = db.get(d.PinterestPortfolioPlan, "plan")
+    plan.plan_fingerprint = "a" * 64
+    for index, row in enumerate(rows):
+        item = db.get(d.PinterestPortfolioPlanItem, row["item_id"])
+        item.publication_id = None
+        item.status = "PLANNED"
+        item.selection_metadata = {"candidate_fingerprint": f"{100 + index:064x}"}
+    control = db.get(RoutinePublishingControl, "default")
+    control.state = "PAUSED"
+    db.commit()
+
+    route = {
+        "status": "ROUTE_EXISTING",
+        "selected_board_id": rows[0]["board_id"],
+        "selected_external_board_id": rows[0]["external_board_id"],
+    }
+    monkeypatch.setattr(preparation, "board_strategy", lambda *a, **k: route)
+    now = batch._now(db)
+    candidates = [
+        preparation._candidate_identity(
+            db.get(d.PinterestPortfolioPlanItem, row["item_id"]), route,
+        )
+        for row in rows[:5]
+    ]
+    receipt = {
+        "contract": preparation.PREFLIGHT_CONTRACT,
+        "database_revision": "0034",
+        "month_start": now.date().replace(day=1).isoformat(),
+        "current_date": now.date().isoformat(),
+        "plan_id": plan.id,
+        "plan_fingerprint": plan.plan_fingerprint,
+        "candidates": candidates,
+    }
+    receipt["preflight_fingerprint"] = preparation._digest(receipt)
+    return receipt, route
+
+
+def test_preflight_bound_preparation_rejects_coherent_wrong_receipt_before_batch_write(
+    postgres, monkeypatch,
+):
+    from app.services import bounded_pilot_preparation_operator as operator
+    from app.services import routine_bounded_preparation as preparation
+
+    with postgres[1]() as db:
+        rows = graph(db)
+        receipt, route = _preflight_receipt(db, rows, monkeypatch)
+        monkeypatch.setattr(operator, "board_strategy", lambda *a, **k: route)
+        monkeypatch.setattr(
+            preparation,
+            "execute_autonomous_item",
+            lambda *a, **k: pytest.fail("execution must not start for receipt drift"),
+        )
+
+        altered = {**receipt, "candidates": [dict(row) for row in receipt["candidates"]]}
+        altered["candidates"][0]["product_id"] = "product-tampered"
+        raw = {
+            key: altered["candidates"][0][key]
+            for key in altered["candidates"][0]
+            if key != "candidate_identity_fingerprint"
+        }
+        altered["candidates"][0]["candidate_identity_fingerprint"] = preparation._digest(raw)
+        payload = {key: altered[key] for key in (
+            "contract", "database_revision", "month_start", "current_date",
+            "plan_id", "plan_fingerprint", "candidates",
+        )}
+        altered["preflight_fingerprint"] = preparation._digest(payload)
+
+        with pytest.raises(
+            operator.BoundedPreparationOperatorError,
+            match="BOUNDED_BATCH_PREFLIGHT_RECEIPT_MISMATCH",
+        ):
+            operator.prepare_certified_batch(
+                db,
+                settings=_closed_preparation_settings(),
+                actor="operator",
+                receipt=altered,
+            )
+
+        assert db.scalar(sa.select(sa.func.count()).select_from(schema.batches)) == 0
+        assert db.scalar(sa.select(sa.func.count()).select_from(schema.entries)) == 0
+
+
+def test_preflight_bound_preparation_creates_one_ready_batch_and_is_idempotent(
+    postgres, monkeypatch,
+):
+    from types import SimpleNamespace
+    from app.services import bounded_pilot_preparation_operator as operator
+    from app.services import routine_bounded_preparation as preparation
+
+    with postgres[1]() as db:
+        rows = graph(db)
+        receipt, route = _preflight_receipt(db, rows, monkeypatch)
+        monkeypatch.setattr(operator, "board_strategy", lambda *a, **k: route)
+        selected = []
+
+        def execute(db, item_id, **kwargs):
+            selected.append(item_id)
+            row = next(r for r in rows if r["item_id"] == item_id)
+            item = db.get(d.PinterestPortfolioPlanItem, item_id)
+            item.publication_id = row["publication_id"]
+            item.status = "SCHEDULED"
+            db.commit()
+            return SimpleNamespace(
+                status="SUCCEEDED",
+                stage="PERMITTED",
+                publication_id=row["publication_id"],
+                routine_permit_id=row["permit_id"],
+            )
+
+        monkeypatch.setattr(preparation, "execute_autonomous_item", execute)
+        safe = _closed_preparation_settings()
+        first = operator.prepare_certified_batch(
+            db, settings=safe, actor="operator", receipt=receipt,
+        )
+        assert first["success"] is True
+        assert first["status"] == "READY"
+        assert first["candidate_count"] == 5
+        assert first["idempotent"] is False
+        assert first["publishing_admission"] == "NOT_GRANTED"
+        assert first["provider_calls"] == first["buffer_calls"] == 0
+        assert first["pinterest_calls"] == first["oauth_calls"] == first["ai_calls"] == 0
+        assert selected == [row["item_id"] for row in rows[:5]]
+        assert db.scalar(sa.select(sa.func.count()).select_from(schema.batches)) == 1
+        assert db.scalar(sa.select(sa.func.count()).select_from(schema.entries)) == 5
+        current = snapshot(db, first["batch_id"])
+        assert current["state"] == "READY"
+        assert current["attempts_reserved"] == 0
+        assert current["admission_closed"] is False
+
+        second = operator.prepare_certified_batch(
+            db, settings=safe, actor="operator", receipt=receipt,
+        )
+        assert second["batch_id"] == first["batch_id"]
+        assert second["batch_manifest_sha256"] == first["batch_manifest_sha256"]
+        assert second["entries"] == first["entries"]
+        assert second["idempotent"] is True
+        assert selected == [row["item_id"] for row in rows[:5]]
+        assert db.scalar(sa.select(sa.func.count()).select_from(schema.batches)) == 1
+        assert db.scalar(sa.select(sa.func.count()).select_from(schema.entries)) == 5

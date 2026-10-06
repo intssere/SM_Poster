@@ -27,6 +27,7 @@ from app.api.routes.learning import router as learning_router
 from app.api.routes.optimizer import router as optimizer_router
 from app.api.routes.object_storage_readiness import router as object_storage_readiness_router
 from app.api.routes.bounded_pilot_preflight import router as bounded_pilot_preflight_router
+from app.api.routes.bounded_pilot_preparation import router as bounded_pilot_preparation_router
 
 cors_origins = get_settings().allowed_origins
 
@@ -68,6 +69,7 @@ app.include_router(learning_router, prefix="/api")
 app.include_router(optimizer_router, prefix="/api")
 app.include_router(object_storage_readiness_router, prefix="/api")
 app.include_router(bounded_pilot_preflight_router, prefix="/api")
+app.include_router(bounded_pilot_preparation_router, prefix="/api")
 
 
 @app.get("/")
