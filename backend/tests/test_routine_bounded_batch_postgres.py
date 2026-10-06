@@ -768,3 +768,110 @@ def test_preflight_bound_preparation_creates_one_ready_batch_and_is_idempotent(
         assert selected == [row["item_id"] for row in rows[:5]]
         assert db.scalar(sa.select(sa.func.count()).select_from(schema.batches)) == 1
         assert db.scalar(sa.select(sa.func.count()).select_from(schema.entries)) == 5
+
+
+def _ready_certification_fixture(db):
+    from app.state_transfer import ready_bounded_batch_certification as certification
+
+    rows = graph(db)
+    plan = db.get(d.PinterestPortfolioPlan, "plan")
+    plan.plan_fingerprint = "a" * 64
+    now = datetime.now(timezone.utc)
+    for index, row in enumerate(rows[:5]):
+        pub = db.get(d.PinPublication, row["publication_id"])
+        pub.scheduled_for = now + timedelta(hours=2 + index)
+        pub.attempt_started_at = None
+        pub.pinterest_pin_id = None
+        pub.published_at = None
+
+        permit = db.get(RoutineDispatchPermit, row["permit_id"])
+        permit.scheduled_for_snapshot = pub.scheduled_for
+        permit.request_fingerprint = request_fingerprint_for(pub)
+        permit.status = "ACTIVE"
+        permit.consumed_at = None
+        permit.revoked_at = None
+        permit.revoked_by = None
+        permit.revoke_reason = None
+
+        item = db.get(d.PinterestPortfolioPlanItem, row["item_id"])
+        item.status = "SCHEDULED"
+        item.publication_id = pub.id
+
+        creative = db.get(d.PinCreative, pub.creative_id)
+        creative.render_status = "RENDERED"
+        creative.sha256 = f"{500 + index:064x}"
+        creative.size_bytes = 12345 + index
+        creative.rendered_url = f"/api/pins/creatives/{creative.id}/image"
+
+        row["request_fingerprint"] = permit.request_fingerprint
+
+    db.commit()
+    identity = batch.create_batch(db, settings=settings())
+    db.execute(schema.batches.update().where(
+        schema.batches.c.id == identity
+    ).values(state="PREPARING"))
+    db.execute(schema.entries.insert(), [
+        dict(batch_id=identity, **row) for row in rows[:5]
+    ])
+    db.commit()
+    batch.seal_batch(db, identity, settings=settings())
+
+    control = db.get(RoutinePublishingControl, "default")
+    control.state = "PAUSED"
+    db.commit()
+    return certification, identity, rows
+
+
+def test_ready_batch_readonly_certification_accepts_exact_unattempted_manifest(postgres):
+    engine, sessions = postgres
+    with sessions() as db:
+        certification, identity, rows = _ready_certification_fixture(db)
+
+    report = {"database_transactions": 0}
+    dossier = certification.database_snapshot(engine, report)
+
+    assert report["database_transactions"] == 1
+    assert dossier["contract"] == "FIVE_PIN_READY_BATCH_CERTIFICATION_V1"
+    assert dossier["database_revision"] == "0034"
+    assert dossier["routine_state"] == "PAUSED"
+    assert dossier["batch_id"] == identity
+    assert dossier["batch_state"] == "READY"
+    assert dossier["target_count"] == 5
+    assert dossier["attempts_reserved"] == 0
+    assert dossier["admission_closed"] is False
+    assert dossier["candidate_count"] == 5
+    assert len(dossier["entries"]) == 5
+    assert [entry["slot"] for entry in dossier["entries"]] == list(range(5))
+    assert [entry["publication_id"] for entry in dossier["entries"]] == [
+        row["publication_id"] for row in rows[:5]
+    ]
+    assert [entry["permit_id"] for entry in dossier["entries"]] == [
+        row["permit_id"] for row in rows[:5]
+    ]
+    assert len(dossier["ready_batch_fingerprint"]) == 64
+
+    with sessions() as db:
+        current = snapshot(db, identity)
+        assert current["state"] == "READY"
+        assert current["attempts_reserved"] == 0
+        assert current["admission_closed"] is False
+
+
+def test_ready_batch_readonly_certification_refuses_permit_drift(postgres):
+    engine, sessions = postgres
+    with sessions() as db:
+        certification, identity, rows = _ready_certification_fixture(db)
+        permit = db.get(RoutineDispatchPermit, rows[0]["permit_id"])
+        permit.status = "REVOKED"
+        permit.revoked_at = datetime.now(timezone.utc)
+        permit.revoked_by = "test"
+        permit.revoke_reason = "test-drift"
+        db.commit()
+
+    with pytest.raises(Exception):
+        certification.database_snapshot(engine, {"database_transactions": 0})
+
+    with sessions() as db:
+        current = snapshot(db, identity)
+        assert current["state"] == "READY"
+        assert current["attempts_reserved"] == 0
