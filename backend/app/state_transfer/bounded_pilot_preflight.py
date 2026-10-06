@@ -151,7 +151,7 @@ def database_snapshot(engine, report):
         _hex64(plan["plan_fingerprint"])
 
         # Fetch one extra row only to prove a larger pool cannot expand the
-        # certified manifest. The exact first five match prepare_batch().limit(5).
+        # certified manifest. The exact first five match bounded preparation.
         rows = connection.exec_driver_sql(
             "SELECT id,slot_index,planned_date,product_id,local_board_id,"
             "board_key_snapshot,content_angle_id,item_fingerprint,selection_metadata "
