@@ -774,6 +774,8 @@ def _ready_certification_fixture(db):
     from app.state_transfer import ready_bounded_batch_certification as certification
 
     rows = graph(db)
+    plan = db.get(d.PinterestPortfolioPlan, "plan")
+    plan.plan_fingerprint = "a" * 64
     now = datetime.now(timezone.utc)
     for index, row in enumerate(rows[:5]):
         pub = db.get(d.PinPublication, row["publication_id"])
