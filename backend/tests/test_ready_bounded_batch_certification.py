@@ -233,3 +233,70 @@ def test_ready_certification_source_is_read_only_and_provider_free():
     assert "@router.get" in route_source
     assert "@router.post" not in route_source
     assert "require_real_admin" in route_source
+
+
+
+def test_ready_refusal_diagnostic_is_stable_and_sanitized(monkeypatch):
+    class FakeEngine:
+        def dispose(self):
+            pass
+
+    monkeypatch.setattr(certification, "gate_snapshot", lambda: {"safe": True})
+    monkeypatch.setattr(certification.sa, "create_engine", lambda *args, **kwargs: FakeEngine())
+
+    def refuse(engine, report):
+        raise certification.ReadyCertificationRefusal(
+            "READY_PUBLICATION_NOT_FUTURE",
+            "ENTRY",
+            "scheduled_for",
+        )
+
+    monkeypatch.setattr(certification, "database_snapshot", refuse)
+    result = certification.run()
+
+    assert result["success"] is False
+    assert result["ready_batch_certification"] == "NOT_GRANTED"
+    assert result["publishing_admission"] == "NOT_GRANTED"
+    assert result["terminal_stage"] == "READ_ONLY_DATABASE"
+    assert result["refusal_code"] == "READY_PUBLICATION_NOT_FUTURE"
+    assert result["refusal_stage"] == "ENTRY"
+    assert result["refusal_field"] == "scheduled_for"
+
+
+def test_ready_unexpected_exception_never_echoes_secret(monkeypatch):
+    class FakeEngine:
+        def dispose(self):
+            pass
+
+    secret = "PRIVATE_DATABASE_URL_AND_TOKEN"
+    monkeypatch.setattr(certification, "gate_snapshot", lambda: {"safe": True})
+    monkeypatch.setattr(certification.sa, "create_engine", lambda *args, **kwargs: FakeEngine())
+
+    def boom(engine, report):
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(certification, "database_snapshot", boom)
+    result = certification.run()
+
+    assert result["success"] is False
+    assert result["refusal_code"] == "READY_CERTIFICATION_UNEXPECTED"
+    assert result["refusal_stage"] == "READ_ONLY_DATABASE"
+    assert result["refusal_field"] is None
+    assert secret not in json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    "condition,code,stage,field",
+    [
+        (False, "READY_NONTERMINAL_BATCH_COUNT_MISMATCH", "BATCH", "batch_count"),
+        (False, "READY_PUBLICATION_NOT_FUTURE", "ENTRY", "scheduled_for"),
+        (False, "READY_PERMIT_EXPIRED", "ENTRY", "expires_at"),
+        (False, "READY_ATTEMPT_EVIDENCE_PRESENT", "ACCOUNTING", "publication_attempts"),
+    ],
+)
+def test_ready_check_exposes_only_stable_diagnostic(condition, code, stage, field):
+    with pytest.raises(certification.ReadyCertificationRefusal) as caught:
+        certification._check(condition, code, stage, field)
+    assert caught.value.code == code
+    assert caught.value.stage == stage
+    assert caught.value.field == field
