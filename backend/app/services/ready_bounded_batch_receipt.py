@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from uuid import UUID, uuid5
 
@@ -20,6 +21,12 @@ ENTITY_TYPE = "routine_autonomous_batch"
 RECEIPT_VERSION = "FIVE_PIN_READY_BATCH_DURABLE_RECEIPT_V1"
 RECEIPT_NAMESPACE = UUID("c44b25ab-4d9f-4af6-b65b-60f2d2db85e7")
 LOG_PREFIX = "BOUNDED_READY_RECEIPT_JSON "
+
+
+def railway_production_receipt_logging_enabled() -> bool:
+    return bool(os.environ.get("RAILWAY_ENVIRONMENT_ID")) and (
+        os.environ.get("RAILWAY_ENVIRONMENT_NAME") == "production"
+    )
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 
 _COUNTER_FIELDS = (
