@@ -134,21 +134,32 @@ def test_conflicting_or_tampered_receipt_fails_closed(receipt_db):
         assert db.scalar(sa.select(sa.func.count()).select_from(AuditLog)) == 1
 
 
-def test_runtime_log_emits_only_validated_sanitized_receipt(receipt_db, caplog):
+def test_runtime_log_emits_only_validated_sanitized_receipt(receipt_db):
     _, sessions = receipt_db
     with sessions() as db:
         stored = receipt.persist_receipt(db, _certification())
 
-    logger = logging.getLogger("test.ready-receipt")
-    with caplog.at_level(logging.INFO, logger=logger.name):
-        assert receipt.emit_latest_receipt_to_runtime_log(
-            session_factory=sessions,
-            logger=logger,
-        ) is True
+    lines = []
+    assert receipt.emit_latest_receipt_to_runtime_log(
+        session_factory=sessions,
+        writer=lines.append,
+    ) is True
 
-    messages = [record.getMessage() for record in caplog.records]
-    line = next(message for message in messages if message.startswith(receipt.LOG_PREFIX))
-    parsed = json.loads(line[len(receipt.LOG_PREFIX):])
+    assert lines
+    assert all(line.startswith(receipt.LOG_CHUNK_PREFIX) for line in lines)
+    envelopes = [
+        json.loads(line[len(receipt.LOG_CHUNK_PREFIX):])
+        for line in lines
+    ]
+    assert [item["index"] for item in envelopes] == list(range(1, len(envelopes) + 1))
+    assert {item["total"] for item in envelopes} == {len(envelopes)}
+    assert len({item["payload_sha256"] for item in envelopes}) == 1
+    assert all(len(item["data"]) <= receipt.LOG_CHUNK_BYTES for item in envelopes)
+
+    serialized = "".join(item["data"] for item in envelopes)
+    import hashlib
+    assert hashlib.sha256(serialized.encode("utf-8")).hexdigest() == envelopes[0]["payload_sha256"]
+    parsed = json.loads(serialized)
     assert parsed["receipt_id"] == stored["receipt_id"]
     assert parsed["receipt"]["batch_id"] == "batch-ready"
     assert parsed["receipt"]["candidate_count"] == 5
@@ -336,3 +347,45 @@ def test_main_receipt_emission_no_longer_depends_on_app_env_label():
     source = inspect.getsource(main.lifespan)
     assert "railway_production_receipt_logging_enabled()" in source
     assert "settings.app_env" not in source
+
+
+
+def test_runtime_log_emits_explicit_not_found_marker(receipt_db):
+    _, sessions = receipt_db
+    lines = []
+    assert receipt.emit_latest_receipt_to_runtime_log(
+        session_factory=sessions,
+        writer=lines.append,
+    ) is False
+    assert lines == [receipt.LOG_NOT_FOUND]
+
+
+def test_runtime_log_emits_explicit_refused_marker_on_invalid_receipt(receipt_db):
+    _, sessions = receipt_db
+    with sessions() as db:
+        stored = receipt.persist_receipt(db, _certification())
+        row = db.get(AuditLog, stored["receipt_id"])
+        corrupted = dict(row.metadata_json)
+        corrupted["receipt_sha256"] = "0" * 64
+        row.metadata_json = corrupted
+        db.commit()
+
+    lines = []
+    assert receipt.emit_latest_receipt_to_runtime_log(
+        session_factory=sessions,
+        writer=lines.append,
+    ) is False
+    assert lines == [receipt.LOG_REFUSED]
+
+
+def test_runtime_log_default_writer_uses_stdout_flush_path(receipt_db, capsys):
+    _, sessions = receipt_db
+    with sessions() as db:
+        receipt.persist_receipt(db, _certification())
+
+    assert receipt.emit_latest_receipt_to_runtime_log(session_factory=sessions) is True
+    output = capsys.readouterr()
+    lines = [line for line in output.out.splitlines() if line]
+    assert lines
+    assert all(line.startswith(receipt.LOG_CHUNK_PREFIX) for line in lines)
+    assert output.err == ""
