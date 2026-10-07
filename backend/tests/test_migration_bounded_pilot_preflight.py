@@ -308,7 +308,7 @@ def test_execution_ready_selector_skips_elapsed_schedule_slots_before_freeze(
     production_preflight, monkeypatch,
 ):
     engine, seeded = production_preflight
-    schedule_day = seeded["today"] + timedelta(days=1)
+    schedule_day = seeded["today"]
     with seeded["sessions"]() as db:
         for index in range(6):
             item = db.get(d.PinterestPortfolioPlanItem, f"item-{index}")
@@ -421,6 +421,23 @@ def test_execution_ready_selector_skips_elapsed_schedule_slots_before_freeze(
         "candidates": certified["candidates"],
     }
     assert certified["preflight_fingerprint"] == cert.digest(payload)
+
+    receipt = {
+        **payload,
+        "preflight_fingerprint": certified["preflight_fingerprint"],
+    }
+    monkeypatch.setattr(preparation.batch, "_now", lambda db: now)
+    with seeded["sessions"]() as db:
+        _, validated_now, validated_items, _ = preparation.validate_preflight_receipt(
+            db,
+            seeded["plan_id"],
+            settings=settings,
+            expected_preflight=receipt,
+        )
+        assert validated_now == now
+        assert [item.id for item in validated_items] == [
+            "item-3", "item-4", "item-5", "item-6", "item-7",
+        ]
 
 
 def test_terminal_failed_batch_frozen_item_is_excluded_from_new_preflight(
