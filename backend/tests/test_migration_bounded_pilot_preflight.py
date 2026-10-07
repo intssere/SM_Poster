@@ -423,6 +423,55 @@ def test_execution_ready_selector_skips_elapsed_schedule_slots_before_freeze(
     assert certified["preflight_fingerprint"] == cert.digest(payload)
 
 
+def test_terminal_failed_batch_frozen_item_is_excluded_from_new_preflight(
+    production_preflight, monkeypatch,
+):
+    engine, seeded = production_preflight
+    with seeded["sessions"]() as db:
+        first = db.get(d.PinterestPortfolioPlanItem, "item-0")
+        db.execute(bounded_schema.batches.insert().values(
+            id="failed-preparation-batch",
+            state="PREPARING",
+            admission_closed=True,
+        ))
+        db.execute(bounded_schema.entries.insert().values(
+            batch_id="failed-preparation-batch",
+            slot=0,
+            item_id=first.id,
+            product_id=first.product_id,
+            board_id=seeded["provider_board_id"],
+            external_board_id="external-board",
+            item_fingerprint=first.item_fingerprint,
+        ))
+        db.execute(
+            bounded_schema.batches.update()
+            .where(bounded_schema.batches.c.id == "failed-preparation-batch")
+            .values(state="FAILED", reason="BOUNDED_BATCH_PREPARATION_FAILED")
+        )
+        db.commit()
+
+    result = _invoke(engine, monkeypatch)
+    assert result["success"] is True
+    assert result["conflicting_nonterminal_batch_count"] == 0
+    assert [row["item_id"] for row in result["candidates"]] == [
+        "item-1", "item-2", "item-3", "item-4", "item-5",
+    ]
+    assert "item-0" not in {row["item_id"] for row in result["candidates"]}
+    with seeded["sessions"]() as db:
+        evidence = db.execute(
+            sa.select(bounded_schema.entries).where(
+                bounded_schema.entries.c.batch_id == "failed-preparation-batch"
+            )
+        ).mappings().one()
+        assert evidence["item_id"] == "item-0"
+        failed = db.execute(
+            sa.select(bounded_schema.batches).where(
+                bounded_schema.batches.c.id == "failed-preparation-batch"
+            )
+        ).mappings().one()
+        assert failed["state"] == "FAILED"
+
+
 def test_more_candidates_never_expand_or_change_first_five(production_preflight, monkeypatch):
     engine, seeded = production_preflight
     first = _invoke(engine, monkeypatch)
