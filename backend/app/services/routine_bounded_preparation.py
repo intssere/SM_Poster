@@ -39,6 +39,7 @@ def _execution_ready_items(db, plan_id, *, settings, now, limit, lock=False):
         PinterestPortfolioPlanItem.status == "PLANNED",
         PinterestPortfolioPlanItem.publication_id.is_(None),
         PinterestPortfolioPlanItem.planned_date >= now.date(),
+        ~PinterestPortfolioPlanItem.id.in_(sa.select(entries.c.item_id)),
     ).order_by(
         PinterestPortfolioPlanItem.planned_date,
         PinterestPortfolioPlanItem.slot_index,
