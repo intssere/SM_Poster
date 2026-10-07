@@ -8,6 +8,7 @@ import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.api.routes import bounded_pilot_ready_receipt as route
 from app.core import auth
@@ -85,7 +86,11 @@ def _certification():
 
 @pytest.fixture
 def receipt_db():
-    engine = sa.create_engine("sqlite:///:memory:")
+    engine = sa.create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     AuditLog.__table__.create(engine)
     sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     try:
