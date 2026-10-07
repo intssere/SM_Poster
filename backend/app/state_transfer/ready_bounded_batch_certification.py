@@ -67,6 +67,14 @@ def _manifest_hash(rows):
     ).encode()).hexdigest()
 
 
+def _nonterminal_batch_count_class(row_count: int) -> str:
+    if row_count == 0:
+        return "ZERO"
+    if row_count == 1:
+        return "ONE"
+    return "MULTIPLE"
+
+
 def database_snapshot(engine, report):
     """Exactly one PostgreSQL REPEATABLE READ / READ ONLY transaction."""
     with transaction(engine, readonly=True) as connection:
@@ -104,6 +112,9 @@ def database_snapshot(engine, report):
             "WHERE state IN ('OPEN','PREPARING','READY','RUNNING') "
             "ORDER BY created_at,id LIMIT 2"
         ).mappings().all()
+        report["nonterminal_batch_count_class"] = _nonterminal_batch_count_class(
+            len(batch_rows)
+        )
         _check(len(batch_rows) == 1, "READY_NONTERMINAL_BATCH_COUNT_MISMATCH", "BATCH", "batch_count")
         batch = dict(batch_rows[0])
         _text(batch["id"], 36, field="batch_id", stage="BATCH")
@@ -340,6 +351,7 @@ def run():
         "refusal_code": None,
         "refusal_stage": None,
         "refusal_field": None,
+        "nonterminal_batch_count_class": None,
     }
     previous = logging.root.manager.disable
     engine = None

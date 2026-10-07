@@ -304,3 +304,54 @@ def test_ready_check_exposes_only_stable_diagnostic(condition, code, stage, fiel
     assert caught.value.code == code
     assert caught.value.stage == stage
     assert caught.value.field == field
+
+
+@pytest.mark.parametrize(
+    "row_count,expected",
+    [
+        (0, "ZERO"),
+        (1, "ONE"),
+        (2, "MULTIPLE"),
+    ],
+)
+def test_ready_nonterminal_batch_count_class_is_sanitized(row_count, expected):
+    assert certification._nonterminal_batch_count_class(row_count) == expected
+
+
+def test_ready_count_class_survives_batch_count_refusal(monkeypatch):
+    class FakeEngine:
+        def dispose(self):
+            pass
+
+    monkeypatch.setattr(certification, "gate_snapshot", lambda: {"safe": True})
+    monkeypatch.setattr(certification, "_env", lambda name: "postgresql://safe.invalid/db")
+    monkeypatch.setattr(certification, "_url", lambda value: value)
+    monkeypatch.setattr(certification.sa, "create_engine", lambda *args, **kwargs: FakeEngine())
+
+    def refuse(engine, report):
+        report["nonterminal_batch_count_class"] = "ZERO"
+        raise certification.ReadyCertificationRefusal(
+            "READY_NONTERMINAL_BATCH_COUNT_MISMATCH",
+            "BATCH",
+            "batch_count",
+        )
+
+    monkeypatch.setattr(certification, "database_snapshot", refuse)
+    result = certification.run()
+
+    assert result["success"] is False
+    assert result["ready_batch_certification"] == "NOT_GRANTED"
+    assert result["publishing_admission"] == "NOT_GRANTED"
+    assert result["refusal_code"] == "READY_NONTERMINAL_BATCH_COUNT_MISMATCH"
+    assert result["refusal_stage"] == "BATCH"
+    assert result["refusal_field"] == "batch_count"
+    assert result["nonterminal_batch_count_class"] == "ZERO"
+    assert result["database_writes"] == 0
+    assert result["provider_calls"] == 0
+
+
+def test_ready_count_class_uses_existing_capped_batch_query_only():
+    source = inspect.getsource(certification.database_snapshot)
+    assert "ORDER BY created_at,id LIMIT 2" in source
+    assert "nonterminal_batch_count_class" in source
+    assert "SELECT count(*) FROM public.routine_autonomous_batches" not in source
