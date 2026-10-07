@@ -6,6 +6,7 @@ from app.core.config import get_settings
 from app.middleware import AdminAuthMiddleware
 from app.services.multichannel_generation_contract import install_multichannel_generation_contract
 from app.services.routine_pinterest_scheduler import start_scheduler, stop_scheduler
+from app.services.ready_bounded_batch_receipt import emit_latest_receipt_to_runtime_log
 
 install_multichannel_generation_contract()
 
@@ -29,6 +30,7 @@ from app.api.routes.object_storage_readiness import router as object_storage_rea
 from app.api.routes.bounded_pilot_preflight import router as bounded_pilot_preflight_router
 from app.api.routes.bounded_pilot_preparation import router as bounded_pilot_preparation_router
 from app.api.routes.bounded_pilot_ready import router as bounded_pilot_ready_router
+from app.api.routes.bounded_pilot_ready_receipt import router as bounded_pilot_ready_receipt_router
 
 cors_origins = get_settings().allowed_origins
 
@@ -36,6 +38,7 @@ cors_origins = get_settings().allowed_origins
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    emit_latest_receipt_to_runtime_log()
     await start_scheduler(settings=settings)
     try:
         yield
@@ -72,6 +75,7 @@ app.include_router(object_storage_readiness_router, prefix="/api")
 app.include_router(bounded_pilot_preflight_router, prefix="/api")
 app.include_router(bounded_pilot_preparation_router, prefix="/api")
 app.include_router(bounded_pilot_ready_router, prefix="/api")
+app.include_router(bounded_pilot_ready_receipt_router, prefix="/api")
 
 
 @app.get("/")
