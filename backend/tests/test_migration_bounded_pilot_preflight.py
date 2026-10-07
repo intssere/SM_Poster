@@ -9,10 +9,13 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker
 
+from app.core.config import Settings
 from app.db import bounded_batch_schema_0034 as bounded_schema
 from app.models import domain as d
 from app.models.routine_publishing import RoutineDispatchPermit, RoutinePublishingControl
 from app.state_transfer import bounded_pilot_preflight as cert
+from app.services import routine_bounded_preparation as preparation
+from app.services.pinterest_optimizer_apply import OPTIMIZER_METADATA_KEY
 from app.state_transfer import certify_bounded_pilot_preflight as cli
 from app.state_transfer.production_media_certification import CLOSED_FALSE_GATES, SAFE_SCALARS
 from tests.test_readiness_execution_admission_0032 import _isolated_database, pytestmark
@@ -112,6 +115,25 @@ def _seed(engine, *, item_count=6):
             status="ACTIVE",
             metadata_json={},
         )
+        optimizer = _add(
+            db,
+            d.PinterestOptimizerApplication,
+            id="optimizer",
+            plan_id=plan.id,
+            plan_fingerprint_snapshot=plan.plan_fingerprint,
+            optimizer_policy_version="TEST_OPTIMIZER_V1",
+            optimizer_fingerprint="3" * 64,
+            learning_fingerprint=None,
+            input_state_fingerprint="4" * 64,
+            frozen_item_count=0,
+            optimizable_item_count=item_count,
+            exploit_count=item_count,
+            explore_count=0,
+            recommendation_snapshot={},
+            status="APPLIED",
+            applied_by="test",
+            applied_at=now,
+        )
         products = []
         for index in range(item_count):
             product = _add(
@@ -134,7 +156,7 @@ def _seed(engine, *, item_count=6):
                 plan_id=plan.id,
                 slot_index=index,
                 is_reserve=False,
-                planned_date=today + timedelta(days=index),
+                planned_date=today + timedelta(days=index + 1),
                 product_id=product.id,
                 local_board_id=local_board.id,
                 board_key_snapshot=local_board.slug,
@@ -142,7 +164,18 @@ def _seed(engine, *, item_count=6):
                 angle_key_snapshot=angle.key,
                 seed_keywords=[],
                 selection_score=1,
-                selection_metadata={"candidate_fingerprint": f"{100 + index:064x}"},
+                selection_metadata={
+                    "candidate_fingerprint": f"{100 + index:064x}",
+                    OPTIMIZER_METADATA_KEY: {
+                        "optimizer_policy_version": optimizer.optimizer_policy_version,
+                        "optimizer_fingerprint": optimizer.optimizer_fingerprint,
+                        "input_state_fingerprint": optimizer.input_state_fingerprint,
+                        "recommended_position": index,
+                        "target_slot_index": index,
+                        "target_planned_date": (today + timedelta(days=index + 1)).isoformat(),
+                        "selection_reason": "test",
+                    },
+                },
                 item_fingerprint=f"{200 + index:064x}",
                 status="PLANNED",
                 publication_id=None,
@@ -265,6 +298,75 @@ def test_success_is_exactly_one_readonly_transaction_and_first_five_only(
         "worker_activations", "autonomy_activations",
     ):
         assert result[key] == 0
+
+
+def test_execution_ready_selector_skips_elapsed_schedule_slots_before_freeze(
+    production_preflight,
+):
+    engine, seeded = production_preflight
+    schedule_day = seeded["today"] + timedelta(days=1)
+    with seeded["sessions"]() as db:
+        for index in range(6):
+            item = db.get(d.PinterestPortfolioPlanItem, f"item-{index}")
+            item.planned_date = schedule_day
+            metadata = dict(item.selection_metadata)
+            optimizer = dict(metadata[OPTIMIZER_METADATA_KEY])
+            optimizer["recommended_position"] = index
+            optimizer["target_planned_date"] = schedule_day.isoformat()
+            metadata[OPTIMIZER_METADATA_KEY] = optimizer
+            item.selection_metadata = metadata
+        for index in range(6, 8):
+            product = _add(
+                db, d.Product, id=f"product-{index}", store_id=seeded["store_id"],
+                shopify_product_id=str(index), handle=f"product-{index}", title=f"Product {index}",
+                product_url=f"https://catalog.invalid/product-{index}", inventory_total=1, status="ACTIVE",
+            )
+            _add(
+                db, d.PinterestPortfolioPlanItem, id=f"item-{index}", plan_id=seeded["plan_id"],
+                slot_index=index, is_reserve=False, planned_date=schedule_day,
+                product_id=product.id, local_board_id=seeded["local_board_id"],
+                board_key_snapshot="existing", content_angle_id=seeded["angle_id"],
+                angle_key_snapshot="angle", seed_keywords=[], selection_score=1,
+                selection_metadata={
+                    "candidate_fingerprint": f"{100 + index:064x}",
+                    OPTIMIZER_METADATA_KEY: {
+                        "optimizer_policy_version": "TEST_OPTIMIZER_V1",
+                        "optimizer_fingerprint": "3" * 64,
+                        "input_state_fingerprint": "4" * 64,
+                        "recommended_position": index,
+                        "target_slot_index": index,
+                        "target_planned_date": schedule_day.isoformat(),
+                        "selection_reason": "test",
+                    },
+                },
+                item_fingerprint=f"{200 + index:064x}", status="PLANNED", publication_id=None,
+            )
+        optimizer_app = db.get(d.PinterestOptimizerApplication, "optimizer")
+        optimizer_app.optimizable_item_count = 8
+        optimizer_app.exploit_count = 8
+        db.commit()
+
+    settings = Settings(
+        _env_file=None,
+        PINTEREST_AUTONOMOUS_SCHEDULE_START_MINUTE_UTC=840,
+        PINTEREST_AUTONOMOUS_SCHEDULE_END_MINUTE_UTC=1320,
+    )
+    now = datetime(
+        schedule_day.year, schedule_day.month, schedule_day.day, 17, 0,
+        tzinfo=timezone.utc,
+    )
+    with seeded["sessions"]() as db:
+        ready = preparation._execution_ready_items(
+            db,
+            seeded["plan_id"],
+            settings=settings,
+            now=now,
+            limit=6,
+            lock=False,
+        )
+        assert [item.id for item in ready] == [
+            "item-3", "item-4", "item-5", "item-6", "item-7",
+        ]
 
 
 def test_more_candidates_never_expand_or_change_first_five(production_preflight, monkeypatch):
