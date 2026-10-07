@@ -1,5 +1,4 @@
 from contextlib import asynccontextmanager
-import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,7 +6,10 @@ from app.core.config import get_settings
 from app.middleware import AdminAuthMiddleware
 from app.services.multichannel_generation_contract import install_multichannel_generation_contract
 from app.services.routine_pinterest_scheduler import start_scheduler, stop_scheduler
-from app.services.ready_bounded_batch_receipt import emit_latest_receipt_to_runtime_log
+from app.services.ready_bounded_batch_receipt import (
+    emit_latest_receipt_to_runtime_log,
+    railway_production_receipt_logging_enabled,
+)
 
 install_multichannel_generation_contract()
 
@@ -39,7 +41,7 @@ cors_origins = get_settings().allowed_origins
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    if settings.app_env == "production" and os.environ.get("RAILWAY_ENVIRONMENT_ID"):
+    if railway_production_receipt_logging_enabled():
         emit_latest_receipt_to_runtime_log()
     await start_scheduler(settings=settings)
     try:
