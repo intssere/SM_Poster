@@ -166,9 +166,17 @@ def prepare_batch(db, batch_id, plan_id, *, settings, renderer=None, expected_pr
         if not plan or plan.status != "ACTIVE":
             raise batch.BoundedBatchError("BOUNDED_BATCH_ACTIVE_PLAN_REQUIRED")
         now = batch._now(db)
-        items = _execution_ready_items(
-            db, plan_id, settings=settings, now=now, limit=5, lock=True,
-        )
+        items = db.scalars(sa.select(PinterestPortfolioPlanItem).where(
+            PinterestPortfolioPlanItem.plan_id == plan_id,
+            PinterestPortfolioPlanItem.is_reserve.is_(False),
+            PinterestPortfolioPlanItem.status == "PLANNED",
+            PinterestPortfolioPlanItem.publication_id.is_(None),
+            PinterestPortfolioPlanItem.planned_date >= now.date(),
+        ).order_by(
+            PinterestPortfolioPlanItem.planned_date,
+            PinterestPortfolioPlanItem.slot_index,
+            PinterestPortfolioPlanItem.id,
+        ).limit(5).with_for_update()).all()
         if len(items) != 5:
             raise batch.BoundedBatchError("BOUNDED_BATCH_EXACTLY_FIVE_REQUIRED")
         routes = []
