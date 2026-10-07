@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import os
 import re
 from uuid import UUID, uuid5
@@ -21,6 +20,10 @@ ENTITY_TYPE = "routine_autonomous_batch"
 RECEIPT_VERSION = "FIVE_PIN_READY_BATCH_DURABLE_RECEIPT_V1"
 RECEIPT_NAMESPACE = UUID("c44b25ab-4d9f-4af6-b65b-60f2d2db85e7")
 LOG_PREFIX = "BOUNDED_READY_RECEIPT_JSON "
+LOG_CHUNK_PREFIX = "BOUNDED_READY_RECEIPT_CHUNK "
+LOG_NOT_FOUND = "BOUNDED_READY_RECEIPT_NOT_FOUND"
+LOG_REFUSED = "BOUNDED_READY_RECEIPT_REFUSED"
+LOG_CHUNK_BYTES = 1024
 
 
 def railway_production_receipt_logging_enabled() -> bool:
@@ -336,26 +339,61 @@ def latest_receipt(db: Session) -> dict | None:
     return {"receipt_id": rows[0].id, "receipt": receipt}
 
 
-def emit_latest_receipt_to_runtime_log(*, session_factory=None, logger=None) -> bool:
+def _runtime_line(line: str, *, writer=None) -> None:
+    if writer is None:
+        print(line, flush=True)
+    else:
+        writer(line)
+
+
+def emit_latest_receipt_to_runtime_log(*, session_factory=None, writer=None) -> bool:
+    """Emit validated durable receipt as bounded stdout chunks.
+
+    Railway documents stdout/stderr as the canonical retained log channel.
+    Chunking prevents one oversized receipt line from becoming the transport
+    boundary, while a whole-payload SHA permits deterministic reconstruction.
+    """
     if session_factory is None:
         from app.db.session import SessionLocal
         session_factory = SessionLocal
-    logger = logger or logging.getLogger("uvicorn.error")
     db = session_factory()
     try:
         result = latest_receipt(db)
         if result is None:
+            _runtime_line(LOG_NOT_FOUND, writer=writer)
             return False
+
         serialized = json.dumps(
             result,
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=True,
         )
-        logger.info("%s%s", LOG_PREFIX, serialized)
+        payload_sha256 = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        chunks = [
+            serialized[index:index + LOG_CHUNK_BYTES]
+            for index in range(0, len(serialized), LOG_CHUNK_BYTES)
+        ]
+        if not chunks:
+            _fail("STORED_READY_RECEIPT_INVALID")
+
+        total = len(chunks)
+        for index, chunk in enumerate(chunks, start=1):
+            envelope = json.dumps(
+                {
+                    "index": index,
+                    "total": total,
+                    "payload_sha256": payload_sha256,
+                    "data": chunk,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            )
+            _runtime_line(f"{LOG_CHUNK_PREFIX}{envelope}", writer=writer)
         return True
     except Exception:
-        logger.warning("BOUNDED_READY_RECEIPT_REFUSED")
+        _runtime_line(LOG_REFUSED, writer=writer)
         return False
     finally:
         db.close()
