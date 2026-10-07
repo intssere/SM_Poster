@@ -242,6 +242,8 @@ def test_ready_refusal_diagnostic_is_stable_and_sanitized(monkeypatch):
             pass
 
     monkeypatch.setattr(certification, "gate_snapshot", lambda: {"safe": True})
+    monkeypatch.setattr(certification, "_env", lambda name: "postgresql://safe.invalid/db")
+    monkeypatch.setattr(certification, "_url", lambda value: value)
     monkeypatch.setattr(certification.sa, "create_engine", lambda *args, **kwargs: FakeEngine())
 
     def refuse(engine, report):
@@ -270,6 +272,8 @@ def test_ready_unexpected_exception_never_echoes_secret(monkeypatch):
 
     secret = "PRIVATE_DATABASE_URL_AND_TOKEN"
     monkeypatch.setattr(certification, "gate_snapshot", lambda: {"safe": True})
+    monkeypatch.setattr(certification, "_env", lambda name: "postgresql://safe.invalid/db")
+    monkeypatch.setattr(certification, "_url", lambda value: value)
     monkeypatch.setattr(certification.sa, "create_engine", lambda *args, **kwargs: FakeEngine())
 
     def boom(engine, report):
