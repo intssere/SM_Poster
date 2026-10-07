@@ -646,6 +646,11 @@ def _preflight_receipt(db, rows, monkeypatch):
         "selected_external_board_id": rows[0]["external_board_id"],
     }
     monkeypatch.setattr(preparation, "board_strategy", lambda *a, **k: route)
+    monkeypatch.setattr(
+        preparation,
+        "execution_readiness",
+        lambda *a, **k: {"ready": True, "blockers": []},
+    )
     now = batch._now(db)
     candidates = [
         preparation._candidate_identity(
