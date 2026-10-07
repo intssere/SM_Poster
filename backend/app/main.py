@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,7 +39,8 @@ cors_origins = get_settings().allowed_origins
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    emit_latest_receipt_to_runtime_log()
+    if settings.app_env == "production" and os.environ.get("RAILWAY_ENVIRONMENT_ID"):
+        emit_latest_receipt_to_runtime_log()
     await start_scheduler(settings=settings)
     try:
         yield
