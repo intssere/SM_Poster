@@ -312,3 +312,27 @@ def test_receipt_source_has_no_provider_or_live_execution_paths():
     assert "AuditLog(" in source
     assert "db.add(row)" in source
     assert "db.commit()" in source
+
+
+
+def test_railway_production_receipt_logging_gate_uses_railway_identity(monkeypatch):
+    monkeypatch.delenv("RAILWAY_ENVIRONMENT_ID", raising=False)
+    monkeypatch.delenv("RAILWAY_ENVIRONMENT_NAME", raising=False)
+    monkeypatch.setenv("APP_ENV", "development")
+    assert receipt.railway_production_receipt_logging_enabled() is False
+
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT_ID", "env-id")
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT_NAME", "preview")
+    assert receipt.railway_production_receipt_logging_enabled() is False
+
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT_NAME", "production")
+    assert receipt.railway_production_receipt_logging_enabled() is True
+
+
+def test_main_receipt_emission_no_longer_depends_on_app_env_label():
+    import inspect
+    import app.main as main
+
+    source = inspect.getsource(main.lifespan)
+    assert "railway_production_receipt_logging_enabled()" in source
+    assert "settings.app_env" not in source
