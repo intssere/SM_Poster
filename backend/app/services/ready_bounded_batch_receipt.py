@@ -8,6 +8,7 @@ import re
 from uuid import UUID, uuid5
 
 import sqlalchemy as sa
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.domain import AuditLog
@@ -281,6 +282,25 @@ def persist_receipt(db: Session, certification_report: dict) -> dict:
     db.add(row)
     try:
         db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = db.get(AuditLog, row_id)
+        if existing is None:
+            raise ReadyReceiptError("READY_RECEIPT_WRITE_FAILED") from None
+        try:
+            stored = validate_stored_receipt(dict(existing.metadata_json or {}))
+        except ReadyReceiptError:
+            raise ReadyReceiptError("READY_RECEIPT_CONFLICT") from None
+        if (
+            existing.actor != ACTOR
+            or existing.action != ACTION
+            or existing.entity_type != ENTITY_TYPE
+            or existing.entity_id != receipt["batch_id"]
+            or existing.correlation_id != receipt["ready_batch_fingerprint"]
+            or stored != receipt
+        ):
+            raise ReadyReceiptError("READY_RECEIPT_CONFLICT")
+        return {"created": False, "receipt_id": row_id, "receipt": stored}
     except Exception:
         db.rollback()
         raise ReadyReceiptError("READY_RECEIPT_WRITE_FAILED") from None
