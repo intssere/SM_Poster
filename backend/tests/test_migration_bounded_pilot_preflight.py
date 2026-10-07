@@ -9,7 +9,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker
 
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.db import bounded_batch_schema_0034 as bounded_schema
 from app.models import domain as d
 from app.models.routine_publishing import RoutineDispatchPermit, RoutinePublishingControl
@@ -206,7 +206,11 @@ def production_preflight(monkeypatch):
             monkeypatch.setenv(name, "false")
         for name, value in SAFE_SCALARS.items():
             monkeypatch.setenv(name, value)
-        yield engine, seeded
+        get_settings.cache_clear()
+        try:
+            yield engine, seeded
+        finally:
+            get_settings.cache_clear()
 
 
 def _invoke(engine, monkeypatch):
