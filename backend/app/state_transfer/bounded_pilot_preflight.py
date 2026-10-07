@@ -14,8 +14,10 @@ from types import SimpleNamespace
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models.domain import Board, PinterestBoard, PinterestConnection, Product
 from app.services.pinterest_board_strategy import board_strategy
+from app.services.routine_bounded_preparation import _execution_ready_items
 from .catalog import digest, validate_catalog
 from .one_shot_migration import _env, _require, _url
 from .production_media_certification import gate_snapshot
@@ -150,20 +152,10 @@ def database_snapshot(engine, report):
         _text(plan["store_id"], maximum=36)
         _hex64(plan["plan_fingerprint"])
 
-        # Fetch one extra row only to prove a larger pool cannot expand the
-        # certified manifest. The exact first five match bounded preparation.
-        rows = connection.exec_driver_sql(
-            "SELECT id,slot_index,planned_date,product_id,local_board_id,"
-            "board_key_snapshot,content_angle_id,item_fingerprint,selection_metadata "
-            "FROM public.pinterest_portfolio_plan_items "
-            "WHERE plan_id=%s AND is_reserve IS FALSE AND status='PLANNED' "
-            "AND publication_id IS NULL AND planned_date >= %s "
-            "ORDER BY planned_date,slot_index,id LIMIT 6",
-            (plan["id"], current_date),
-        ).mappings().all()
-        _require(len(rows) >= 5)
-        selected = [dict(row) for row in rows[:5]]
-
+        # Use the exact autonomous execution-readiness contract before freezing
+        # candidate identity. Fetch one extra ready item only to prove that a
+        # larger ready pool cannot expand the certified five-item manifest.
+        current_timestamp = connection.exec_driver_sql("SELECT CURRENT_TIMESTAMP").scalar_one()
         db = Session(
             bind=connection,
             autoflush=False,
@@ -171,12 +163,36 @@ def database_snapshot(engine, report):
             join_transaction_mode="rollback_only",
         )
         try:
-            candidates = [_route_candidate(db, plan, row) for row in selected]
+            ready_items = _execution_ready_items(
+                db,
+                plan["id"],
+                settings=get_settings(),
+                now=current_timestamp,
+                limit=6,
+                lock=False,
+            )
+            _require(len(ready_items) >= 5)
+            selected = ready_items[:5]
+            selected_rows = [
+                {
+                    "id": item.id,
+                    "slot_index": item.slot_index,
+                    "planned_date": item.planned_date,
+                    "product_id": item.product_id,
+                    "local_board_id": item.local_board_id,
+                    "board_key_snapshot": item.board_key_snapshot,
+                    "content_angle_id": item.content_angle_id,
+                    "item_fingerprint": item.item_fingerprint,
+                    "selection_metadata": item.selection_metadata,
+                }
+                for item in selected
+            ]
+            candidates = [_route_candidate(db, plan, row) for row in selected_rows]
         finally:
             db.close()
 
         _require([candidate["slot_index"] for candidate in candidates] ==
-                 [int(row["slot_index"]) for row in selected])
+                 [int(item.slot_index) for item in selected])
         _require(len({c["item_id"] for c in candidates}) == 5)
         _require(len({c["item_fingerprint"] for c in candidates}) == 5)
         _require(len({c["candidate_fingerprint"] for c in candidates}) == 5)
@@ -213,7 +229,7 @@ def database_snapshot(engine, report):
             "plan_id": plan["id"],
             "plan_fingerprint": plan["plan_fingerprint"],
             "candidate_count": 5,
-            "candidate_pool_has_more": len(rows) > 5,
+            "candidate_pool_has_more": len(ready_items) > 5,
             "candidates": candidates,
             "preflight_fingerprint": preflight_fingerprint,
         }
