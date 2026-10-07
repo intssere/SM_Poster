@@ -10,6 +10,9 @@ from app.services.ready_bounded_batch_receipt import (
     emit_latest_receipt_to_runtime_log,
     railway_production_receipt_logging_enabled,
 )
+from app.services.ready_bounded_batch_runtime_evidence import (
+    emit_live_ready_certification_to_runtime_log,
+)
 
 install_multichannel_generation_contract()
 
@@ -43,6 +46,7 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     if railway_production_receipt_logging_enabled():
         emit_latest_receipt_to_runtime_log()
+        emit_live_ready_certification_to_runtime_log()
     await start_scheduler(settings=settings)
     try:
         yield
