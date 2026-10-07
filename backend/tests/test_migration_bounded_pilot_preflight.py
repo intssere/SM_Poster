@@ -305,7 +305,7 @@ def test_success_is_exactly_one_readonly_transaction_and_first_five_only(
 
 
 def test_execution_ready_selector_skips_elapsed_schedule_slots_before_freeze(
-    production_preflight,
+    production_preflight, monkeypatch,
 ):
     engine, seeded = production_preflight
     schedule_day = seeded["today"] + timedelta(days=1)
@@ -371,6 +371,56 @@ def test_execution_ready_selector_skips_elapsed_schedule_slots_before_freeze(
         assert [item.id for item in ready] == [
             "item-3", "item-4", "item-5", "item-6", "item-7",
         ]
+
+    real_selector = preparation._execution_ready_items
+
+    def fixed_time_selector(db, plan_id, *, settings, now, limit, lock=False):
+        return real_selector(
+            db,
+            plan_id,
+            settings=settings,
+            now=now.replace(
+                year=schedule_day.year,
+                month=schedule_day.month,
+                day=schedule_day.day,
+                hour=17,
+                minute=0,
+                second=0,
+                microsecond=0,
+            ),
+            limit=limit,
+            lock=lock,
+        )
+
+    monkeypatch.setattr(cert, "_execution_ready_items", fixed_time_selector)
+    monkeypatch.setattr(
+        cert,
+        "get_settings",
+        lambda: Settings(
+            _env_file=None,
+            PINTEREST_AUTONOMOUS_SCHEDULE_START_MINUTE_UTC=840,
+            PINTEREST_AUTONOMOUS_SCHEDULE_END_MINUTE_UTC=1320,
+        ),
+    )
+    certified = _invoke(engine, monkeypatch)
+    assert certified["success"] is True
+    assert [row["item_id"] for row in certified["candidates"]] == [
+        "item-3", "item-4", "item-5", "item-6", "item-7",
+    ]
+    assert all(
+        row["item_id"] not in {"item-0", "item-1", "item-2"}
+        for row in certified["candidates"]
+    )
+    payload = {
+        "contract": "FIVE_PIN_BOUNDED_PREFLIGHT_V1",
+        "database_revision": "0034",
+        "month_start": certified["month_start"],
+        "current_date": certified["current_date"],
+        "plan_id": certified["plan_id"],
+        "plan_fingerprint": certified["plan_fingerprint"],
+        "candidates": certified["candidates"],
+    }
+    assert certified["preflight_fingerprint"] == cert.digest(payload)
 
 
 def test_more_candidates_never_expand_or_change_first_five(production_preflight, monkeypatch):
