@@ -325,6 +325,32 @@ def test_failed_preflight_never_opens_mutating_session(monkeypatch):
     assert opened == []
 
 
+def test_failed_preflight_does_not_consume_restart_guard():
+    engine = sa.create_engine("sqlite:///:memory:")
+    AuditLog.__table__.create(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    failed = {
+        "success": False,
+        "bounded_preflight_certification": "NOT_GRANTED",
+        "publishing_admission": "NOT_GRANTED",
+    }
+
+    result = cli.run(
+        preflight_runner=lambda: failed,
+        invocation_id="d" * 64,
+        invocation_session_factory=sessions,
+        require_invocation_guard=True,
+    )
+    assert result["success"] is False
+    assert result["terminal_stage"] == "PREFLIGHT"
+    assert result["code"] == "PREFLIGHT_NOT_CERTIFIED"
+    assert result["invocation_guard_claimed"] is False
+    assert result["invocation_guard_database_writes"] == 0
+    with sessions() as db:
+        assert db.scalar(sa.select(sa.func.count()).select_from(AuditLog)) == 0
+    engine.dispose()
+
+
 def test_persistent_closed_state_drift_blocks_before_session(monkeypatch):
     opened = []
     monkeypatch.setattr(cli, "gate_snapshot", lambda: {
