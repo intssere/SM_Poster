@@ -135,6 +135,11 @@ def _blocked_candidate_summary(db, plan_id, now, settings):
         "generation_blocked": 0,
         "missing_persisted_template": 0,
         "evaluation_error": 0,
+        "generation_blocker_groups": {
+            "seo": 0, "source_image": 0, "creative_layout": 0,
+            "board_or_angle": 0, "duplicate_or_history": 0,
+            "product": 0, "template": 0, "other": 0,
+        },
     }
     internal = _execution_settings(settings)
     for item in db.scalars(statement).all():
@@ -148,8 +153,35 @@ def _blocked_candidate_summary(db, plan_id, now, settings):
                 counts["execution_blocked"] += 1
             if generation.get("ready") is not True:
                 counts["generation_blocked"] += 1
-                if "CREATIVE_TEMPLATE_NOT_PERSISTED" in (generation.get("blockers") or []):
+                blockers = generation.get("blockers") or []
+                if "CREATIVE_TEMPLATE_NOT_PERSISTED" in blockers:
                     counts["missing_persisted_template"] += 1
+                # A single item can have multiple blocker groups; never log
+                # raw error strings, candidate identities or private content.
+                categories = set()
+                for blocker in blockers:
+                    if not isinstance(blocker, str):
+                        categories.add("other")
+                    elif "SEO" in blocker or "KEYWORD" in blocker:
+                        categories.add("seo")
+                    elif "IMAGE" in blocker or "MEDIA" in blocker:
+                        categories.add("source_image")
+                    elif "COPY" in blocker or "LAYOUT" in blocker or "TEXT" in blocker:
+                        categories.add("creative_layout")
+                    elif "BOARD" in blocker or "ANGLE" in blocker:
+                        categories.add("board_or_angle")
+                    elif "DUPLICATE" in blocker or "HISTORY" in blocker or "CONCEPT" in blocker:
+                        categories.add("duplicate_or_history")
+                    elif "PRODUCT" in blocker or "INVENTORY" in blocker:
+                        categories.add("product")
+                    elif "TEMPLATE" in blocker:
+                        categories.add("template")
+                    else:
+                        categories.add("other")
+                if not categories:
+                    categories.add("other")
+                for category in categories:
+                    counts["generation_blocker_groups"][category] += 1
         except Exception:
             counts["evaluation_error"] += 1
     return counts
