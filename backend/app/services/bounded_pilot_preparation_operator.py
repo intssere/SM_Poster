@@ -32,6 +32,12 @@ def _raise(code: str):
 def _sanitized_preparation_code(exc: Exception) -> str:
     value = getattr(exc, "code", None)
     if not isinstance(value, str) or not value:
+        if exc.__class__.__name__ not in {
+            "AutonomousGenerationError",
+            "PinterestSeoError",
+            "CreativeRenderError",
+        }:
+            return "BOUNDED_PREPARATION_INTERNAL_ERROR"
         value = str(exc).strip()
     if (
         not value
