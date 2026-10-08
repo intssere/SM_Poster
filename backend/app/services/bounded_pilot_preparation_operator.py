@@ -29,6 +29,21 @@ def _raise(code: str):
     raise BoundedPreparationOperatorError(code)
 
 
+def _sanitized_preparation_code(exc: Exception) -> str:
+    value = getattr(exc, "code", None)
+    if not isinstance(value, str) or not value:
+        value = str(exc).strip()
+    if (
+        not value
+        or len(value) > 120
+        or any(not (ch.isupper() or ch.isdigit() or ch == "_") for ch in value)
+    ):
+        return "BOUNDED_PREPARATION_INTERNAL_ERROR"
+    if value.startswith("BOUNDED_"):
+        return value
+    return f"BOUNDED_PREPARATION_{value}"[:120]
+
+
 def _hex64(value) -> bool:
     return isinstance(value, str) and len(value) == 64 and set(value) <= _HEX
 
@@ -259,6 +274,11 @@ def prepare_certified_batch(db, *, settings, actor: str, receipt: dict, renderer
     except batch.BoundedBatchError as exc:
         db.rollback()
         raise BoundedPreparationOperatorError(str(exc)) from None
+    except Exception as exc:
+        db.rollback()
+        raise BoundedPreparationOperatorError(
+            _sanitized_preparation_code(exc)
+        ) from None
 
     result = _verify_ready_batch(db, identity, receipt, settings=settings)
     return {**result, "idempotent": False}
