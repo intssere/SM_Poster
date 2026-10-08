@@ -98,6 +98,17 @@ def _seed(engine, *, item_count=6):
         angle = _add(
             db, d.ContentAngle, id="angle", key="angle", name="Angle", active=True,
         )
+        _add(
+            db,
+            d.CreativeTemplate,
+            id="template-editorial",
+            key="editorial_product_pick",
+            version=1,
+            name="Editorial Product Pick",
+            renderer="satori",
+            definition={},
+            active=True,
+        )
         plan = _add(
             db,
             d.PinterestPortfolioPlan,
