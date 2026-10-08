@@ -151,6 +151,22 @@ def emit_live_preflight_certification_to_runtime_log(*, certification_runner=Non
             and safe["publishing_admission"] == "NOT_GRANTED"
             and safe.get("candidate_count") == 5
             and safe.get("database_revision") == "0034"
+            and safe.get("terminal_stage") == "COMPLETE"
+            and safe.get("schema_canonicality") == "PASS"
+            and safe.get("routine_state") == "PAUSED"
+            and safe.get("publish_unknown_count") == 0
+            and safe.get("conflicting_nonterminal_batch_count") == 0
+            and safe.get("database_transactions") == 1
+            and all(safe.get(key) == 0 for key in (
+                "database_writes", "provider_calls", "provider_reads",
+                "provider_writes", "buffer_calls", "pinterest_calls",
+                "oauth_calls", "ai_calls", "object_storage_reads",
+                "object_storage_writes", "publication_creations",
+                "creative_creations", "approval_creations",
+                "permit_creations", "batch_creations",
+                "scheduler_activations", "worker_activations",
+                "autonomy_activations",
+            ))
         )
         if not success:
             safe.update(success=False, bounded_preflight_certification="NOT_GRANTED")
