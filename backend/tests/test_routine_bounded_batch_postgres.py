@@ -513,6 +513,11 @@ def test_autonomous_preparation_freezes_first_five_and_machine_permits(postgres,
             "status": "ROUTE_EXISTING", "selected_board_id": rows[0]["board_id"],
             "selected_external_board_id": rows[0]["external_board_id"],
         })
+        monkeypatch.setattr(
+            preparation,
+            "execution_readiness",
+            lambda *a, **k: {"ready": True, "blockers": []},
+        )
 
         def execute(db, item_id, **kwargs):
             # Fake renderer/execution, but durable graph/manifest/permit checks
@@ -543,6 +548,11 @@ def test_preparation_does_not_create_missing_board(postgres, monkeypatch):
             item.status = "PLANNED"
         db.commit()
         identity = batch.create_batch(db, settings=settings())
+        monkeypatch.setattr(
+            preparation,
+            "execution_readiness",
+            lambda *a, **k: {"ready": True, "blockers": []},
+        )
         monkeypatch.setattr(preparation, "board_strategy", lambda *a, **k: {"status": "CREATE_REQUIRED"})
         monkeypatch.setattr(preparation, "execute_autonomous_item", lambda *a, **k: pytest.fail("must not generate"))
         with pytest.raises(batch.BoundedBatchError, match="EXISTING_BOARD"):
@@ -646,6 +656,11 @@ def _preflight_receipt(db, rows, monkeypatch):
         "selected_external_board_id": rows[0]["external_board_id"],
     }
     monkeypatch.setattr(preparation, "board_strategy", lambda *a, **k: route)
+    monkeypatch.setattr(
+        preparation,
+        "execution_readiness",
+        lambda *a, **k: {"ready": True, "blockers": []},
+    )
     now = batch._now(db)
     candidates = [
         preparation._candidate_identity(

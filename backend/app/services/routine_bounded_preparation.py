@@ -7,13 +7,55 @@ import sqlalchemy as sa
 
 from app.db.bounded_batch_schema_0034 import batches, entries
 from app.models.domain import PinterestPortfolioPlan, PinterestPortfolioPlanItem
-from app.services.pinterest_autonomous_execution import execute_autonomous_item
+from app.services.pinterest_autonomous_execution import execution_readiness, execute_autonomous_item
 from app.services.pinterest_board_strategy import board_strategy
 from app.services.publication_scheduler import request_fingerprint_for
 from app.services import routine_bounded_batch as batch
 
 
 PREFLIGHT_CONTRACT = "FIVE_PIN_BOUNDED_PREFLIGHT_V1"
+
+
+def _execution_settings(settings):
+    """Exact process-local settings used for readiness and preparation execution."""
+    return settings.model_copy(update={
+        "pinterest_seo_brief_persistence_enabled": True,
+        "pinterest_autonomous_generation_enabled": True,
+        "routine_autonomous_authorization_enabled": True,
+        "pinterest_autonomous_execution_enabled": True,
+        "publishing_enabled": False,
+        "buffer_publishing_enabled": False,
+        "routine_pinterest_worker_enabled": False,
+        "routine_buffer_dispatch_enabled": False,
+        "pinterest_write_scope_enabled": False,
+    })
+
+
+def _execution_ready_items(db, plan_id, *, settings, now, limit, lock=False):
+    """Return the first ordered items that actual autonomous readiness would admit."""
+    statement = sa.select(PinterestPortfolioPlanItem).where(
+        PinterestPortfolioPlanItem.plan_id == plan_id,
+        PinterestPortfolioPlanItem.is_reserve.is_(False),
+        PinterestPortfolioPlanItem.status == "PLANNED",
+        PinterestPortfolioPlanItem.publication_id.is_(None),
+        PinterestPortfolioPlanItem.planned_date >= now.date(),
+        ~PinterestPortfolioPlanItem.id.in_(sa.select(entries.c.item_id)),
+    ).order_by(
+        PinterestPortfolioPlanItem.planned_date,
+        PinterestPortfolioPlanItem.slot_index,
+        PinterestPortfolioPlanItem.id,
+    )
+    if lock:
+        statement = statement.with_for_update()
+    internal = _execution_settings(settings)
+    ready = []
+    for item in db.scalars(statement).all():
+        readiness = execution_readiness(db, item.id, settings=internal, now=now)
+        if readiness.get("ready") is True:
+            ready.append(item)
+            if len(ready) >= limit:
+                break
+    return ready
 
 
 def _digest(payload):
@@ -87,17 +129,9 @@ def validate_preflight_receipt(db, plan_id, *, settings, expected_preflight):
     if not plan or plan.status != "ACTIVE":
         raise batch.BoundedBatchError("BOUNDED_BATCH_ACTIVE_PLAN_REQUIRED")
     now = batch._now(db)
-    items = db.scalars(sa.select(PinterestPortfolioPlanItem).where(
-        PinterestPortfolioPlanItem.plan_id == plan_id,
-        PinterestPortfolioPlanItem.is_reserve.is_(False),
-        PinterestPortfolioPlanItem.status == "PLANNED",
-        PinterestPortfolioPlanItem.publication_id.is_(None),
-        PinterestPortfolioPlanItem.planned_date >= now.date(),
-    ).order_by(
-        PinterestPortfolioPlanItem.planned_date,
-        PinterestPortfolioPlanItem.slot_index,
-        PinterestPortfolioPlanItem.id,
-    ).limit(5).with_for_update()).all()
+    items = _execution_ready_items(
+        db, plan_id, settings=settings, now=now, limit=5, lock=True,
+    )
     if len(items) != 5:
         raise batch.BoundedBatchError("BOUNDED_BATCH_EXACTLY_FIVE_REQUIRED")
     routes = []
@@ -133,17 +167,9 @@ def prepare_batch(db, batch_id, plan_id, *, settings, renderer=None, expected_pr
         if not plan or plan.status != "ACTIVE":
             raise batch.BoundedBatchError("BOUNDED_BATCH_ACTIVE_PLAN_REQUIRED")
         now = batch._now(db)
-        items = db.scalars(sa.select(PinterestPortfolioPlanItem).where(
-            PinterestPortfolioPlanItem.plan_id == plan_id,
-            PinterestPortfolioPlanItem.is_reserve.is_(False),
-            PinterestPortfolioPlanItem.status == "PLANNED",
-            PinterestPortfolioPlanItem.publication_id.is_(None),
-            PinterestPortfolioPlanItem.planned_date >= now.date(),
-        ).order_by(
-            PinterestPortfolioPlanItem.planned_date,
-            PinterestPortfolioPlanItem.slot_index,
-            PinterestPortfolioPlanItem.id,
-        ).limit(5).with_for_update()).all()
+        items = _execution_ready_items(
+            db, plan_id, settings=settings, now=now, limit=5, lock=True,
+        )
         if len(items) != 5:
             raise batch.BoundedBatchError("BOUNDED_BATCH_EXACTLY_FIVE_REQUIRED")
         routes = []
@@ -167,15 +193,7 @@ def prepare_batch(db, batch_id, plan_id, *, settings, renderer=None, expected_pr
     ))
     db.execute(entries.insert(), frozen)
     db.commit()
-    internal = settings.model_copy(update={
-        "pinterest_seo_brief_persistence_enabled": True,
-        "pinterest_autonomous_generation_enabled": True,
-        "routine_autonomous_authorization_enabled": True,
-        "pinterest_autonomous_execution_enabled": True,
-        "publishing_enabled": False, "buffer_publishing_enabled": False,
-        "routine_pinterest_worker_enabled": False, "routine_buffer_dispatch_enabled": False,
-        "pinterest_write_scope_enabled": False,
-    })
+    internal = _execution_settings(settings)
     try:
         for candidate in frozen:
             _, current = batch._lock(db, batch_id)
