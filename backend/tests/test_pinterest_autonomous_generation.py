@@ -753,7 +753,7 @@ def test_visual_copy_fallback_shortens_only_display_phrase(monkeypatch):
     calls = []
     def restricted_preflight(*, template_key, headline, supporting_text, product_category):
         calls.append((headline, supporting_text))
-        if len(supporting_text) > 44:
+        if len(calls) <= 3 or len(supporting_text) > 44:
             raise generation.CreativeRenderError("Creative text cannot fit the selected template.")
         return {"headline_lines": [headline], "supporting_lines": [supporting_text]}
 
