@@ -4,7 +4,11 @@ from __future__ import annotations
 import inspect
 import json
 
+import sqlalchemy as sa
+from sqlalchemy.orm import sessionmaker
+
 from app.core.config import Settings
+from app.models.domain import AuditLog
 from app.state_transfer import prepare_bounded_pilot as cli
 
 
@@ -147,6 +151,70 @@ def test_one_shot_preflight_then_process_local_override_only(monkeypatch):
     assert persistent.routine_bounded_batch_enabled is False
     assert persistent.routine_pinterest_batch_size == 1
     assert persistent.routine_pinterest_daily_write_limit == 1
+
+
+def test_restart_guard_consumes_authorization_before_preflight_and_blocks_restart():
+    engine = sa.create_engine("sqlite:///:memory:")
+    AuditLog.__table__.create(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    calls = []
+    failed = {
+        "success": False,
+        "bounded_preflight_certification": "NOT_GRANTED",
+        "publishing_admission": "NOT_GRANTED",
+    }
+    invocation_id = "a" * 64
+
+    first = cli.run(
+        preflight_runner=lambda: (calls.append("preflight") or failed),
+        invocation_id=invocation_id,
+        invocation_session_factory=sessions,
+        require_invocation_guard=True,
+    )
+    assert first["success"] is False
+    assert first["code"] == "PREFLIGHT_NOT_CERTIFIED"
+    assert first["invocation_guard_claimed"] is True
+    assert first["invocation_guard_database_writes"] == 1
+    assert first["invocation_receipt_id"] == cli._invocation_receipt_id(invocation_id)
+    assert calls == ["preflight"]
+
+    second = cli.run(
+        preflight_runner=lambda: (calls.append("restart-preflight") or failed),
+        invocation_id=invocation_id,
+        invocation_session_factory=sessions,
+        require_invocation_guard=True,
+    )
+    assert second["success"] is False
+    assert second["terminal_stage"] == "INVOCATION_GUARD"
+    assert second["code"] == "PREPARATION_INVOCATION_ALREADY_CLAIMED"
+    assert second["invocation_guard_claimed"] is False
+    assert second["invocation_guard_database_writes"] == 0
+    assert calls == ["preflight"]
+
+    with sessions() as db:
+        rows = list(db.scalars(sa.select(AuditLog)).all())
+        assert len(rows) == 1
+        assert rows[0].action == cli.INVOCATION_ACTION
+        assert rows[0].entity_id == invocation_id
+        assert rows[0].correlation_id == invocation_id
+    engine.dispose()
+
+
+def test_restart_guard_requires_exact_hex64_invocation_id():
+    for value, code in (
+        (None, "PREPARATION_INVOCATION_ID_REQUIRED"),
+        ("not-a-valid-id", "PREPARATION_INVOCATION_ID_INVALID"),
+    ):
+        result = cli.run(
+            preflight_runner=lambda: (_ for _ in ()).throw(
+                AssertionError("preflight must not run before invocation guard")
+            ),
+            invocation_id=value,
+            require_invocation_guard=True,
+        )
+        assert result["success"] is False
+        assert result["terminal_stage"] == "INVOCATION_GUARD"
+        assert result["code"] == code
 
 
 def test_failed_preflight_never_opens_mutating_session(monkeypatch):
