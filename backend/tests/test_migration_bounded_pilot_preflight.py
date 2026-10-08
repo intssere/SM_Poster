@@ -512,6 +512,50 @@ def test_execution_ready_selector_skips_elapsed_schedule_slots_before_freeze(
         ]
 
 
+def test_generation_preparation_blocker_is_skipped_before_preflight_freeze(
+    production_preflight, monkeypatch,
+):
+    engine, seeded = production_preflight
+    before = _mutation_counts(engine)
+    with seeded["sessions"]() as db:
+        image = db.get(d.ProductImage, "image-0")
+        image.editorial_eligible = False
+        db.commit()
+
+    certified = _invoke(engine, monkeypatch)
+    assert certified["success"] is True
+    assert certified["bounded_preflight_certification"] == "PASS"
+    assert [row["item_id"] for row in certified["candidates"]] == [
+        "item-1", "item-2", "item-3", "item-4", "item-5",
+    ]
+    assert "item-0" not in {row["item_id"] for row in certified["candidates"]}
+    assert _mutation_counts(engine) == before
+
+    payload = {
+        "contract": "FIVE_PIN_BOUNDED_PREFLIGHT_V1",
+        "database_revision": "0034",
+        "month_start": certified["month_start"],
+        "current_date": certified["current_date"],
+        "plan_id": certified["plan_id"],
+        "plan_fingerprint": certified["plan_fingerprint"],
+        "candidates": certified["candidates"],
+    }
+    receipt = {
+        **payload,
+        "preflight_fingerprint": certified["preflight_fingerprint"],
+    }
+    with seeded["sessions"]() as db:
+        _, _, items, _ = preparation.validate_preflight_receipt(
+            db,
+            seeded["plan_id"],
+            settings=get_settings(),
+            expected_preflight=receipt,
+        )
+        assert [item.id for item in items] == [
+            "item-1", "item-2", "item-3", "item-4", "item-5",
+        ]
+
+
 def test_terminal_failed_batch_frozen_item_is_excluded_from_new_preflight(
     production_preflight, monkeypatch,
 ):
