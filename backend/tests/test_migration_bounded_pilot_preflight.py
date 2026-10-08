@@ -151,6 +151,31 @@ def _seed(engine, *, item_count=6):
             products.append(product)
             _add(
                 db,
+                d.ProductIntelligence,
+                id=f"intel-{index}",
+                product_id=product.id,
+                brand=f"Brand {index}",
+                image_available=True,
+                inventory_eligible=True,
+                eligibility_score=100,
+                eligibility_status="ELIGIBLE",
+                eligibility_reasons=[],
+                normalization_status="NORMALIZED",
+                normalized_data={},
+            )
+            _add(
+                db,
+                d.ProductImage,
+                id=f"image-{index}",
+                product_id=product.id,
+                shopify_media_id=f"media-{index}",
+                source_url=f"https://cdn.shopify.com/s/files/test/product-{index}.jpg",
+                source_sha256=f"{900 + index:064x}",
+                is_primary=True,
+                editorial_eligible=True,
+            )
+            _add(
+                db,
                 d.PinterestPortfolioPlanItem,
                 id=f"item-{index}",
                 plan_id=plan.id,
@@ -162,7 +187,7 @@ def _seed(engine, *, item_count=6):
                 board_key_snapshot=local_board.slug,
                 content_angle_id=angle.id,
                 angle_key_snapshot=angle.key,
-                seed_keywords=[],
+                seed_keywords=[f"Product {index} perfume"],
                 selection_score=1,
                 selection_metadata={
                     "candidate_fingerprint": f"{100 + index:064x}",
@@ -326,11 +351,36 @@ def test_execution_ready_selector_skips_elapsed_schedule_slots_before_freeze(
                 product_url=f"https://catalog.invalid/product-{index}", inventory_total=1, status="ACTIVE",
             )
             _add(
+                db,
+                d.ProductIntelligence,
+                id=f"intel-{index}",
+                product_id=product.id,
+                brand=f"Brand {index}",
+                image_available=True,
+                inventory_eligible=True,
+                eligibility_score=100,
+                eligibility_status="ELIGIBLE",
+                eligibility_reasons=[],
+                normalization_status="NORMALIZED",
+                normalized_data={},
+            )
+            _add(
+                db,
+                d.ProductImage,
+                id=f"image-{index}",
+                product_id=product.id,
+                shopify_media_id=f"media-{index}",
+                source_url=f"https://cdn.shopify.com/s/files/test/product-{index}.jpg",
+                source_sha256=f"{900 + index:064x}",
+                is_primary=True,
+                editorial_eligible=True,
+            )
+            _add(
                 db, d.PinterestPortfolioPlanItem, id=f"item-{index}", plan_id=seeded["plan_id"],
                 slot_index=index, is_reserve=False, planned_date=schedule_day,
                 product_id=product.id, local_board_id=seeded["local_board_id"],
                 board_key_snapshot="existing", content_angle_id=seeded["angle_id"],
-                angle_key_snapshot="angle", seed_keywords=[], selection_score=1,
+                angle_key_snapshot="angle", seed_keywords=[f"Product {index} perfume"], selection_score=1,
                 selection_metadata={
                     "candidate_fingerprint": f"{100 + index:064x}",
                     OPTIMIZER_METADATA_KEY: {
