@@ -501,22 +501,6 @@ def autonomous_generation_readiness(
     template_key = _template_for_angle(angle) if angle is not None else None
     if template_key not in CREATIVE_TEMPLATES:
         blockers.append("CREATIVE_TEMPLATE_UNSUPPORTED")
-    persisted_template = (
-        db.scalar(
-            select(CreativeTemplate)
-            .where(
-                CreativeTemplate.key == template_key,
-                CreativeTemplate.version == 1,
-                CreativeTemplate.active.is_(True),
-            )
-            .limit(1)
-        )
-        if template_key in CREATIVE_TEMPLATES
-        else None
-    )
-    if template_key in CREATIVE_TEMPLATES and persisted_template is None:
-        blockers.append("CREATIVE_TEMPLATE_NOT_PERSISTED")
-
     copy = None
     visual_copy = None
     if not blockers and product and intelligence and seo:
