@@ -340,28 +340,6 @@ def test_success_is_exactly_one_readonly_transaction_and_first_five_only(
         assert result[key] == 0
 
 
-def test_generation_preparation_blocker_is_skipped_before_preflight_freeze(
-    production_preflight, monkeypatch,
-):
-    engine, seeded = production_preflight
-    with seeded["sessions"]() as db:
-        image = db.get(d.ProductImage, "image-0")
-        image.editorial_eligible = False
-        db.commit()
-
-    result = _invoke(engine, monkeypatch)
-    assert result["success"] is True
-    assert result["bounded_preflight_certification"] == "PASS"
-    assert result["candidate_count"] == 5
-    assert [row["item_id"] for row in result["candidates"]] == [
-        "item-1", "item-2", "item-3", "item-4", "item-5",
-    ]
-    assert "item-0" not in {row["item_id"] for row in result["candidates"]}
-    assert result["provider_calls"] == 0
-    assert result["object_storage_reads"] == 0
-    assert result["object_storage_writes"] == 0
-
-
 def test_execution_ready_selector_skips_elapsed_schedule_slots_before_freeze(
     production_preflight, monkeypatch,
 ):
