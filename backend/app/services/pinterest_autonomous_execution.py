@@ -496,14 +496,9 @@ def _publication_service(db) -> PublicationIdentityService:
 def _failure_code(exc: Exception) -> str:
     if isinstance(exc, AutonomousExecutionError):
         return str(exc.code)[:120]
-    detail = str(exc).strip()
-    if (
-        detail
-        and len(detail) <= 120
-        and all(ch.isupper() or ch.isdigit() or ch == "_" for ch in detail)
-    ):
-        return detail
-    return exc.__class__.__name__[:120]
+    # Never persist arbitrary exception text, even if it superficially looks
+    # like an uppercase error code. Unknown failures collapse to class identity.
+    return f"UNEXPECTED_{exc.__class__.__name__.upper()}"[:120]
 
 
 def _fail_run(
