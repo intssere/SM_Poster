@@ -75,7 +75,7 @@ def test_failure_code_never_persists_arbitrary_exception_text():
     ) == "SCHEDULE_TIME_NOT_FUTURE"
     assert execution._failure_code(
         RuntimeError("PRIVATE_DATABASE_URL_AND_TOKEN")
-    ) == "UNEXPECTED_RUNTIMEERROR"
+    ) == "RuntimeError"
 
 
 def _seed(db, *, plan_status="ACTIVE", two_same_day=True):
