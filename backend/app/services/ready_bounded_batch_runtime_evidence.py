@@ -159,11 +159,25 @@ def emit_live_preflight_certification_to_runtime_log(*, certification_runner=Non
         allowed_count_keys = {
             "eligible_planned", "execution_blocked", "generation_blocked",
             "missing_persisted_template", "evaluation_error",
+            "generation_blocker_groups",
+        }
+        allowed_groups = {
+            "seo", "source_image", "creative_layout", "board_or_angle",
+            "duplicate_or_history", "product", "template", "other",
         }
         if (
             safe.get("refusal_code") == "PREFLIGHT_READY_CANDIDATES_INSUFFICIENT"
             and isinstance(counts, dict) and set(counts) == allowed_count_keys
-            and all(type(v) is int and 0 <= v <= 100000 for v in counts.values())
+            and all(
+                type(counts[key]) is int and 0 <= counts[key] <= 100000
+                for key in allowed_count_keys - {"generation_blocker_groups"}
+            )
+            and isinstance(counts["generation_blocker_groups"], dict)
+            and set(counts["generation_blocker_groups"]) == allowed_groups
+            and all(
+                type(value) is int and 0 <= value <= 100000
+                for value in counts["generation_blocker_groups"].values()
+            )
         ):
             safe["readiness_blocker_counts"] = {
                 key: counts[key] for key in sorted(allowed_count_keys)
