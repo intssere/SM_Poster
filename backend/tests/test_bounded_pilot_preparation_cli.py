@@ -217,6 +217,70 @@ def test_restart_guard_requires_exact_hex64_invocation_id():
         assert result["code"] == code
 
 
+def test_restart_safe_runtime_always_starts_api_after_refusal(monkeypatch, capsys):
+    from app.state_transfer import prepare_bounded_pilot_runtime as runtime
+
+    invocation_id = "b" * 64
+    monkeypatch.setenv(cli.INVOCATION_ENV, invocation_id)
+    calls = []
+
+    def preparation_runner(**kwargs):
+        calls.append(("prepare", kwargs))
+        result = cli._base_result()
+        result.update(
+            terminal_stage="INVOCATION_GUARD",
+            code="PREPARATION_INVOCATION_ALREADY_CLAIMED",
+        )
+        return result
+
+    def server_runner(app, **kwargs):
+        calls.append(("server", app, kwargs))
+
+    assert runtime.main(
+        preparation_runner=preparation_runner,
+        server_runner=server_runner,
+    ) == 0
+    assert calls[0] == (
+        "prepare",
+        {
+            "invocation_id": invocation_id,
+            "require_invocation_guard": True,
+        },
+    )
+    assert calls[1] == (
+        "server",
+        "app.main:app",
+        {"host": "0.0.0.0", "port": 8000},
+    )
+    output = json.loads(capsys.readouterr().out)
+    assert output["code"] == "PREPARATION_INVOCATION_ALREADY_CLAIMED"
+    assert output["publishing_admission"] == "NOT_GRANTED"
+
+
+def test_restart_safe_runtime_sanitizes_exception_and_starts_api(monkeypatch, capsys):
+    from app.state_transfer import prepare_bounded_pilot_runtime as runtime
+
+    monkeypatch.setenv(cli.INVOCATION_ENV, "c" * 64)
+    calls = []
+
+    def fail(**kwargs):
+        raise RuntimeError("PRIVATE_DATABASE_URL_AND_TOKEN")
+
+    def server_runner(app, **kwargs):
+        calls.append((app, kwargs))
+
+    assert runtime.main(
+        preparation_runner=fail,
+        server_runner=server_runner,
+    ) == 0
+    rendered = capsys.readouterr().out
+    assert "PRIVATE_DATABASE_URL_AND_TOKEN" not in rendered
+    result = json.loads(rendered)
+    assert result["terminal_stage"] == "RUNTIME_WRAPPER"
+    assert result["code"] == "BOUNDED_PREPARATION_UNEXPECTED_ERROR"
+    assert calls == [("app.main:app", {"host": "0.0.0.0", "port": 8000})]
+
+
 def test_failed_preflight_never_opens_mutating_session(monkeypatch):
     opened = []
     monkeypatch.setattr(cli, "gate_snapshot", lambda: (_ for _ in ()).throw(
