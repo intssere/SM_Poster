@@ -29,7 +29,6 @@ jobs:
         run: |
           python scripts/run_isolated_readiness_tests.py --with-postgres --postgres-loopback -q \
             tests/test_routine_bounded_batch_postgres.py \
-            tests/test_migration_bounded_pilot_preflight.py \
             tests/test_bounded_pilot_preparation_cli.py \
             tests/test_bounded_pilot_preparation_operator_route.py \
             tests/test_routine_one_shot_live.py \
@@ -56,6 +55,7 @@ jobs:
       - name: Unix-socket schema, adoption and startup regressions
         run: |
           python scripts/run_isolated_readiness_tests.py --with-postgres -q \
+            tests/test_migration_bounded_pilot_preflight.py \
             tests/test_readiness_execution_admission_0033.py \
             tests/test_readiness_execution_admission_0032.py \
             tests/test_schema_canonicality_guard.py \
