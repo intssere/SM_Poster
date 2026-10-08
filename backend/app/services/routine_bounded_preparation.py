@@ -8,6 +8,7 @@ import sqlalchemy as sa
 from app.db.bounded_batch_schema_0034 import batches, entries
 from app.models.domain import PinterestPortfolioPlan, PinterestPortfolioPlanItem
 from app.services.pinterest_autonomous_execution import execution_readiness, execute_autonomous_item
+from app.services.pinterest_autonomous_generation import autonomous_generation_preparation_readiness
 from app.services.pinterest_board_strategy import board_strategy
 from app.services.publication_scheduler import request_fingerprint_for
 from app.services import routine_bounded_batch as batch
@@ -51,7 +52,13 @@ def _execution_ready_items(db, plan_id, *, settings, now, limit, lock=False):
     ready = []
     for item in db.scalars(statement).all():
         readiness = execution_readiness(db, item.id, settings=internal, now=now)
-        if readiness.get("ready") is True:
+        preparation_readiness = autonomous_generation_preparation_readiness(
+            db, item.id, settings=internal,
+        )
+        if (
+            readiness.get("ready") is True
+            and preparation_readiness.get("ready") is True
+        ):
             ready.append(item)
             if len(ready) >= limit:
                 break
