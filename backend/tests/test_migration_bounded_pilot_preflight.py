@@ -187,7 +187,7 @@ def _seed(engine, *, item_count=6):
                 board_key_snapshot=local_board.slug,
                 content_angle_id=angle.id,
                 angle_key_snapshot=angle.key,
-                seed_keywords=[f"Product {index} perfume"],
+                seed_keywords=[f"{product.title} perfume"],
                 selection_score=1,
                 selection_metadata={
                     "candidate_fingerprint": f"{100 + index:064x}",
@@ -380,7 +380,7 @@ def test_execution_ready_selector_skips_elapsed_schedule_slots_before_freeze(
                 slot_index=index, is_reserve=False, planned_date=schedule_day,
                 product_id=product.id, local_board_id=seeded["local_board_id"],
                 board_key_snapshot="existing", content_angle_id=seeded["angle_id"],
-                angle_key_snapshot="angle", seed_keywords=[f"Product {index} perfume"], selection_score=1,
+                angle_key_snapshot="angle", seed_keywords=[f"{product.title} perfume"], selection_score=1,
                 selection_metadata={
                     "candidate_fingerprint": f"{100 + index:064x}",
                     OPTIMIZER_METADATA_KEY: {
