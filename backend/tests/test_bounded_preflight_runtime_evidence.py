@@ -87,3 +87,46 @@ def test_incomplete_report_cannot_claim_preflight_pass():
         }, writer=lines.append,
     ) is False
     assert _decode(lines)["bounded_preflight_certification"] == "NOT_GRANTED"
+
+
+def test_allowlisted_refusal_and_aggregate_counts_are_rendered():
+    lines = []
+    counts = {
+        "eligible_planned": 12,
+        "execution_blocked": 2,
+        "generation_blocked": 10,
+        "missing_persisted_template": 8,
+        "evaluation_error": 0,
+    }
+    assert emit_live_preflight_certification_to_runtime_log(
+        certification_runner=lambda: {
+            "success": False,
+            "bounded_preflight_certification": "NOT_GRANTED",
+            "publishing_admission": "NOT_GRANTED",
+            "terminal_stage": "READ_ONLY_DATABASE",
+            "refusal_code": "PREFLIGHT_READY_CANDIDATES_INSUFFICIENT",
+            "readiness_blocker_counts": counts,
+            "candidate_count": 0,
+        },
+        writer=lines.append,
+    ) is False
+    report = _decode(lines)
+    assert report["refusal_code"] == "PREFLIGHT_READY_CANDIDATES_INSUFFICIENT"
+    assert report["readiness_blocker_counts"] == counts
+    assert report["publishing_admission"] == "NOT_GRANTED"
+
+
+def test_unknown_refusal_and_private_aggregate_are_not_logged():
+    lines = []
+    private = "PRIVATE_CATALOG_AND_TOKEN"
+    assert emit_live_preflight_certification_to_runtime_log(
+        certification_runner=lambda: {
+            "success": False, "refusal_code": private,
+            "readiness_blocker_counts": {"product_name": private},
+            "publishing_admission": "NOT_GRANTED",
+        }, writer=lines.append,
+    ) is False
+    assert private not in "\n".join(lines)
+    result = _decode(lines)
+    assert "refusal_code" not in result
+    assert "readiness_blocker_counts" not in result
