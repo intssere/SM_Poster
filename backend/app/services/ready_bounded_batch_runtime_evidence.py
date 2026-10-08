@@ -122,7 +122,28 @@ def emit_live_preflight_certification_to_runtime_log(*, certification_runner=Non
                 "worker_activations", "autonomy_activations",
             ):
                 value = report.get(key)
-                if type(value) in (str, bool, int) or value is None:
+                if key == "terminal_stage":
+                    if value in ("GATES", "READ_ONLY_DATABASE", "COMPLETE", "DATABASE_CLOSE"):
+                        safe[key] = value
+                elif key == "database_revision":
+                    if value in (None, "0034"):
+                        safe[key] = value
+                elif key == "schema_canonicality":
+                    if value in (None, "PASS", "NOT_GRANTED"):
+                        safe[key] = value
+                elif key == "routine_state":
+                    if value in (None, "PAUSED"):
+                        safe[key] = value
+                elif key == "bounded_preflight_certification":
+                    if value in ("PASS", "NOT_GRANTED"):
+                        safe[key] = value
+                elif key == "publishing_admission":
+                    if value == "NOT_GRANTED":
+                        safe[key] = value
+                elif key == "success" or key == "candidate_pool_has_more":
+                    if type(value) is bool:
+                        safe[key] = value
+                elif type(value) is int and value >= 0:
                     safe[key] = value
         success = (
             safe["success"] is True
