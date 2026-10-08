@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import re
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
 from sqlalchemy import select
@@ -14,6 +15,7 @@ from app.models.domain import (
     AuditLog,
     Board,
     ContentAngle,
+    CreativeTemplate,
     DraftStatus,
     PinConcept,
     PinDraft,
@@ -37,7 +39,7 @@ from app.services.pinterest_autonomous_run_lineage import (
     next_attempt_context,
     retry_reconciliation,
 )
-from app.services.pinterest_seo_intelligence import normalize_keyword
+from app.services.pinterest_seo_intelligence import PinterestSeoError, normalize_keyword, seo_brief_preview
 from app.services.utm import build_pinterest_utm_url
 
 GENERATION_POLICY_VERSION = "PINTEREST_AUTONOMOUS_GENERATION_V1"
@@ -227,6 +229,208 @@ def _existing_run(db, portfolio_item_id: str):
     return latest_run(db, PinterestAutonomousGenerationRun, portfolio_item_id)
 
 
+
+def autonomous_generation_preparation_readiness(
+    db,
+    portfolio_item_id: str,
+    *,
+    settings: Settings | None = None,
+) -> dict:
+    """Pure-read preview of every deterministic prerequisite before generation writes.
+
+    This deliberately stops before source-image download, durable media writes,
+    draft/creative creation, authorization, publication creation, or provider I/O.
+    """
+    settings = settings or get_settings()
+    item = db.get(PinterestPortfolioPlanItem, portfolio_item_id)
+    if item is None:
+        raise AutonomousGenerationError("PORTFOLIO_ITEM_NOT_FOUND")
+
+    blockers: list[str] = []
+    if item.is_reserve:
+        blockers.append("RESERVE_ITEM_NOT_PROMOTED")
+    if item.status != "PLANNED":
+        blockers.append("PORTFOLIO_ITEM_NOT_PLANNED")
+
+    try:
+        seo_preview = seo_brief_preview(db, portfolio_item_id, settings=settings)
+    except PinterestSeoError as exc:
+        seo_preview = {
+            "ready": False,
+            "blockers": [str(exc) or "PINTEREST_SEO_BRIEF_BLOCKED"],
+            "state_mutated": False,
+            "provider_called": False,
+            "ai_called": False,
+        }
+    if seo_preview.get("ready") is not True:
+        blockers.extend(seo_preview.get("blockers") or ["PINTEREST_SEO_BRIEF_BLOCKED"])
+
+    existing_seo = db.scalar(
+        select(PinterestSeoBrief)
+        .where(PinterestSeoBrief.portfolio_item_id == item.id)
+        .limit(1)
+    )
+    if existing_seo is not None and seo_preview.get("ready") is True:
+        if (
+            existing_seo.status != "CURRENT"
+            or existing_seo.input_fingerprint != seo_preview.get("input_fingerprint")
+            or existing_seo.seo_fingerprint != seo_preview.get("seo_fingerprint")
+        ):
+            blockers.append("PINTEREST_SEO_BRIEF_INPUT_DRIFT")
+
+    product = db.get(Product, item.product_id)
+    intelligence = db.scalar(
+        select(ProductIntelligence)
+        .where(ProductIntelligence.product_id == item.product_id)
+        .limit(1)
+    )
+    board = db.get(Board, item.local_board_id)
+    angle = db.get(ContentAngle, item.content_angle_id)
+
+    if product is None:
+        blockers.append("PRODUCT_NOT_FOUND")
+    if (
+        intelligence is None
+        or intelligence.eligibility_status != "ELIGIBLE"
+        or intelligence.inventory_eligible is not True
+        or intelligence.image_available is not True
+    ):
+        blockers.append("PRODUCT_NOT_AUTONOMOUSLY_ELIGIBLE")
+    if board is None or not board.active or board.slug != item.board_key_snapshot:
+        blockers.append("PORTFOLIO_BOARD_DRIFT")
+    if angle is None or not angle.active or angle.key != item.angle_key_snapshot:
+        blockers.append("PORTFOLIO_ANGLE_DRIFT")
+
+    image, image_blockers = _select_authentic_image(db, item.product_id)
+    blockers.extend(image_blockers)
+
+    board_plan = None
+    if board is not None:
+        try:
+            board_plan = board_strategy(
+                db,
+                canonical_key=board.slug,
+                settings=settings,
+            )
+        except Exception:
+            board_plan = {"status": "BLOCKED", "blockers": ["BOARD_STRATEGY_ERROR"]}
+        if board_plan.get("status") != "ROUTE_EXISTING":
+            blockers.append("ROUTABLE_PINTEREST_BOARD_REQUIRED")
+
+    template_key = _template_for_angle(angle) if angle is not None else None
+    if template_key not in CREATIVE_TEMPLATES:
+        blockers.append("CREATIVE_TEMPLATE_UNSUPPORTED")
+    persisted_template = (
+        db.scalar(
+            select(CreativeTemplate)
+            .where(
+                CreativeTemplate.key == template_key,
+                CreativeTemplate.version == 1,
+                CreativeTemplate.active.is_(True),
+            )
+            .limit(1)
+        )
+        if template_key in CREATIVE_TEMPLATES
+        else None
+    )
+    if template_key in CREATIVE_TEMPLATES and persisted_template is None:
+        blockers.append("CREATIVE_TEMPLATE_NOT_PERSISTED")
+
+    copy = None
+    visual_copy = None
+    concept_fp = None
+    if (
+        not blockers
+        and product is not None
+        and intelligence is not None
+        and angle is not None
+        and board is not None
+        and image is not None
+        and seo_preview.get("ready") is True
+    ):
+        preview_seo = SimpleNamespace(
+            primary_keyword=seo_preview["primary_keyword"],
+            secondary_keywords=seo_preview.get("secondary_keywords") or [],
+            seo_fingerprint=seo_preview["seo_fingerprint"],
+        )
+        try:
+            copy = _copy(product=product, intelligence=intelligence, seo=preview_seo)
+            visual_copy = _visual_copy(
+                product=product,
+                intelligence=intelligence,
+                seo=preview_seo,
+                template_key=template_key,
+            )
+        except AutonomousGenerationError as exc:
+            blockers.append(str(exc))
+        if copy is not None and visual_copy is not None:
+            concept_fp = concept_fingerprint(
+                product_ids=[product.id],
+                content_angle=angle.key,
+                keyword_cluster="|".join([
+                    preview_seo.primary_keyword,
+                    *preview_seo.secondary_keywords,
+                ]),
+                board_id=board.slug,
+            )
+            conflict = db.scalar(
+                select(PinConcept.id)
+                .where(PinConcept.fingerprint == concept_fp)
+                .limit(1)
+            )
+            if conflict is not None:
+                blockers.append("AUTONOMOUS_CONCEPT_DUPLICATE")
+
+    existing_generation = _existing_run(db, item.id)
+    if existing_generation is not None:
+        blockers.append("GENERATION_HISTORY_PRESENT")
+
+    blockers = list(dict.fromkeys(blockers))
+    preparation_fingerprint = None
+    if (
+        not blockers
+        and image is not None
+        and board_plan is not None
+        and visual_copy is not None
+        and concept_fp is not None
+    ):
+        preparation_fingerprint = _hash({
+            "policy_version": GENERATION_POLICY_VERSION,
+            "portfolio_item_id": item.id,
+            "portfolio_item_fingerprint": item.item_fingerprint,
+            "seo_input_fingerprint": seo_preview["input_fingerprint"],
+            "seo_fingerprint": seo_preview["seo_fingerprint"],
+            "source_image_id": image.id,
+            "source_image_sha256": image.source_sha256,
+            "template_key": template_key,
+            "visual_layout_fingerprint": visual_copy["layout_fingerprint"],
+            "concept_fingerprint": concept_fp,
+            "pinterest_board_record_id": board_plan.get("selected_board_id"),
+            "pinterest_external_board_id": board_plan.get("selected_external_board_id"),
+        })
+
+    return {
+        "policy_version": GENERATION_POLICY_VERSION,
+        "portfolio_item_id": item.id,
+        "ready": not blockers,
+        "blockers": blockers,
+        "seo_preview_fingerprint": seo_preview.get("seo_fingerprint"),
+        "seo_input_fingerprint": seo_preview.get("input_fingerprint"),
+        "source_image_id": image.id if image else None,
+        "template_key": template_key,
+        "visual_layout_fingerprint": (
+            visual_copy.get("layout_fingerprint") if visual_copy else None
+        ),
+        "concept_fingerprint": concept_fp,
+        "preparation_fingerprint": preparation_fingerprint,
+        "state_mutated": False,
+        "provider_called": False,
+        "ai_called": False,
+        "object_storage_read": False,
+        "object_storage_written": False,
+    }
+
+
 def autonomous_generation_readiness(
     db,
     portfolio_item_id: str,
@@ -297,7 +501,6 @@ def autonomous_generation_readiness(
     template_key = _template_for_angle(angle) if angle is not None else None
     if template_key not in CREATIVE_TEMPLATES:
         blockers.append("CREATIVE_TEMPLATE_UNSUPPORTED")
-
     copy = None
     visual_copy = None
     if not blockers and product and intelligence and seo:

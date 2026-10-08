@@ -3,9 +3,15 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 import sys
+from uuid import UUID, uuid5
+
+from sqlalchemy.exc import IntegrityError
 
 from app.core.config import get_settings
+from app.models.domain import AuditLog
 from app.state_transfer.production_media_certification import gate_snapshot
 from app.state_transfer.catalog import digest
 from app.services.bounded_pilot_preparation_operator import (
@@ -16,6 +22,12 @@ from app.services.bounded_pilot_preparation_operator import (
 
 MODE = "ONE_SHOT_FIVE_PIN_BOUNDED_PREPARATION"
 ACTOR = "bounded-pilot-preparation-cli"
+INVOCATION_ENV = "BOUNDED_PREPARATION_INVOCATION_ID"
+INVOCATION_ACTION = "bounded_pilot_preparation_invocation_v1"
+INVOCATION_ACTOR = "bounded-preparation-invocation-v1"
+INVOCATION_ENTITY_TYPE = "bounded_preparation_invocation"
+INVOCATION_NAMESPACE = UUID("ebd277c7-d2a4-43ed-aea2-f04fb3739e86")
+INVOCATION_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _base_result():
@@ -27,6 +39,9 @@ def _base_result():
         "persistent_configuration_mutated": False,
         "process_local_bounded_override": False,
         "database_mutation_authorized": False,
+        "invocation_guard_claimed": False,
+        "invocation_guard_database_writes": 0,
+        "invocation_receipt_id": None,
         "provider_calls": 0,
         "buffer_calls": 0,
         "pinterest_calls": 0,
@@ -94,7 +109,62 @@ def _scoped_settings(settings):
     })
 
 
-def run(*, preflight_runner=None, settings_factory=None, session_factory=None, renderer=None):
+
+def _invocation_receipt_id(invocation_id: str) -> str:
+    return str(uuid5(INVOCATION_NAMESPACE, invocation_id))
+
+
+def _claim_invocation(invocation_id: str | None, *, session_factory=None) -> str:
+    if not isinstance(invocation_id, str) or not invocation_id:
+        raise RuntimeError("PREPARATION_INVOCATION_ID_REQUIRED")
+    if not INVOCATION_RE.fullmatch(invocation_id):
+        raise RuntimeError("PREPARATION_INVOCATION_ID_INVALID")
+    if session_factory is None:
+        from app.db.session import SessionLocal
+        session_factory = SessionLocal
+
+    row_id = _invocation_receipt_id(invocation_id)
+    db = session_factory()
+    try:
+        existing = db.get(AuditLog, row_id)
+        if existing is not None:
+            raise RuntimeError("PREPARATION_INVOCATION_ALREADY_CLAIMED")
+        row = AuditLog(
+            id=row_id,
+            actor=INVOCATION_ACTOR,
+            action=INVOCATION_ACTION,
+            entity_type=INVOCATION_ENTITY_TYPE,
+            entity_id=invocation_id,
+            correlation_id=invocation_id,
+            metadata_json={
+                "contract": "FIVE_PIN_BOUNDED_PREPARATION_INVOCATION_V1",
+                "status": "CLAIMED",
+            },
+        )
+        db.add(row)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            existing = db.get(AuditLog, row_id)
+            if existing is not None:
+                raise RuntimeError("PREPARATION_INVOCATION_ALREADY_CLAIMED") from None
+            raise RuntimeError("PREPARATION_INVOCATION_GUARD_WRITE_FAILED") from None
+        return row_id
+    finally:
+        db.close()
+
+
+def run(
+    *,
+    preflight_runner=None,
+    settings_factory=None,
+    session_factory=None,
+    renderer=None,
+    invocation_id=None,
+    invocation_session_factory=None,
+    require_invocation_guard=False,
+):
     result = _base_result()
     db = None
     try:
@@ -126,6 +196,18 @@ def run(*, preflight_runner=None, settings_factory=None, session_factory=None, r
             or persistent_settings.routine_scheduled_live_admission_enabled is not False
         ):
             raise RuntimeError("PERSISTENT_CLOSED_STATE_DRIFT")
+
+        # The durable single-use claim is the first write. It occurs only after
+        # a fresh read-only preflight and closed-state recheck have passed, but
+        # before any bounded batch/publication/creative/permit mutation.
+        if require_invocation_guard:
+            result["terminal_stage"] = "INVOCATION_GUARD"
+            result["invocation_receipt_id"] = _claim_invocation(
+                invocation_id,
+                session_factory=invocation_session_factory,
+            )
+            result["invocation_guard_claimed"] = True
+            result["invocation_guard_database_writes"] = 1
 
         result["terminal_stage"] = "PREPARATION"
         result["process_local_bounded_override"] = True
@@ -177,6 +259,10 @@ def run(*, preflight_runner=None, settings_factory=None, session_factory=None, r
             "PREFLIGHT_NOT_CERTIFIED",
             "PERSISTENT_CLOSED_STATE_DRIFT",
             "PREPARATION_RESULT_CONTRACT_DRIFT",
+            "PREPARATION_INVOCATION_ID_REQUIRED",
+            "PREPARATION_INVOCATION_ID_INVALID",
+            "PREPARATION_INVOCATION_ALREADY_CLAIMED",
+            "PREPARATION_INVOCATION_GUARD_WRITE_FAILED",
         }:
             result["code"] = detail
         else:
@@ -203,7 +289,10 @@ def main(argv=None):
             result = _base_result()
             result.update(terminal_stage="ARGUMENTS", code="ARGUMENTS_PROHIBITED")
         else:
-            result = run()
+            result = run(
+                invocation_id=os.environ.get(INVOCATION_ENV),
+                require_invocation_guard=True,
+            )
     except Exception:
         result = _base_result()
         result.update(terminal_stage="UNEXPECTED", code="BOUNDED_PREPARATION_UNEXPECTED_ERROR")

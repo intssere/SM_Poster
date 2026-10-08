@@ -4,7 +4,11 @@ from __future__ import annotations
 import inspect
 import json
 
+import sqlalchemy as sa
+from sqlalchemy.orm import sessionmaker
+
 from app.core.config import Settings
+from app.models.domain import AuditLog
 from app.state_transfer import prepare_bounded_pilot as cli
 
 
@@ -149,6 +153,154 @@ def test_one_shot_preflight_then_process_local_override_only(monkeypatch):
     assert persistent.routine_pinterest_daily_write_limit == 1
 
 
+def test_restart_guard_claims_after_preflight_and_blocks_repeat_mutation(monkeypatch):
+    from app.services.bounded_pilot_preparation_operator import BoundedPreparationOperatorError
+
+    engine = sa.create_engine("sqlite:///:memory:")
+    AuditLog.__table__.create(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    calls = []
+    invocation_id = "a" * 64
+    monkeypatch.setattr(cli, "gate_snapshot", lambda: {"closed": True})
+
+    def preflight():
+        calls.append("preflight")
+        return _preflight()
+
+    def prepare(*args, **kwargs):
+        calls.append("prepare")
+        raise BoundedPreparationOperatorError(
+            "BOUNDED_PREPARATION_CREATIVE_TEXT_LAYOUT_UNFIT"
+        )
+
+    monkeypatch.setattr(cli, "prepare_certified_batch", prepare)
+
+    first = cli.run(
+        preflight_runner=preflight,
+        settings_factory=lambda: _settings(),
+        session_factory=FakeSession,
+        invocation_id=invocation_id,
+        invocation_session_factory=sessions,
+        require_invocation_guard=True,
+    )
+    assert first["success"] is False
+    assert first["terminal_stage"] == "PREPARATION"
+    assert first["code"] == "BOUNDED_PREPARATION_CREATIVE_TEXT_LAYOUT_UNFIT"
+    assert first["invocation_guard_claimed"] is True
+    assert first["invocation_guard_database_writes"] == 1
+    assert first["invocation_receipt_id"] == cli._invocation_receipt_id(invocation_id)
+    assert calls == ["preflight", "prepare"]
+
+    second = cli.run(
+        preflight_runner=preflight,
+        settings_factory=lambda: _settings(),
+        session_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("mutating preparation session must not reopen")
+        ),
+        invocation_id=invocation_id,
+        invocation_session_factory=sessions,
+        require_invocation_guard=True,
+    )
+    assert second["success"] is False
+    assert second["terminal_stage"] == "INVOCATION_GUARD"
+    assert second["code"] == "PREPARATION_INVOCATION_ALREADY_CLAIMED"
+    assert second["invocation_guard_claimed"] is False
+    assert second["invocation_guard_database_writes"] == 0
+    assert calls == ["preflight", "prepare", "preflight"]
+
+    with sessions() as db:
+        rows = list(db.scalars(sa.select(AuditLog)).all())
+        assert len(rows) == 1
+        assert rows[0].action == cli.INVOCATION_ACTION
+        assert rows[0].entity_id == invocation_id
+        assert rows[0].correlation_id == invocation_id
+    engine.dispose()
+
+
+def test_restart_guard_requires_exact_hex64_invocation_id_after_preflight(monkeypatch):
+    monkeypatch.setattr(cli, "gate_snapshot", lambda: {"closed": True})
+    calls = []
+    for value, code in (
+        (None, "PREPARATION_INVOCATION_ID_REQUIRED"),
+        ("not-a-valid-id", "PREPARATION_INVOCATION_ID_INVALID"),
+    ):
+        result = cli.run(
+            preflight_runner=lambda: (calls.append("preflight") or _preflight()),
+            settings_factory=lambda: _settings(),
+            invocation_id=value,
+            require_invocation_guard=True,
+        )
+        assert result["success"] is False
+        assert result["terminal_stage"] == "INVOCATION_GUARD"
+        assert result["code"] == code
+        assert result["invocation_guard_database_writes"] == 0
+    assert calls == ["preflight", "preflight"]
+
+
+def test_restart_safe_runtime_always_starts_api_after_refusal(monkeypatch, capsys):
+    from app.state_transfer import prepare_bounded_pilot_runtime as runtime
+
+    invocation_id = "b" * 64
+    monkeypatch.setenv(cli.INVOCATION_ENV, invocation_id)
+    calls = []
+
+    def preparation_runner(**kwargs):
+        calls.append(("prepare", kwargs))
+        result = cli._base_result()
+        result.update(
+            terminal_stage="INVOCATION_GUARD",
+            code="PREPARATION_INVOCATION_ALREADY_CLAIMED",
+        )
+        return result
+
+    def server_runner(app, **kwargs):
+        calls.append(("server", app, kwargs))
+
+    assert runtime.main(
+        preparation_runner=preparation_runner,
+        server_runner=server_runner,
+    ) == 0
+    assert calls[0] == (
+        "prepare",
+        {
+            "invocation_id": invocation_id,
+            "require_invocation_guard": True,
+        },
+    )
+    assert calls[1] == (
+        "server",
+        "app.main:app",
+        {"host": "0.0.0.0", "port": 8000},
+    )
+    output = json.loads(capsys.readouterr().out)
+    assert output["code"] == "PREPARATION_INVOCATION_ALREADY_CLAIMED"
+    assert output["publishing_admission"] == "NOT_GRANTED"
+
+
+def test_restart_safe_runtime_sanitizes_exception_and_starts_api(monkeypatch, capsys):
+    from app.state_transfer import prepare_bounded_pilot_runtime as runtime
+
+    monkeypatch.setenv(cli.INVOCATION_ENV, "c" * 64)
+    calls = []
+
+    def fail(**kwargs):
+        raise RuntimeError("PRIVATE_DATABASE_URL_AND_TOKEN")
+
+    def server_runner(app, **kwargs):
+        calls.append((app, kwargs))
+
+    assert runtime.main(
+        preparation_runner=fail,
+        server_runner=server_runner,
+    ) == 0
+    rendered = capsys.readouterr().out
+    assert "PRIVATE_DATABASE_URL_AND_TOKEN" not in rendered
+    result = json.loads(rendered)
+    assert result["terminal_stage"] == "RUNTIME_WRAPPER"
+    assert result["code"] == "BOUNDED_PREPARATION_UNEXPECTED_ERROR"
+    assert calls == [("app.main:app", {"host": "0.0.0.0", "port": 8000})]
+
+
 def test_failed_preflight_never_opens_mutating_session(monkeypatch):
     opened = []
     monkeypatch.setattr(cli, "gate_snapshot", lambda: (_ for _ in ()).throw(
@@ -171,6 +323,32 @@ def test_failed_preflight_never_opens_mutating_session(monkeypatch):
     assert result["code"] == "PREFLIGHT_NOT_CERTIFIED"
     assert result["terminal_stage"] == "PREFLIGHT"
     assert opened == []
+
+
+def test_failed_preflight_does_not_consume_restart_guard():
+    engine = sa.create_engine("sqlite:///:memory:")
+    AuditLog.__table__.create(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    failed = {
+        "success": False,
+        "bounded_preflight_certification": "NOT_GRANTED",
+        "publishing_admission": "NOT_GRANTED",
+    }
+
+    result = cli.run(
+        preflight_runner=lambda: failed,
+        invocation_id="d" * 64,
+        invocation_session_factory=sessions,
+        require_invocation_guard=True,
+    )
+    assert result["success"] is False
+    assert result["terminal_stage"] == "PREFLIGHT"
+    assert result["code"] == "PREFLIGHT_NOT_CERTIFIED"
+    assert result["invocation_guard_claimed"] is False
+    assert result["invocation_guard_database_writes"] == 0
+    with sessions() as db:
+        assert db.scalar(sa.select(sa.func.count()).select_from(AuditLog)) == 0
+    engine.dispose()
 
 
 def test_persistent_closed_state_drift_blocks_before_session(monkeypatch):

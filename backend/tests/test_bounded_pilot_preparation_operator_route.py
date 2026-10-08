@@ -198,6 +198,22 @@ def test_preparation_sanitizes_unexpected_exception(client, monkeypatch):
     assert response.json()["publishing_admission"] == "NOT_GRANTED"
 
 
+def test_operator_sanitizes_autonomous_failure_codes_without_private_text():
+    from app.services import bounded_pilot_preparation_operator as operator
+    from app.services.pinterest_autonomous_generation import AutonomousGenerationError
+    from app.services.pinterest_autonomous_execution import AutonomousExecutionError
+
+    assert operator._sanitized_preparation_code(
+        AutonomousGenerationError("CREATIVE_TEXT_LAYOUT_UNFIT")
+    ) == "BOUNDED_PREPARATION_CREATIVE_TEXT_LAYOUT_UNFIT"
+    assert operator._sanitized_preparation_code(
+        AutonomousExecutionError("SCHEDULE_TIME_NOT_FUTURE")
+    ) == "BOUNDED_PREPARATION_SCHEDULE_TIME_NOT_FUTURE"
+    assert operator._sanitized_preparation_code(
+        RuntimeError("PRIVATE_DATABASE_URL_AND_TOKEN")
+    ) == "BOUNDED_PREPARATION_INTERNAL_ERROR"
+
+
 def test_route_has_no_provider_or_arbitrary_batch_control_dependency():
     from app.services import bounded_pilot_preparation_operator as operator
 

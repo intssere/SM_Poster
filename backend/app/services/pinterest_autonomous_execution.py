@@ -26,7 +26,7 @@ from app.models.domain import (
     PublicationStatus,
 )
 from app.models.routine_publishing import RoutineDispatchPermit
-from app.services.pinterest_autonomous_generation import execute_autonomous_generation
+from app.services.pinterest_autonomous_generation import AutonomousGenerationError, execute_autonomous_generation
 from app.services.pinterest_autonomous_run_lineage import (
     latest_run,
     next_attempt_context,
@@ -34,10 +34,11 @@ from app.services.pinterest_autonomous_run_lineage import (
 )
 from app.services.pinterest_board_strategy import board_strategy
 from app.services.pinterest_optimizer_apply import OPTIMIZER_METADATA_KEY
-from app.services.pinterest_seo_intelligence import persist_seo_brief
-from app.services.publication_identity import PublicationIdentityService
+from app.services.pinterest_seo_intelligence import PinterestSeoError, persist_seo_brief
+from app.services.publication_identity import PublicationIdentityError, PublicationIdentityService
 from app.services.routine_autonomous_authorization import (
     AUTONOMOUS_ACTOR,
+    AutonomousAuthorizationError,
     auto_permit_publication,
     authorize_draft_autonomously,
 )
@@ -496,13 +497,20 @@ def _publication_service(db) -> PublicationIdentityService:
 def _failure_code(exc: Exception) -> str:
     if isinstance(exc, AutonomousExecutionError):
         return str(exc.code)[:120]
-    detail = str(exc).strip()
-    if (
-        detail
-        and len(detail) <= 120
-        and all(ch.isupper() or ch.isdigit() or ch == "_" for ch in detail)
-    ):
-        return detail
+    if isinstance(exc, (
+        PinterestSeoError,
+        AutonomousGenerationError,
+        AutonomousAuthorizationError,
+        PublicationIdentityError,
+    )):
+        detail = str(exc).strip()
+        if (
+            detail
+            and len(detail) <= 120
+            and all(ch.isupper() or ch.isdigit() or ch == "_" for ch in detail)
+        ):
+            return detail
+    # Never persist arbitrary exception text from unknown exception classes.
     return exc.__class__.__name__[:120]
 
 

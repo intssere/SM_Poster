@@ -98,6 +98,17 @@ def _seed(engine, *, item_count=6):
         angle = _add(
             db, d.ContentAngle, id="angle", key="angle", name="Angle", active=True,
         )
+        _add(
+            db,
+            d.CreativeTemplate,
+            id="template-editorial",
+            key="editorial_product_pick",
+            version=1,
+            name="Editorial Product Pick",
+            renderer="satori",
+            definition={},
+            active=True,
+        )
         plan = _add(
             db,
             d.PinterestPortfolioPlan,
@@ -151,6 +162,31 @@ def _seed(engine, *, item_count=6):
             products.append(product)
             _add(
                 db,
+                d.ProductIntelligence,
+                id=f"intel-{index}",
+                product_id=product.id,
+                brand=f"Brand {index}",
+                image_available=True,
+                inventory_eligible=True,
+                eligibility_score=100,
+                eligibility_status="ELIGIBLE",
+                eligibility_reasons=[],
+                normalization_status="NORMALIZED",
+                normalized_data={},
+            )
+            _add(
+                db,
+                d.ProductImage,
+                id=f"image-{index}",
+                product_id=product.id,
+                shopify_media_id=f"media-{index}",
+                source_url=f"https://cdn.shopify.com/s/files/test/product-{index}.jpg",
+                source_sha256=f"{900 + index:064x}",
+                is_primary=True,
+                editorial_eligible=True,
+            )
+            _add(
+                db,
                 d.PinterestPortfolioPlanItem,
                 id=f"item-{index}",
                 plan_id=plan.id,
@@ -162,7 +198,7 @@ def _seed(engine, *, item_count=6):
                 board_key_snapshot=local_board.slug,
                 content_angle_id=angle.id,
                 angle_key_snapshot=angle.key,
-                seed_keywords=[],
+                seed_keywords=[f"{product.title} perfume"],
                 selection_score=1,
                 selection_metadata={
                     "candidate_fingerprint": f"{100 + index:064x}",
@@ -326,11 +362,36 @@ def test_execution_ready_selector_skips_elapsed_schedule_slots_before_freeze(
                 product_url=f"https://catalog.invalid/product-{index}", inventory_total=1, status="ACTIVE",
             )
             _add(
+                db,
+                d.ProductIntelligence,
+                id=f"intel-{index}",
+                product_id=product.id,
+                brand=f"Brand {index}",
+                image_available=True,
+                inventory_eligible=True,
+                eligibility_score=100,
+                eligibility_status="ELIGIBLE",
+                eligibility_reasons=[],
+                normalization_status="NORMALIZED",
+                normalized_data={},
+            )
+            _add(
+                db,
+                d.ProductImage,
+                id=f"image-{index}",
+                product_id=product.id,
+                shopify_media_id=f"media-{index}",
+                source_url=f"https://cdn.shopify.com/s/files/test/product-{index}.jpg",
+                source_sha256=f"{900 + index:064x}",
+                is_primary=True,
+                editorial_eligible=True,
+            )
+            _add(
                 db, d.PinterestPortfolioPlanItem, id=f"item-{index}", plan_id=seeded["plan_id"],
                 slot_index=index, is_reserve=False, planned_date=schedule_day,
                 product_id=product.id, local_board_id=seeded["local_board_id"],
                 board_key_snapshot="existing", content_angle_id=seeded["angle_id"],
-                angle_key_snapshot="angle", seed_keywords=[], selection_score=1,
+                angle_key_snapshot="angle", seed_keywords=[f"{product.title} perfume"], selection_score=1,
                 selection_metadata={
                     "candidate_fingerprint": f"{100 + index:064x}",
                     OPTIMIZER_METADATA_KEY: {
@@ -437,6 +498,50 @@ def test_execution_ready_selector_skips_elapsed_schedule_slots_before_freeze(
         assert validated_now == now
         assert [item.id for item in validated_items] == [
             "item-3", "item-4", "item-5", "item-6", "item-7",
+        ]
+
+
+def test_generation_preparation_blocker_is_skipped_before_preflight_freeze(
+    production_preflight, monkeypatch,
+):
+    engine, seeded = production_preflight
+    before = _mutation_counts(engine)
+    with seeded["sessions"]() as db:
+        image = db.get(d.ProductImage, "image-0")
+        image.editorial_eligible = False
+        db.commit()
+
+    certified = _invoke(engine, monkeypatch)
+    assert certified["success"] is True
+    assert certified["bounded_preflight_certification"] == "PASS"
+    assert [row["item_id"] for row in certified["candidates"]] == [
+        "item-1", "item-2", "item-3", "item-4", "item-5",
+    ]
+    assert "item-0" not in {row["item_id"] for row in certified["candidates"]}
+    assert _mutation_counts(engine) == before
+
+    payload = {
+        "contract": "FIVE_PIN_BOUNDED_PREFLIGHT_V1",
+        "database_revision": "0034",
+        "month_start": certified["month_start"],
+        "current_date": certified["current_date"],
+        "plan_id": certified["plan_id"],
+        "plan_fingerprint": certified["plan_fingerprint"],
+        "candidates": certified["candidates"],
+    }
+    receipt = {
+        **payload,
+        "preflight_fingerprint": certified["preflight_fingerprint"],
+    }
+    with seeded["sessions"]() as db:
+        _, _, items, _ = preparation.validate_preflight_receipt(
+            db,
+            seeded["plan_id"],
+            settings=get_settings(),
+            expected_preflight=receipt,
+        )
+        assert [item.id for item in items] == [
+            "item-1", "item-2", "item-3", "item-4", "item-5",
         ]
 
 

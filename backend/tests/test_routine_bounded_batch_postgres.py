@@ -518,6 +518,11 @@ def test_autonomous_preparation_freezes_first_five_and_machine_permits(postgres,
             "execution_readiness",
             lambda *a, **k: {"ready": True, "blockers": []},
         )
+        monkeypatch.setattr(
+            preparation,
+            "autonomous_generation_preparation_readiness",
+            lambda *a, **k: {"ready": True, "blockers": []},
+        )
 
         def execute(db, item_id, **kwargs):
             # Fake renderer/execution, but durable graph/manifest/permit checks
@@ -551,6 +556,11 @@ def test_preparation_does_not_create_missing_board(postgres, monkeypatch):
         monkeypatch.setattr(
             preparation,
             "execution_readiness",
+            lambda *a, **k: {"ready": True, "blockers": []},
+        )
+        monkeypatch.setattr(
+            preparation,
+            "autonomous_generation_preparation_readiness",
             lambda *a, **k: {"ready": True, "blockers": []},
         )
         monkeypatch.setattr(preparation, "board_strategy", lambda *a, **k: {"status": "CREATE_REQUIRED"})
@@ -659,6 +669,11 @@ def _preflight_receipt(db, rows, monkeypatch):
     monkeypatch.setattr(
         preparation,
         "execution_readiness",
+        lambda *a, **k: {"ready": True, "blockers": []},
+    )
+    monkeypatch.setattr(
+        preparation,
+        "autonomous_generation_preparation_readiness",
         lambda *a, **k: {"ready": True, "blockers": []},
     )
     now = batch._now(db)
