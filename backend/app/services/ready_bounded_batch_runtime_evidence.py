@@ -108,6 +108,7 @@ def emit_live_preflight_certification_to_runtime_log(*, certification_runner=Non
             # Allowlist only: no product IDs, plan IDs, external board IDs,
             # tokens, media, URLs or arbitrary exception messages enter logs.
             for key in (
+                "refusal_code",
                 "success", "bounded_preflight_certification", "publishing_admission",
                 "terminal_stage", "database_revision", "schema_canonicality",
                 "routine_state", "publish_unknown_count",
@@ -122,7 +123,16 @@ def emit_live_preflight_certification_to_runtime_log(*, certification_runner=Non
                 "worker_activations", "autonomy_activations",
             ):
                 value = report.get(key)
-                if key == "terminal_stage":
+                if key == "refusal_code":
+                    if value is None or value in {
+                        "PREFLIGHT_GATES_INVALID", "PREFLIGHT_DATABASE_UNAVAILABLE",
+                        "PREFLIGHT_SCHEMA_REVISION_OR_CATALOG", "PREFLIGHT_ROUTINE_NOT_PAUSED",
+                        "PREFLIGHT_PUBLISH_UNKNOWN_PRESENT", "PREFLIGHT_NONTERMINAL_BATCH_PRESENT",
+                        "PREFLIGHT_ACTIVE_PLAN_INVALID", "PREFLIGHT_READY_CANDIDATES_INSUFFICIENT",
+                        "PREFLIGHT_CANDIDATE_ROUTING_INVALID", "PREFLIGHT_CANDIDATE_IDENTITIES_INVALID",
+                    }:
+                        safe[key] = value
+                elif key == "terminal_stage":
                     if value in ("GATES", "READ_ONLY_DATABASE", "COMPLETE", "DATABASE_CLOSE"):
                         safe[key] = value
                 elif key == "database_revision":
@@ -145,6 +155,19 @@ def emit_live_preflight_certification_to_runtime_log(*, certification_runner=Non
                         safe[key] = value
                 elif type(value) is int and value >= 0:
                     safe[key] = value
+        counts = report.get("readiness_blocker_counts") if isinstance(report, dict) else None
+        allowed_count_keys = {
+            "eligible_planned", "execution_blocked", "generation_blocked",
+            "missing_persisted_template", "evaluation_error",
+        }
+        if (
+            safe.get("refusal_code") == "PREFLIGHT_READY_CANDIDATES_INSUFFICIENT"
+            and isinstance(counts, dict) and set(counts) == allowed_count_keys
+            and all(type(v) is int and 0 <= v <= 100000 for v in counts.values())
+        ):
+            safe["readiness_blocker_counts"] = {
+                key: counts[key] for key in sorted(allowed_count_keys)
+            }
         success = (
             safe["success"] is True
             and safe["bounded_preflight_certification"] == "PASS"

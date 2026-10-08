@@ -15,9 +15,12 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models.domain import Board, PinterestBoard, PinterestConnection, Product
+from app.models.domain import Board, PinterestBoard, PinterestConnection, Product, PinterestPortfolioPlanItem
 from app.services.pinterest_board_strategy import board_strategy
-from app.services.routine_bounded_preparation import _execution_ready_items
+from app.services.routine_bounded_preparation import _execution_ready_items, _execution_settings
+from app.services.pinterest_autonomous_execution import execution_readiness
+from app.services.pinterest_autonomous_generation import autonomous_generation_preparation_readiness
+from app.db.bounded_batch_schema_0034 import entries
 from .catalog import digest, validate_catalog
 from .one_shot_migration import _env, _require, _url
 from .production_media_certification import gate_snapshot
@@ -107,6 +110,51 @@ def _route_candidate(db, plan, row):
     return identity
 
 
+def _stage(report, code):
+    # Fixed constants only; never expose SQL, exception messages or identities.
+    report["refusal_code"] = code
+
+
+def _blocked_candidate_summary(db, plan_id, now, settings):
+    """Aggregate only deterministic readiness categories on the same read-only snapshot."""
+    statement = sa.select(PinterestPortfolioPlanItem).where(
+        PinterestPortfolioPlanItem.plan_id == plan_id,
+        PinterestPortfolioPlanItem.is_reserve.is_(False),
+        PinterestPortfolioPlanItem.status == "PLANNED",
+        PinterestPortfolioPlanItem.publication_id.is_(None),
+        PinterestPortfolioPlanItem.planned_date >= now.date(),
+        ~PinterestPortfolioPlanItem.id.in_(sa.select(entries.c.item_id)),
+    ).order_by(
+        PinterestPortfolioPlanItem.planned_date,
+        PinterestPortfolioPlanItem.slot_index,
+        PinterestPortfolioPlanItem.id,
+    )
+    counts = {
+        "eligible_planned": 0,
+        "execution_blocked": 0,
+        "generation_blocked": 0,
+        "missing_persisted_template": 0,
+        "evaluation_error": 0,
+    }
+    internal = _execution_settings(settings)
+    for item in db.scalars(statement).all():
+        counts["eligible_planned"] += 1
+        try:
+            execution = execution_readiness(db, item.id, settings=internal, now=now)
+            generation = autonomous_generation_preparation_readiness(
+                db, item.id, settings=internal,
+            )
+            if execution.get("ready") is not True:
+                counts["execution_blocked"] += 1
+            if generation.get("ready") is not True:
+                counts["generation_blocked"] += 1
+                if "CREATIVE_TEMPLATE_NOT_PERSISTED" in (generation.get("blockers") or []):
+                    counts["missing_persisted_template"] += 1
+        except Exception:
+            counts["evaluation_error"] += 1
+    return counts
+
+
 def database_snapshot(engine, report):
     """Exactly one PostgreSQL REPEATABLE READ / READ ONLY transaction."""
     with transaction(engine, readonly=True) as connection:
@@ -114,29 +162,34 @@ def database_snapshot(engine, report):
         _require(connection.exec_driver_sql("SHOW transaction_read_only").scalar_one() == "on")
         _require(connection.exec_driver_sql("SHOW transaction_isolation").scalar_one() == "repeatable read")
 
+        _stage(report, "PREFLIGHT_SCHEMA_REVISION_OR_CATALOG")
         revisions = connection.exec_driver_sql(
             "SELECT version_num FROM public.alembic_version ORDER BY version_num"
         ).scalars().all()
         _require(revisions == ["0034"])
         validate_catalog(connection, "0034")
 
+        _stage(report, "PREFLIGHT_ROUTINE_NOT_PAUSED")
         controls = connection.exec_driver_sql(
             "SELECT state FROM public.routine_publishing_control ORDER BY id LIMIT 2"
         ).scalars().all()
         _require(controls == ["PAUSED"])
 
+        _stage(report, "PREFLIGHT_PUBLISH_UNKNOWN_PRESENT")
         publish_unknown_count = connection.exec_driver_sql(
             "SELECT count(*) FROM public.pin_publications "
             "WHERE status::text='PUBLISH_UNKNOWN'"
         ).scalar_one()
         _require(publish_unknown_count == 0)
 
+        _stage(report, "PREFLIGHT_NONTERMINAL_BATCH_PRESENT")
         conflicting_batch_count = connection.exec_driver_sql(
             "SELECT count(*) FROM public.routine_autonomous_batches "
             "WHERE state IN ('OPEN','PREPARING','READY','RUNNING')"
         ).scalar_one()
         _require(conflicting_batch_count == 0)
 
+        _stage(report, "PREFLIGHT_ACTIVE_PLAN_INVALID")
         current_date = connection.exec_driver_sql("SELECT CURRENT_DATE").scalar_one()
         month_start = current_date.replace(day=1)
         plans = connection.exec_driver_sql(
@@ -163,6 +216,7 @@ def database_snapshot(engine, report):
             join_transaction_mode="rollback_only",
         )
         try:
+            _stage(report, "PREFLIGHT_READY_CANDIDATES_INSUFFICIENT")
             ready_items = _execution_ready_items(
                 db,
                 plan["id"],
@@ -171,6 +225,10 @@ def database_snapshot(engine, report):
                 limit=6,
                 lock=False,
             )
+            if len(ready_items) < 5:
+                report["readiness_blocker_counts"] = _blocked_candidate_summary(
+                    db, plan["id"], current_timestamp, get_settings(),
+                )
             _require(len(ready_items) >= 5)
             selected = ready_items[:5]
             selected_rows = [
@@ -187,10 +245,12 @@ def database_snapshot(engine, report):
                 }
                 for item in selected
             ]
+            _stage(report, "PREFLIGHT_CANDIDATE_ROUTING_INVALID")
             candidates = [_route_candidate(db, plan, row) for row in selected_rows]
         finally:
             db.close()
 
+        _stage(report, "PREFLIGHT_CANDIDATE_IDENTITIES_INVALID")
         _require([candidate["slot_index"] for candidate in candidates] ==
                  [int(item.slot_index) for item in selected])
         _require(len({c["item_id"] for c in candidates}) == 5)
@@ -274,6 +334,8 @@ def run():
         "plan_fingerprint": None,
         "preflight_fingerprint": None,
         "candidates": [],
+        "refusal_code": "PREFLIGHT_GATES_INVALID",
+        "readiness_blocker_counts": None,
     }
     previous = logging.root.manager.disable
     engine = None
@@ -283,6 +345,7 @@ def run():
         report["gate_fingerprint"] = digest(gates)
 
         report["terminal_stage"] = "READ_ONLY_DATABASE"
+        _stage(report, "PREFLIGHT_DATABASE_UNAVAILABLE")
         engine = sa.create_engine(
             _url(_env(DATABASE_ENV)),
             echo=False,
@@ -293,6 +356,7 @@ def run():
         engine.dispose()
         engine = None
 
+        report["refusal_code"] = None
         report["bounded_preflight_certification"] = "PASS"
         report["terminal_stage"] = "COMPLETE"
         report["success"] = True
