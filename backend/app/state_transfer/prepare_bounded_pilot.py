@@ -168,15 +168,6 @@ def run(
     result = _base_result()
     db = None
     try:
-        if require_invocation_guard:
-            result["terminal_stage"] = "INVOCATION_GUARD"
-            result["invocation_receipt_id"] = _claim_invocation(
-                invocation_id,
-                session_factory=invocation_session_factory,
-            )
-            result["invocation_guard_claimed"] = True
-            result["invocation_guard_database_writes"] = 1
-
         if preflight_runner is None:
             from app.state_transfer.bounded_pilot_preflight import run as preflight_runner
         preflight = preflight_runner()
@@ -205,6 +196,18 @@ def run(
             or persistent_settings.routine_scheduled_live_admission_enabled is not False
         ):
             raise RuntimeError("PERSISTENT_CLOSED_STATE_DRIFT")
+
+        # The durable single-use claim is the first write. It occurs only after
+        # a fresh read-only preflight and closed-state recheck have passed, but
+        # before any bounded batch/publication/creative/permit mutation.
+        if require_invocation_guard:
+            result["terminal_stage"] = "INVOCATION_GUARD"
+            result["invocation_receipt_id"] = _claim_invocation(
+                invocation_id,
+                session_factory=invocation_session_factory,
+            )
+            result["invocation_guard_claimed"] = True
+            result["invocation_guard_database_writes"] = 1
 
         result["terminal_stage"] = "PREPARATION"
         result["process_local_bounded_override"] = True
