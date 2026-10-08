@@ -153,33 +153,50 @@ def test_one_shot_preflight_then_process_local_override_only(monkeypatch):
     assert persistent.routine_pinterest_daily_write_limit == 1
 
 
-def test_restart_guard_consumes_authorization_before_preflight_and_blocks_restart():
+def test_restart_guard_claims_after_preflight_and_blocks_repeat_mutation(monkeypatch):
+    from app.services.bounded_pilot_preparation_operator import BoundedPreparationOperatorError
+
     engine = sa.create_engine("sqlite:///:memory:")
     AuditLog.__table__.create(engine)
     sessions = sessionmaker(bind=engine, expire_on_commit=False)
     calls = []
-    failed = {
-        "success": False,
-        "bounded_preflight_certification": "NOT_GRANTED",
-        "publishing_admission": "NOT_GRANTED",
-    }
     invocation_id = "a" * 64
+    monkeypatch.setattr(cli, "gate_snapshot", lambda: {"closed": True})
+
+    def preflight():
+        calls.append("preflight")
+        return _preflight()
+
+    def prepare(*args, **kwargs):
+        calls.append("prepare")
+        raise BoundedPreparationOperatorError(
+            "BOUNDED_PREPARATION_CREATIVE_TEXT_LAYOUT_UNFIT"
+        )
+
+    monkeypatch.setattr(cli, "prepare_certified_batch", prepare)
 
     first = cli.run(
-        preflight_runner=lambda: (calls.append("preflight") or failed),
+        preflight_runner=preflight,
+        settings_factory=lambda: _settings(),
+        session_factory=FakeSession,
         invocation_id=invocation_id,
         invocation_session_factory=sessions,
         require_invocation_guard=True,
     )
     assert first["success"] is False
-    assert first["code"] == "PREFLIGHT_NOT_CERTIFIED"
+    assert first["terminal_stage"] == "PREPARATION"
+    assert first["code"] == "BOUNDED_PREPARATION_CREATIVE_TEXT_LAYOUT_UNFIT"
     assert first["invocation_guard_claimed"] is True
     assert first["invocation_guard_database_writes"] == 1
     assert first["invocation_receipt_id"] == cli._invocation_receipt_id(invocation_id)
-    assert calls == ["preflight"]
+    assert calls == ["preflight", "prepare"]
 
     second = cli.run(
-        preflight_runner=lambda: (calls.append("restart-preflight") or failed),
+        preflight_runner=preflight,
+        settings_factory=lambda: _settings(),
+        session_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("mutating preparation session must not reopen")
+        ),
         invocation_id=invocation_id,
         invocation_session_factory=sessions,
         require_invocation_guard=True,
@@ -189,7 +206,7 @@ def test_restart_guard_consumes_authorization_before_preflight_and_blocks_restar
     assert second["code"] == "PREPARATION_INVOCATION_ALREADY_CLAIMED"
     assert second["invocation_guard_claimed"] is False
     assert second["invocation_guard_database_writes"] == 0
-    assert calls == ["preflight"]
+    assert calls == ["preflight", "prepare", "preflight"]
 
     with sessions() as db:
         rows = list(db.scalars(sa.select(AuditLog)).all())
@@ -200,21 +217,24 @@ def test_restart_guard_consumes_authorization_before_preflight_and_blocks_restar
     engine.dispose()
 
 
-def test_restart_guard_requires_exact_hex64_invocation_id():
+def test_restart_guard_requires_exact_hex64_invocation_id_after_preflight(monkeypatch):
+    monkeypatch.setattr(cli, "gate_snapshot", lambda: {"closed": True})
+    calls = []
     for value, code in (
         (None, "PREPARATION_INVOCATION_ID_REQUIRED"),
         ("not-a-valid-id", "PREPARATION_INVOCATION_ID_INVALID"),
     ):
         result = cli.run(
-            preflight_runner=lambda: (_ for _ in ()).throw(
-                AssertionError("preflight must not run before invocation guard")
-            ),
+            preflight_runner=lambda: (calls.append("preflight") or _preflight()),
+            settings_factory=lambda: _settings(),
             invocation_id=value,
             require_invocation_guard=True,
         )
         assert result["success"] is False
         assert result["terminal_stage"] == "INVOCATION_GUARD"
         assert result["code"] == code
+        assert result["invocation_guard_database_writes"] == 0
+    assert calls == ["preflight", "preflight"]
 
 
 def test_restart_safe_runtime_always_starts_api_after_refusal(monkeypatch, capsys):
