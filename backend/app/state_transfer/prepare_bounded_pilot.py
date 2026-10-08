@@ -40,6 +40,7 @@ def _base_result():
         "process_local_bounded_override": False,
         "database_mutation_authorized": False,
         "invocation_guard_claimed": False,
+        "invocation_guard_database_writes": 0,
         "invocation_receipt_id": None,
         "provider_calls": 0,
         "buffer_calls": 0,
@@ -145,7 +146,10 @@ def _claim_invocation(invocation_id: str | None, *, session_factory=None) -> str
             db.commit()
         except IntegrityError:
             db.rollback()
-            raise RuntimeError("PREPARATION_INVOCATION_ALREADY_CLAIMED") from None
+            existing = db.get(AuditLog, row_id)
+            if existing is not None:
+                raise RuntimeError("PREPARATION_INVOCATION_ALREADY_CLAIMED") from None
+            raise RuntimeError("PREPARATION_INVOCATION_GUARD_WRITE_FAILED") from None
         return row_id
     finally:
         db.close()
@@ -171,6 +175,7 @@ def run(
                 session_factory=invocation_session_factory,
             )
             result["invocation_guard_claimed"] = True
+            result["invocation_guard_database_writes"] = 1
 
         if preflight_runner is None:
             from app.state_transfer.bounded_pilot_preflight import run as preflight_runner
@@ -254,6 +259,7 @@ def run(
             "PREPARATION_INVOCATION_ID_REQUIRED",
             "PREPARATION_INVOCATION_ID_INVALID",
             "PREPARATION_INVOCATION_ALREADY_CLAIMED",
+            "PREPARATION_INVOCATION_GUARD_WRITE_FAILED",
         }:
             result["code"] = detail
         else:
