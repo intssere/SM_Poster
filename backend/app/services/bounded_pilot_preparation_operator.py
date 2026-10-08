@@ -30,15 +30,19 @@ def _raise(code: str):
 
 
 def _sanitized_preparation_code(exc: Exception) -> str:
-    value = getattr(exc, "code", None)
-    if not isinstance(value, str) or not value:
-        if exc.__class__.__name__ not in {
-            "AutonomousGenerationError",
-            "PinterestSeoError",
-            "CreativeRenderError",
-        }:
-            return "BOUNDED_PREPARATION_INTERNAL_ERROR"
+    class_name = exc.__class__.__name__
+    if class_name == "AutonomousExecutionError":
+        value = getattr(exc, "code", None)
+    elif class_name in {
+        "AutonomousGenerationError",
+        "PinterestSeoError",
+        "CreativeRenderError",
+    }:
         value = str(exc).strip()
+    else:
+        return "BOUNDED_PREPARATION_INTERNAL_ERROR"
+    if not isinstance(value, str) or not value:
+        return "BOUNDED_PREPARATION_INTERNAL_ERROR"
     if (
         not value
         or len(value) > 120
