@@ -69,6 +69,15 @@ def _settings(**overrides):
     return Settings(**values)
 
 
+def test_failure_code_never_persists_arbitrary_exception_text():
+    assert execution._failure_code(
+        execution.AutonomousExecutionError("SCHEDULE_TIME_NOT_FUTURE")
+    ) == "SCHEDULE_TIME_NOT_FUTURE"
+    assert execution._failure_code(
+        RuntimeError("PRIVATE_DATABASE_URL_AND_TOKEN")
+    ) == "UNEXPECTED_RUNTIMEERROR"
+
+
 def _seed(db, *, plan_status="ACTIVE", two_same_day=True):
     store = Store(
         id="store-1",
