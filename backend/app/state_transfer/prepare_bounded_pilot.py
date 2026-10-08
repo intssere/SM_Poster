@@ -27,7 +27,7 @@ INVOCATION_ACTION = "bounded_pilot_preparation_invocation_v1"
 INVOCATION_ACTOR = "bounded-preparation-invocation-v1"
 INVOCATION_ENTITY_TYPE = "bounded_preparation_invocation"
 INVOCATION_NAMESPACE = UUID("ebd277c7-d2a4-43ed-aea2-f04fb3739e86")
-INVOCATION_RE = re.compile(r"[0-9a-f]{64}\\Z")
+INVOCATION_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _base_result():
