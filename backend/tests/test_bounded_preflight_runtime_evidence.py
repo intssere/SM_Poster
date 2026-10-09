@@ -98,6 +98,7 @@ def test_allowlisted_refusal_and_aggregate_counts_are_rendered():
         "missing_persisted_template": 8,
         "evaluation_error": 0,
         "generation_blocker_groups": {"seo": 10, "source_image": 0, "creative_layout": 0, "board_or_angle": 0, "duplicate_or_history": 0, "product": 0, "template": 0, "other": 0},
+        "layout_refusal_codes": {"TEXT_LINE_LIMIT": 0, "TEXT_UNRENDERABLE_WORD": 0, "TEXT_LINE_OVERFLOW": 0, "TEXT_PANEL_OVERFLOW": 0, "TEMPLATE_UNSUPPORTED": 0, "TEXT_OTHER_RENDER_REFUSAL": 0},
     }
     assert emit_live_preflight_certification_to_runtime_log(
         certification_runner=lambda: {

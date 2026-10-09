@@ -135,6 +135,11 @@ def _blocked_candidate_summary(db, plan_id, now, settings):
         "generation_blocked": 0,
         "missing_persisted_template": 0,
         "evaluation_error": 0,
+        "layout_refusal_codes": {
+            "TEXT_LINE_LIMIT": 0, "TEXT_UNRENDERABLE_WORD": 0,
+            "TEXT_LINE_OVERFLOW": 0, "TEXT_PANEL_OVERFLOW": 0,
+            "TEMPLATE_UNSUPPORTED": 0, "TEXT_OTHER_RENDER_REFUSAL": 0,
+        },
         "generation_blocker_groups": {
             "seo": 0, "source_image": 0, "creative_layout": 0,
             "board_or_angle": 0, "duplicate_or_history": 0,
@@ -154,6 +159,9 @@ def _blocked_candidate_summary(db, plan_id, now, settings):
             if generation.get("ready") is not True:
                 counts["generation_blocked"] += 1
                 blockers = generation.get("blockers") or []
+                for code in set(generation.get("layout_refusal_codes") or []):
+                    if code in counts["layout_refusal_codes"]:
+                        counts["layout_refusal_codes"][code] += 1
                 if "CREATIVE_TEMPLATE_NOT_PERSISTED" in blockers:
                     counts["missing_persisted_template"] += 1
                 # A single item can have multiple blocker groups; never log

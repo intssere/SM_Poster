@@ -830,3 +830,44 @@ def test_visual_copy_uses_existing_fitting_full_title(monkeypatch):
     )
     assert result["headline"] == "Cedar Perfume"
     assert result["supporting_text"] == "Woody Fragrance"
+
+
+def test_visual_copy_refusal_codes_are_fixed_vocabulary(monkeypatch):
+    from types import SimpleNamespace
+
+    private = "SECRET PRODUCT TITLE"
+    def refuse_layout(**kwargs):
+        raise generation.CreativeRenderError("Creative text cannot fit the selected template.")
+    monkeypatch.setattr(generation, "creative_text_layout_preflight", refuse_layout)
+    codes = set()
+    with pytest.raises(generation.AutonomousGenerationError, match="CREATIVE_TEXT_LAYOUT_UNFIT"):
+        generation._visual_copy(
+            product=SimpleNamespace(title=private, vendor="Maison"),
+            intelligence=SimpleNamespace(brand="Maison"),
+            seo=SimpleNamespace(primary_keyword="luxury perfume"),
+            template_key="editorial_product_pick",
+            refusal_codes=codes,
+        )
+    assert codes == {"TEXT_LINE_LIMIT"}
+    assert private not in str(codes)
+
+
+def test_unknown_renderer_error_is_not_forwarded(monkeypatch):
+    from types import SimpleNamespace
+
+    secret = "PRIVATE CATALOG STRING"
+    monkeypatch.setattr(
+        generation, "creative_text_layout_preflight",
+        lambda **kwargs: (_ for _ in ()).throw(generation.CreativeRenderError(secret)),
+    )
+    codes = set()
+    with pytest.raises(generation.AutonomousGenerationError, match="CREATIVE_TEXT_LAYOUT_UNFIT"):
+        generation._visual_copy(
+            product=SimpleNamespace(title="Cedar Fragrance", vendor="Cedar"),
+            intelligence=SimpleNamespace(brand="Cedar"),
+            seo=SimpleNamespace(primary_keyword="woody fragrance"),
+            template_key="editorial_product_pick",
+            refusal_codes=codes,
+        )
+    assert codes == {"TEXT_OTHER_RENDER_REFUSAL"}
+    assert secret not in str(codes)
