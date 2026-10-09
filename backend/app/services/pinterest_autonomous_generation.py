@@ -172,12 +172,26 @@ def _controlled_render_failure_code(value: Exception | str) -> str:
     return (code or "CREATIVE_RENDER_ERROR")[:120]
 
 
+def _safe_layout_refusal_code(error: CreativeRenderError) -> str:
+    # Closed vocabulary: the renderer's human-readable exception never leaves
+    # this process or appears in an operational log.
+    known = {
+        "Creative text cannot fit the selected template.": "TEXT_LINE_LIMIT",
+        "Creative text contains an unrenderable word.": "TEXT_UNRENDERABLE_WORD",
+        "Creative text overflows the selected template.": "TEXT_LINE_OVERFLOW",
+        "Creative text overflows the canvas.": "TEXT_PANEL_OVERFLOW",
+        "Unsupported creative template.": "TEMPLATE_UNSUPPORTED",
+    }
+    return known.get(str(error), "TEXT_OTHER_RENDER_REFUSAL")
+
+
 def _visual_copy(
     *,
     product: Product,
     intelligence: ProductIntelligence,
     seo: PinterestSeoBrief,
     template_key: str,
+    refusal_codes: set[str] | None = None,
 ) -> dict[str, object]:
     primary = normalize_keyword(seo.primary_keyword)
     if not primary:
@@ -259,7 +273,9 @@ def _visual_copy(
                 supporting_text=candidate["supporting_text"],
                 product_category=None,
             )
-        except CreativeRenderError:
+        except CreativeRenderError as exc:
+            if refusal_codes is not None:
+                refusal_codes.add(_safe_layout_refusal_code(exc))
             continue
         layout_fingerprint = _hash({
             "template_key": template_key,
@@ -390,6 +406,7 @@ def autonomous_generation_preparation_readiness(
     copy = None
     visual_copy = None
     concept_fp = None
+    layout_refusal_codes: set[str] = set()
     if (
         not blockers
         and product is not None
@@ -411,6 +428,7 @@ def autonomous_generation_preparation_readiness(
                 intelligence=intelligence,
                 seo=preview_seo,
                 template_key=template_key,
+                refusal_codes=layout_refusal_codes,
             )
         except AutonomousGenerationError as exc:
             blockers.append(str(exc))
@@ -465,6 +483,7 @@ def autonomous_generation_preparation_readiness(
         "portfolio_item_id": item.id,
         "ready": not blockers,
         "blockers": blockers,
+        "layout_refusal_codes": sorted(layout_refusal_codes) if "CREATIVE_TEXT_LAYOUT_UNFIT" in blockers else [],
         "seo_preview_fingerprint": seo_preview.get("seo_fingerprint"),
         "seo_input_fingerprint": seo_preview.get("input_fingerprint"),
         "source_image_id": image.id if image else None,
