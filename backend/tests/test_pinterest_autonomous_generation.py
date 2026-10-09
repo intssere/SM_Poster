@@ -802,8 +802,8 @@ def test_visual_copy_fallback_shortens_verbose_product_headline_at_word_boundari
     monkeypatch.setattr(generation, "creative_text_layout_preflight", constrained_layout)
     long_title = "Maison Élégance Signature Eau de Parfum Intense Spray Fragrance for Women"
     result = generation._visual_copy(
-        product=SimpleNamespace(title=long_title, vendor="Maison"),
-        intelligence=SimpleNamespace(brand="Maison"),
+        product=SimpleNamespace(title=long_title, vendor=""),
+        intelligence=SimpleNamespace(brand=""),
         seo=SimpleNamespace(primary_keyword="luxury perfume"),
         template_key="editorial_product_pick",
     )
