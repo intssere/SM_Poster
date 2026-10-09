@@ -11,7 +11,7 @@ import re
 from collections.abc import Mapping
 
 CONTRACT = "FIVE_PIN_BOUNDED_PREFLIGHT_V1"
-HEX64 = re.compile(r"[0-9a-f]{64}\\Z")
+HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 FIELDS = frozenset({
     "contract", "database_revision", "month_start", "current_date",
     "plan_id", "plan_fingerprint", "candidates", "preflight_fingerprint",
