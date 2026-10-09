@@ -195,6 +195,29 @@ def _visual_copy(
             {"headline": brand, "supporting_text": primary_display}
         )
 
+    # Conservative visual-only fallback: the full primary SEO phrase remains
+    # in the Pin title/description. Never clip a word or fabricate product facts.
+    # Limit supporting copy to a meaningful phrase when the full keyword is too
+    # wide for the renderer's strict two-line supporting-text region.
+    tokens = primary_display.split()
+    if len(tokens) > 2:
+        phrase = []
+        for token in tokens:
+            if len(phrase) >= 6 or len(" ".join((*phrase, token))) > 44:
+                break
+            phrase.append(token)
+        if len(phrase) >= 2 and len(phrase) < len(tokens):
+            visual_phrase = " ".join(phrase)
+            candidates.append({
+                "headline": compact_title,
+                "supporting_text": visual_phrase,
+            })
+            if brand:
+                candidates.append({
+                    "headline": brand,
+                    "supporting_text": visual_phrase,
+                })
+
     seen: set[tuple[str, str]] = set()
     for candidate in candidates:
         key = (candidate["headline"], candidate["supporting_text"])
