@@ -218,6 +218,34 @@ def _visual_copy(
                     "supporting_text": visual_phrase,
                 })
 
+    # Fragrance catalog titles may include long concentration, size and format
+    # descriptors. Keep the complete product identity in the Pin metadata,
+    # while trying an exact word-boundary extract in the image text panel.
+    # Never invent or substitute a brand, claim or SEO keyword.
+    title_words = compact_title.split()
+    title_phrase = []
+    for word in title_words:
+        if len(title_phrase) >= 6 or len(" ".join((*title_phrase, word))) > 46:
+            break
+        title_phrase.append(word)
+    if len(title_phrase) >= 2 and len(title_phrase) < len(title_words):
+        concise_title = " ".join(title_phrase)
+        candidates.append({
+            "headline": concise_title,
+            "supporting_text": primary_display,
+        })
+        if len(tokens) > 2:
+            phrase = []
+            for word in tokens:
+                if len(phrase) >= 6 or len(" ".join((*phrase, word))) > 44:
+                    break
+                phrase.append(word)
+            if len(phrase) >= 2 and len(phrase) < len(tokens):
+                candidates.append({
+                    "headline": concise_title,
+                    "supporting_text": " ".join(phrase),
+                })
+
     seen: set[tuple[str, str]] = set()
     for candidate in candidates:
         key = (candidate["headline"], candidate["supporting_text"])
