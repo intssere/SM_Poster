@@ -787,3 +787,46 @@ def test_visual_copy_does_not_truncate_short_seo_phrase(monkeypatch):
         template_key="editorial_product_pick",
     )
     assert result["supporting_text"] == "Woody Fragrance"
+
+
+def test_visual_copy_fallback_shortens_verbose_product_headline_at_word_boundaries(monkeypatch):
+    from types import SimpleNamespace
+
+    attempts = []
+    def constrained_layout(*, template_key, headline, supporting_text, product_category):
+        attempts.append((headline, supporting_text))
+        if len(headline) > 46 or len(supporting_text) > 44:
+            raise generation.CreativeRenderError("Creative text cannot fit the selected template.")
+        return {"headline_lines": [headline], "supporting_lines": [supporting_text]}
+
+    monkeypatch.setattr(generation, "creative_text_layout_preflight", constrained_layout)
+    long_title = "Maison Élégance Signature Eau de Parfum Intense Spray Fragrance for Women"
+    result = generation._visual_copy(
+        product=SimpleNamespace(title=long_title, vendor="Maison"),
+        intelligence=SimpleNamespace(brand="Maison"),
+        seo=SimpleNamespace(primary_keyword="luxury perfume"),
+        template_key="editorial_product_pick",
+    )
+    assert result["headline"] != long_title
+    assert result["headline"] in long_title
+    assert len(result["headline"].split()) >= 2
+    assert result["supporting_text"] == "Luxury Perfume"
+    assert result["layout_fingerprint"]
+    assert len(attempts) >= 3
+
+
+def test_visual_copy_uses_existing_fitting_full_title(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        generation, "creative_text_layout_preflight",
+        lambda **kw: {"headline_lines": [kw["headline"]], "supporting_lines": [kw["supporting_text"]]},
+    )
+    result = generation._visual_copy(
+        product=SimpleNamespace(title="Cedar Perfume", vendor="Cedar"),
+        intelligence=SimpleNamespace(brand="Cedar"),
+        seo=SimpleNamespace(primary_keyword="woody fragrance"),
+        template_key="editorial_product_pick",
+    )
+    assert result["headline"] == "Cedar Perfume"
+    assert result["supporting_text"] == "Woody Fragrance"
