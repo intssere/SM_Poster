@@ -315,9 +315,9 @@ def database():
 
 def test_clean_full_upgrade_reaches_frozen_head_and_verifies():
     with _isolated_database("head") as (engine, _url):
-        assert _revision(engine) == ["0034"]
+        assert _revision(engine) == ["0035"]
         with engine.connect() as connection:
-            verify_frozen_schema_at_head(connection, revision="0034")
+            verify_frozen_schema_at_head(connection, revision="0035")
         original_engine = schema_canonicality_guard.engine
         try:
             schema_canonicality_guard.engine = engine

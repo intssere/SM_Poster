@@ -32,9 +32,10 @@ def test_empty_database_production_cli_reaches_canonical_head(environment):
         assert result.returncode == 0, result.stderr
         assert "Running upgrade 0032 -> 0033" in result.stderr
         assert "Running upgrade 0033 -> 0034" in result.stderr
-        assert _revision(engine) == ["0034"]
+        assert "Running upgrade 0034 -> 0035" in result.stderr
+        assert _revision(engine) == ["0035"]
         with engine.connect() as connection:
-            verify_frozen_schema_at_head(connection, revision="0034")
+            verify_frozen_schema_at_head(connection, revision="0035")
 
 
 def test_existing_canonical_0032_executable_progression_preserves_business():
@@ -161,4 +162,4 @@ def test_supported_empty_downgrade_and_production_reupgrade():
         result = _production_alembic(url)
         assert result.returncode == 0, result.stderr
         with engine.connect() as connection:
-            verify_frozen_schema_at_head(connection, revision="0034")
+            verify_frozen_schema_at_head(connection, revision="0035")

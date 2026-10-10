@@ -91,8 +91,9 @@ def database_snapshot(engine, report):
         revisions = connection.exec_driver_sql(
             "SELECT version_num FROM public.alembic_version ORDER BY version_num"
         ).scalars().all()
-        _check(revisions == ["0034"], "READY_SCHEMA_REVISION_MISMATCH", "SCHEMA", "alembic_version")
-        validate_catalog(connection, "0034")
+        _check(revisions in (["0034"], ["0035"]), "READY_SCHEMA_REVISION_MISMATCH", "SCHEMA", "alembic_version")
+        active_revision = revisions[0]
+        validate_catalog(connection, active_revision)
 
         controls = connection.exec_driver_sql(
             "SELECT state FROM public.routine_publishing_control ORDER BY id LIMIT 2"
@@ -304,7 +305,7 @@ def database_snapshot(engine, report):
 
         dossier = {
             "contract": "FIVE_PIN_READY_BATCH_CERTIFICATION_V1",
-            "database_revision": "0034",
+            "database_revision": active_revision,
             "routine_state": "PAUSED",
             "batch_id": batch["id"],
             "batch_manifest_sha256": batch["manifest_sha256"],

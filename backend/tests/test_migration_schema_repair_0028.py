@@ -560,7 +560,7 @@ def test_startup_guard_accepts_canonical_head_and_refuses_drift_read_only(
     engine = sa.create_engine(isolated_database)
     try:
         with engine.begin() as connection:
-            verify_frozen_schema_at_head(connection, revision="0034")
+            verify_frozen_schema_at_head(connection, revision="0035")
             connection.execute(sa.text(
                 'ALTER INDEX "public"."ix_pinterest_auto_destination_status" '
                 'RENAME TO "task583_guard_drift"'
@@ -570,10 +570,10 @@ def test_startup_guard_accepts_canonical_head_and_refuses_drift_read_only(
                 SchemaAdoptionRefused,
                 match="index contract mismatch",
             ):
-                verify_frozen_schema_at_head(connection, revision="0034")
+                verify_frozen_schema_at_head(connection, revision="0035")
             assert connection.execute(
                 sa.text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == "0034"
+            ).scalar_one() == "0035"
             assert connection.execute(
                 sa.text(
                     "SELECT to_regclass("
