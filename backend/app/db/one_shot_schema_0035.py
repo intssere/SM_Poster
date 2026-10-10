@@ -27,6 +27,7 @@ def verify(connection):
     constraints = dict(connection.execute(sa.text("""
         SELECT con.conname, pg_get_constraintdef(con.oid)
         FROM pg_constraint con WHERE con.conrelid=to_regclass(:table)
+          AND con.contype IN ('p', 'u', 'c')
     """), {"table": "public." + TABLE}).all())
     expected = {
         "routine_one_shot_preparation_operations_pkey",
