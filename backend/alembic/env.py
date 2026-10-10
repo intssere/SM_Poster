@@ -10,6 +10,7 @@ from app.db.migration_adoption import verify_reconciled_bundle
 from app.models import domain  # noqa: F401
 from app.services.readiness_execution_admission import metadata as management_metadata
 from app.db.bounded_batch_schema_0034 import metadata as bounded_batch_metadata
+from app.state_transfer.one_shot_operation_reservation import metadata as one_shot_reservation_metadata
 from app.db.migration_lock import (
     MIGRATION_ADVISORY_LOCK_KEY,
     require_transaction_lock,
@@ -22,7 +23,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 # Keep management tables visible to Alembic, without putting them into business
 # ORM Base.metadata/create_all or changing historical model-based migrations.
-target_metadata = [Base.metadata, management_metadata, bounded_batch_metadata]
+target_metadata = [Base.metadata, management_metadata, bounded_batch_metadata, one_shot_reservation_metadata]
 if config.attributes.get("connection") is None:
     config.set_main_option(
         "sqlalchemy.url",
