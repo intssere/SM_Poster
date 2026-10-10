@@ -287,7 +287,7 @@ def test_shadow_search_path_cannot_redirect_bookkeeping_or_guard(database, monke
     )
     # Historical adoption still reaches 0031, but cannot bypass the new 0032
     # production guard, including through a shadow bookkeeping table.
-    with pytest.raises(SchemaAdoptionRefused, match="Alembic revision 0034"):
+    with pytest.raises(SchemaAdoptionRefused, match="Alembic revision 0035"):
         schema_canonicality_guard.main()
 
 
