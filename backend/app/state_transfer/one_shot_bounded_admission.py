@@ -60,13 +60,15 @@ def validate_preflight_for_one_shot(report: Mapping, *, today: str) -> dict:
     and independently certify READY; none of those steps occur here.
     """
     _require(isinstance(report, Mapping), "ONE_SHOT_PREFLIGHT_INVALID")
+    revision = report.get("database_revision")
+    _require(revision in ("0034", "0035"), "ONE_SHOT_SCHEMA_REVISION_MISMATCH")
     for key, value in {
         "success": True,
         "mode": "READ_ONLY_FIVE_PIN_BOUNDED_PREFLIGHT",
         "terminal_stage": "COMPLETE",
         "bounded_preflight_certification": "PASS",
         "schema_canonicality": "PASS",
-        "database_revision": "0034",
+        "database_revision": revision,
         "routine_state": "PAUSED",
         "publish_unknown_count": 0,
         "conflicting_nonterminal_batch_count": 0,
