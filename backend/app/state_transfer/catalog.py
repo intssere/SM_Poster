@@ -72,7 +72,7 @@ def validate_catalog(connection, revision):
         frozen = json.loads(Path(__file__).with_name("schema_0031.json").read_text())
         if set(frozen) != set(SOURCE):
             raise Refused("Frozen contract inventory differs")
-        if revision == "0034":
+        if revision in {"0034", "0035"}:
             frozen.update(json.loads(
                 Path(__file__).with_name("schema_0034_foundation.json").read_text()))
         for name in SOURCE:
