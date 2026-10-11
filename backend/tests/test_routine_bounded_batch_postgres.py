@@ -398,7 +398,7 @@ def test_database_guards_preserve_manifest_and_consumption(ready, operation):
 def test_canonical_0034_and_guard_drift(postgres):
     engine, _ = postgres
     with engine.begin() as connection:
-        verify_frozen_schema_at_head(connection, revision="0034")
+        verify_frozen_schema_at_head(connection, revision="0035")
         connection.exec_driver_sql("ALTER TABLE routine_autonomous_batch_entries DISABLE TRIGGER routine_autonomous_batch_entries_immutable")
         with pytest.raises(RuntimeError, match="trigger mismatch"):
             schema.verify(connection)
@@ -862,7 +862,7 @@ def test_ready_batch_readonly_certification_accepts_exact_unattempted_manifest(p
 
     assert report["database_transactions"] == 1
     assert dossier["contract"] == "FIVE_PIN_READY_BATCH_CERTIFICATION_V1"
-    assert dossier["database_revision"] == "0034"
+    assert dossier["database_revision"] == "0035"
     assert dossier["routine_state"] == "PAUSED"
     assert dossier["batch_id"] == identity
     assert dossier["batch_state"] == "READY"

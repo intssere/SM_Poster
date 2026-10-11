@@ -54,7 +54,7 @@ def contract(connection, name):
 def validate_catalog(connection, revision):
     if connection.dialect.name != "postgresql":
         raise Refused("PostgreSQL required")
-    if revision not in {"0031", "0034"}:
+    if revision not in {"0031", "0034", "0035"}:
         raise Refused("Unsupported revision")
     try:
         verify_frozen_schema_at_head(connection, revision=revision)
@@ -63,14 +63,16 @@ def validate_catalog(connection, revision):
             "WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f','S')"
         )).scalars())
         expected = set(SOURCE) | {"alembic_version"}
-        if revision == "0034":
+        if revision in {"0034", "0035"}:
             expected |= set(TARGET_ONLY)
+        if revision == "0035":
+            expected.add("routine_one_shot_preparation_operations")
         if present != expected:
             raise Refused("Public table/relation inventory differs")
         frozen = json.loads(Path(__file__).with_name("schema_0031.json").read_text())
         if set(frozen) != set(SOURCE):
             raise Refused("Frozen contract inventory differs")
-        if revision == "0034":
+        if revision in {"0034", "0035"}:
             frozen.update(json.loads(
                 Path(__file__).with_name("schema_0034_foundation.json").read_text()))
         for name in SOURCE:

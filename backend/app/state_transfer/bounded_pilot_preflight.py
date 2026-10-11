@@ -206,8 +206,9 @@ def database_snapshot(engine, report):
         revisions = connection.exec_driver_sql(
             "SELECT version_num FROM public.alembic_version ORDER BY version_num"
         ).scalars().all()
-        _require(revisions == ["0034"])
-        validate_catalog(connection, "0034")
+        _require(revisions in (["0034"], ["0035"]))
+        active_revision = revisions[0]
+        validate_catalog(connection, active_revision)
 
         _stage(report, "PREFLIGHT_ROUTINE_NOT_PAUSED")
         controls = connection.exec_driver_sql(
@@ -310,7 +311,7 @@ def database_snapshot(engine, report):
 
         preflight_payload = {
             "contract": "FIVE_PIN_BOUNDED_PREFLIGHT_V1",
-            "database_revision": "0034",
+            "database_revision": active_revision,
             "month_start": month_start.isoformat(),
             "current_date": current_date.isoformat(),
             "plan_id": plan["id"],

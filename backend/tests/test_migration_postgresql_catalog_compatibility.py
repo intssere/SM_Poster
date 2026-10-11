@@ -27,7 +27,7 @@ def _verify_head(url: str) -> None:
     engine = sa.create_engine(url)
     try:
         with engine.connect() as connection:
-            adoption.verify_frozen_schema_at_head(connection, revision="0034")
+            adoption.verify_frozen_schema_at_head(connection, revision="0035")
     finally:
         engine.dispose()
 
@@ -35,11 +35,12 @@ def _verify_head(url: str) -> None:
 def test_empty_database_cli_upgrade_and_schema_canonicality(isolated_database):
     output = _alembic(isolated_database, "head")
     assert "Running upgrade 0033 -> 0034" in output
-    assert _current(isolated_database) == "0034 (head)"
+    assert "Running upgrade 0034 -> 0035" in output
+    assert _current(isolated_database) == "0035 (head)"
     _verify_head(isolated_database)
 
 
-@pytest.mark.parametrize("revision", ["0031", "0032", "0033", "0034"])
+@pytest.mark.parametrize("revision", ["0031", "0032", "0033", "0034", "0035"])
 def test_each_readiness_revision_keeps_frozen_contracts(isolated_database, revision):
     _alembic(isolated_database, revision)
     engine = sa.create_engine(isolated_database)

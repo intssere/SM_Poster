@@ -14,7 +14,7 @@ def main() -> int:
         if connection.dialect.name != "postgresql":
             raise RuntimeError("schema canonicality guard requires PostgreSQL")
         connection.exec_driver_sql("SET LOCAL search_path TO public, pg_catalog")
-        verify_frozen_schema_at_head(connection, revision="0034")
+        verify_frozen_schema_at_head(connection, revision="0035")
     return 0
 
 

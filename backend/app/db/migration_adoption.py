@@ -1639,7 +1639,7 @@ def verify_frozen_schema_at_head(connection: Any, revision: str = "0031") -> Non
             _refuse("canonical schema fingerprint verification failed")
         return
 
-    if revision not in {"0030", "0031", "0032", "0033", "0034"}:
+    if revision not in {"0030", "0031", "0032", "0033", "0034", "0035"}:
         _refuse(f"unsupported canonical head revision: {revision}")
 
     present = _present_postgresql_tables(connection, LINEAGE_PRESERVED_TABLES)
@@ -1653,16 +1653,19 @@ def verify_frozen_schema_at_head(connection: Any, revision: str = "0031") -> Non
     if fingerprints != canonical:
         _refuse("0030 preserved schema fingerprint verification failed")
     _require_0030_lineage_schema(connection)
-    if revision in {"0031", "0032", "0033", "0034"}:
+    if revision in {"0031", "0032", "0033", "0034", "0035"}:
         _require_frozen_0030_lineage_catalog(connection)
         _require_0031_scheduled_quota_schema(connection)
     if revision == "0032":
         _require_0032_readiness_admissions_schema(connection)
-    if revision in {"0033", "0034"}:
+    if revision in {"0033", "0034", "0035"}:
         from app.db.readiness_schema_0033 import verify
         verify(connection)
-    if revision == "0034":
+    if revision in {"0034", "0035"}:
         from app.db.bounded_batch_schema_0034 import verify
+        verify(connection)
+    if revision == "0035":
+        from app.db.one_shot_schema_0035 import verify
         verify(connection)
 
 
