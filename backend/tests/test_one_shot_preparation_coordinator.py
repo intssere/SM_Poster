@@ -53,7 +53,10 @@ def execute(value, funcs, preflight=None):
         db=object(), intent=value, reserve=reserve, create=create,
         prepare=prepare, certify=certify, settings=object(),
         expected_preflight=preflight if preflight is not None else {
-            "preflight_fingerprint": value.preflight_fingerprint,
+            "preflight_fingerprint": (
+                value.preflight_fingerprint if isinstance(value, OneShotPreparationIntent)
+                else "a" * 64
+            ),
         },
     )
 
