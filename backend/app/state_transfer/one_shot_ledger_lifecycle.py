@@ -48,12 +48,16 @@ def coordinate_ledger_lifecycle(
     if not all(callable(fn) for fn in (reserve, create, prepare, certify, transition)):
         raise OneShotLifecycleRefusal("ONE_SHOT_CALLBACK_REQUIRED")
 
+    preparing_confirmed = False
+
     def reserve_then_transition(session, bound):
+        nonlocal preparing_confirmed
         reserve(session, bound)  # must commit before returning
         transition(
             session, operation_key=bound.operation_key,
             expected_state="RESERVED", next_state="PREPARING",
         )  # must commit before batch creation
+        preparing_confirmed = True
 
     try:
         result = coordinate_once(
@@ -67,13 +71,14 @@ def coordinate_ledger_lifecycle(
         # failure might have persisted, or a preparation might have committed
         # internal artifacts. Do not mark FAILED without independently
         # verifying the batch and all associated permits.
-        try:
-            transition(
-                db, operation_key=intent.operation_key,
-                expected_state="PREPARING", next_state="UNCERTAIN",
-            )
-        except Exception:
-            pass  # preserve original refusal; operator must inspect ledger
+        if preparing_confirmed:
+            try:
+                transition(
+                    db, operation_key=intent.operation_key,
+                    expected_state="PREPARING", next_state="UNCERTAIN",
+                )
+            except Exception:
+                pass  # preserve original refusal; operator must inspect ledger
         raise
     transition(
         db, operation_key=intent.operation_key,
