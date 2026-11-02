@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   local-staged-media:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       PYTHONPATH: ${{ github.workspace }}/backend
       DATABASE_URL: "sqlite:///:memory:"
